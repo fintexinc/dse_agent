@@ -438,6 +438,39 @@ async def test_an_error_gate_neither_blocks_the_park_nor_disarms_the_pincer(time
 
 
 @pytest.mark.asyncio
+async def test_the_verdict_comment_reaches_the_reauthor_prompt(time_skipping_env):
+    """A instrução do humano viaja COM a ordem (wi_53c820f1: a sonda provou a
+    asserção de display computado insatisfazível no JSDOM, e a regra 'estilo
+    por classe/atributo, nunca display computado' precisa chegar ao modelo —
+    um veredito sem canal de instrução obriga o humano a torcer)."""
+    work_item_id = new_work_item_id("exh-comment")
+    insert_work_item(work_item_id)
+    state = FakeControlPlane(
+        plan_risk_class="low",
+        l1_fail_times=2,
+        l1_fail_detail=_WARNING_DETAIL,
+        coder_files_changed=["src/app/components/homepage/components/report-status-badge/report-status-badge.component.ts"],
+        tester_test_files=[_BADGE_SPEC, _DSE_SPEC],
+    )
+    worker, handle = await _start(state, work_item_id, time_skipping_env)
+    async with worker:
+        await wait_for_status(handle, {"spec_conflict"})
+        instruction = "Asserções de estilo por classe/atributo, nunca por display computado."
+        await handle.signal(
+            "spec_conflict_resolution",
+            {"verdict": "reauthor", "actor": "usr_test", "comment": instruction},
+        )
+        await wait_for_status(handle, {"review_ready"})
+        ctx = state.tester_reauthor_contexts[-1] or ""
+        assert instruction in ctx, "o comment do veredito chega ao prompt da ordem"
+        assert "warning" in ctx, "e a evidência da falha continua junto"
+        await handle.signal("review_comment", {"verdict": "approved"})
+        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        result = await handle.result()
+    assert result.status == WorkItemStatus.done.value
+
+
+@pytest.mark.asyncio
 async def test_the_full_chain_park_reauthor_rewrite_green_pr_ready(time_skipping_env):
     """A CADEIA inteira em fake, elo a elo — porque os três últimos vãos foram
     interações entre mecanismos individualmente corretos: parque (R10, no-op

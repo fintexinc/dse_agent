@@ -153,6 +153,9 @@ class FakeControlPlane:
     #: a instrução completa que cada turno de Coder recebeu (a porta 1 v3
     #: afirma que as asserções da spec em conflito chegam no fix_context)
     coder_instructions: list[str] = field(default_factory=list)
+    #: o reauthor_context que cada turno de Tester recebeu (o comment do
+    #: veredito humano tem que chegar ao prompt da ordem)
+    tester_reauthor_contexts: list[str | None] = field(default_factory=list)
     #: suites que o gate `test` do fake reporta como já vermelhas no base_sha
     #: (baseline check, rc.43) — entram em L1Finding.inherited_failures
     l1_inherited_failures: list[str] = field(default_factory=list)
@@ -244,6 +247,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         state.tester_calls += 1
         reauthor_specs = list(payload.get("reauthor_specs") or [])
         state.tester_reauthor_orders.append(reauthor_specs)
+        state.tester_reauthor_contexts.append(payload.get("reauthor_context"))
         state.calls_log.append("run_tester_turn")
         _maybe_fail_closed(state, ACTIVITY_RUN_TESTER_TURN)
         RunTesterTurnInput(**payload)  # REAL contract decode

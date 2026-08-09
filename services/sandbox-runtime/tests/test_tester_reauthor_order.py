@@ -81,6 +81,34 @@ def test_the_order_filter_normalizes_model_path_prefixes():
     ], "os caminhos vistos alimentam o tester_reauthor_missed"
 
 
+def test_stem_equivalent_dse_variant_maps_to_the_ordered_path():
+    """A deriva medida (wi_53c820f1, miss parcial da rc.50): ordem para
+    X.spec.ts e o modelo escreve X-dse.spec.ts — stem-equivalente, caminho
+    novo, recusado pelo filtro exato. Com temperature=0 a deriva se repete e a
+    ordem nunca aterrissa. O filtro mapeia a variante para o caminho ORDENADO:
+    in-place continua absoluto, nenhum caminho novo nasce, e a simetria cobre
+    a direção inversa (ordem em -dse, script sem o sufixo)."""
+    ordered = "src/app/components/homepage/components/report-status-badge/report-status-badge.component.spec.ts"
+    drifted = "src/app/components/homepage/components/report-status-badge/report-status-badge.component-dse.spec.ts"
+    accepted, seen = activities._reauthor_script_writes(
+        [{"tool": "write_file", "path": drifted, "content": "rewritten"}], [ordered]
+    )
+    assert accepted == [(ordered, "rewritten")], "a variante -dse aterrissa no ordenado"
+    assert seen == [drifted], "o caminho visto continua cru — evidência da deriva"
+
+    accepted2, _seen2 = activities._reauthor_script_writes(
+        [{"tool": "write_file", "path": ordered, "content": "x"}], [drifted]
+    )
+    assert accepted2 == [(drifted, "x")], "simetria: ordem -dse, script sem sufixo"
+
+    # um stem DIFERENTE continua recusado — a equivalência é só o marcador -dse
+    accepted3, _ = activities._reauthor_script_writes(
+        [{"tool": "write_file", "path": "src/app/other.component-dse.spec.ts", "content": "y"}],
+        [ordered],
+    )
+    assert accepted3 == []
+
+
 def test_partial_miss_is_the_delta_not_the_absence():
     """rc.49 fechou o miss TOTAL; o wi_53c820f1 mediu o PARCIAL: ordenadas 2
     specs, reescrita 1, silêncio sobre a que faltou. O que o evento carrega é
