@@ -29,9 +29,14 @@ rules:
   # Namespace lifecycle: one per preview, deleted by the TTL reaper. Without
   # `delete` the reaper cannot collect anything and previews leak forever —
   # which matters more here than under GitOps, where Argo CD used to prune.
+  # `patch`/`update` porque um REFRESH re-aplica o manifesto de um namespace
+  # que já existe, e `kubectl apply` sobre objeto existente é um patch — sem
+  # eles o refresh morre em Forbidden (medido 2026-08-09) e o TTL nunca é
+  # renovado. Não amplia o risco de forma relevante: `delete` já é concedido
+  # aqui, e apagar um namespace é estritamente pior que anotá-lo.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
