@@ -153,6 +153,41 @@ async def test_the_same_spec_failing_again_parks_as_today(time_skipping_env):
 
 
 @pytest.mark.asyncio
+async def test_the_retry_comment_reaches_the_coder_context(time_skipping_env):
+    """Medido no wi_cc72b204 (2026-08-09): três rodadas (~US$ 11) perseguindo o
+    sintoma (modal) sem tocar a causa (comparador de mudanças) — e o humano no
+    parque SABIA a causa, mas o retry não tinha canal: o comment morria no
+    audit (rc.51 plumbou comment→reauthor; retry ficou de fora). O comment do
+    veredito retry viaja na frente do fix_context, como no reauthor."""
+    work_item_id = new_work_item_id("v3-guide")
+    insert_work_item(work_item_id)
+    state = FakeControlPlane(
+        plan_risk_class="low",
+        l1_fail_times=2,
+        l1_fail_detail=_MAXW_DETAIL,
+        coder_files_changed=[_SUBJECT_HTML],
+        tester_test_files=[_DSE_SPEC],
+    )
+    worker, handle = await _start(state, work_item_id, time_skipping_env)
+    async with worker:
+        await wait_for_status(handle, {"spec_conflict"})
+        direction = "A causa é o comparador de mudanças, não o modal."
+        await handle.signal(
+            "spec_conflict_resolution",
+            {"verdict": "retry", "actor": "usr_test", "comment": direction},
+        )
+        await wait_for_status(handle, {"review_ready"})
+        assert direction in state.coder_instructions[-1], (
+            "o direcionamento humano do retry chega ao Coder — sem canal, o "
+            "veredito vira torcida"
+        )
+        await handle.signal("review_comment", {"verdict": "approved"})
+        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        result = await handle.result()
+    assert result.status == WorkItemStatus.done.value
+
+
+@pytest.mark.asyncio
 async def test_inherited_red_spec_never_parks_nor_defers(time_skipping_env):
     """DoD 1c: spec vermelha no base é achado HERDADO (NOT_OUR_FAILURE) mesmo
     com o sujeito no diff — não parqueia nem ganha "primeira chance"; a falha
