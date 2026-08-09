@@ -56,6 +56,72 @@ def test_g1_private_repo_clone_is_authenticated_by_deploy_key():
     assert "dse-preview-deploy-key" in y, "a secret da deploy key montada no pod"
 
 
+def test_g1_the_private_key_never_enters_the_manifest_set():
+    """A chave é material de credencial: o manifest set vira COMMIT no repo de
+    manifestos em modo gitops. Por construção, não por disciplina — a secret
+    por-namespace é materializada via kubectl, fora do set."""
+    ms = build_manifests(
+        "preview-wi-k", "wi_k", "dev-tenant",
+        datetime.now(timezone.utc) + timedelta(hours=1), 3600, _cfg(),
+        repo=_FE_REPO, branch="dse/wi_k", kind="ui",
+    )
+    joined = "\n".join(ms.values())
+    assert "kind: Secret" not in joined, "nenhuma Secret no set que vai para git"
+    assert "PRIVATE KEY" not in joined
+
+
+def test_g1_materialize_creates_the_per_namespace_secret(monkeypatch):
+    """A secret por-namespace nasce da agregada do namespace do DSE (que o
+    OPERADOR semeia — runbook), item por repo."""
+    calls: list[tuple[list[str], str | None]] = []
+
+    def _fake_kubectl(cfg, args, *, input_text=None, timeout=60):
+        calls.append((args, input_text))
+        if args[:2] == ["get", "secret"]:
+            return type("P", (), {"stdout": "QkFTRTY0S0VZ", "returncode": 0})()
+        return type("P", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(argocd, "_kubectl", _fake_kubectl)
+    ok = argocd.materialize_deploy_key(_cfg(), "preview-wi-k", _FE_REPO)
+    assert ok is True
+    read = [c for c in calls if c[0][:2] == ["get", "secret"]]
+    assert read, "lê a secret agregada do namespace do DSE"
+    assert "fintexinc__bmo-fee-calculator-fe-dse" in " ".join(read[0][0]), (
+        "o item é o slug determinístico do repo"
+    )
+    applied = [c for c in calls if c[0][0] == "apply"]
+    assert applied, "aplica a secret por-namespace"
+    body = applied[0][1] or ""
+    assert "kind: Secret" in body and "namespace: preview-wi-k" in body
+    assert "QkFTRTY0S0VZ" in body, "o material vem da agregada, nunca gerado aqui"
+
+
+def test_g1_missing_key_degrades_with_a_named_reason(monkeypatch, tmp_path):
+    """Sem key semeada, o preview degrada NOMEANDO o motivo — não o
+    `could not read Username` opaco de 300s medido 4/4."""
+    def _fake_kubectl(cfg, args, *, input_text=None, timeout=60):
+        if args[:2] == ["get", "secret"]:
+            raise RuntimeError("kubectl get secret failed (exit=1): NotFound")
+        return type("P", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(argocd, "_kubectl", _fake_kubectl)
+    cfg = _cfg()
+    cfg.apply_mode = "kubectl"
+    cfg.repo_dir = str(tmp_path / "repo")
+    cfg.sync_timeout_s = 5
+    import uuid
+    ref = argocd.trigger_preview_core(
+        TriggerPreviewInput(
+            work_item_id=f"wi_nokey_{uuid.uuid4().hex[:8]}", tenant_id="dev-tenant",
+            repo=_FE_REPO, pr_number=18,
+            files_changed=["src/app/x.component.html"],
+        ),
+        cfg=cfg,
+    )
+    assert ref.status == "degraded"
+    assert "deploy key" in ref.detail, f"o motivo é nomeado, não opaco: {ref.detail!r}"
+
+
 def test_g2_deployable_kind_builds_with_the_repos_own_ruler():
     """O BE (kind=deployable) morre hoje no `npm install`. A receita segue o
     kind: build = o comando do .dse/validation.json do repo (a régua que o L1
