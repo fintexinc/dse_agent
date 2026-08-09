@@ -96,15 +96,62 @@ def test_g1_materialize_creates_the_per_namespace_secret(monkeypatch):
     assert "QkFTRTY0S0VZ" in body, "o material vem da agregada, nunca gerado aqui"
 
 
-def test_g1_missing_key_degrades_with_a_named_reason(monkeypatch, tmp_path):
-    """Sem key semeada, o preview degrada NOMEANDO o motivo — não o
-    `could not read Username` opaco de 300s medido 4/4."""
+def test_g1prime_without_a_seeded_secret_it_mints_an_installation_token(monkeypatch):
+    """Decisão de operador (POC, 2026-08-09): sem deploy keys — o clone usa o
+    installation token da App JÁ instalada. Sem secret semeada e com App
+    configurada, a credencial do preview é um token MINTADO AGORA (expira em
+    1h; o clone leva segundos, e um preview que viva mais já clonou)."""
+    def _no_aggregate(cfg, args, *, input_text=None, timeout=60):
+        if args[:2] == ["get", "secret"]:
+            raise RuntimeError("NotFound")
+        return type("P", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(argocd, "_kubectl", _no_aggregate)
+    monkeypatch.setattr(argocd, "_mint_installation_token", lambda: "ghs_faketoken")
+    mode, material = argocd.resolve_preview_credential(_cfg(), _FE_REPO)
+    assert mode == "token"
+    import base64
+    assert base64.b64decode(material).decode() == "ghs_faketoken"
+
+
+def test_g1prime_seeded_secret_still_wins_as_fallback(monkeypatch):
+    """O caminho da secret fica: se o operador semear, usa (código da rc.55)."""
+    def _has_aggregate(cfg, args, *, input_text=None, timeout=60):
+        if args[:2] == ["get", "secret"]:
+            return type("P", (), {"stdout": "U1NIS0VZ", "returncode": 0})()
+        return type("P", (), {"stdout": "", "returncode": 0})()
+
+    monkeypatch.setattr(argocd, "_kubectl", _has_aggregate)
+    monkeypatch.setattr(argocd, "_mint_installation_token", lambda: "ghs_faketoken")
+    mode, material = argocd.resolve_preview_credential(_cfg(), _FE_REPO)
+    assert (mode, material) == ("ssh", "U1NIS0VZ"), "secret semeada tem precedência"
+
+
+def test_g1prime_token_mode_never_puts_the_token_in_argv():
+    """O token vai pela MESMA secret/volume da rc.55 — nunca no pod spec (que
+    `kubectl get pod -o yaml` mostra) nem em argv. O git o lê do arquivo via
+    credential helper, então também não fica no .git/config do clone."""
+    y = _source_deployment(
+        "preview-wi-t", _LABELS, _cfg(), repo=_FE_REPO, branch="dse/wi_t",
+        auth_mode="token",
+    )
+    assert "https://github.com/" + _FE_REPO in y, "clone HTTPS com credential helper"
+    assert "/preview-keys/token" in y, "o token vem do volume, não do spec"
+    assert "credential.helper" in y
+    assert "ghs_" not in y and "x-access-token:$" not in y, "nenhum token literal no spec"
+    assert "GIT_SSH_COMMAND" not in y, "modo token não usa SSH"
+
+
+def test_g1_no_credential_at_all_degrades_with_a_named_reason(monkeypatch, tmp_path):
+    """Sem secret semeada E sem App configurada, o preview degrada NOMEANDO o
+    motivo — não o `could not read Username` opaco de 300s medido 4/4."""
     def _fake_kubectl(cfg, args, *, input_text=None, timeout=60):
         if args[:2] == ["get", "secret"]:
             raise RuntimeError("kubectl get secret failed (exit=1): NotFound")
         return type("P", (), {"stdout": "", "returncode": 0})()
 
     monkeypatch.setattr(argocd, "_kubectl", _fake_kubectl)
+    monkeypatch.setattr(argocd, "_mint_installation_token", lambda: None)
     cfg = _cfg()
     cfg.apply_mode = "kubectl"
     cfg.repo_dir = str(tmp_path / "repo")
