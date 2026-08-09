@@ -35,6 +35,20 @@ class AdmissionBlocked(Exception):
         self.reason = reason
 
 
+class NonTaskAdmissionRefused(Exception):
+    """F2 (fantasmas 1611/1612, 2026-08-09): um evento de kind não-task que
+    não correlacionou a item nenhum NÃO vira work item — só `task_request` é
+    despachável. Admitir um `approval` produzia DECLINED_UNEXPECTED_STATUS;
+    um `clarification_answer`, um signal para workflow que nunca existirá
+    (processed=false eterno). Decisão determinística da camada comum, para
+    todas as sources; o adapter responde no canal de origem com orientação
+    ("responda na conversa da tarefa original")."""
+
+    def __init__(self, kind: str):
+        super().__init__(f"non_task_kind_without_correlation:{kind}")
+        self.kind = kind
+
+
 def _payload_json(
     event: ConversationEvent,
     sanitized_content: str | None,
@@ -79,8 +93,12 @@ def admit_work_item(
     """Returns the `work_item_id` (new, or the existing one on a redelivery).
 
     Raises `AdmissionBlocked` if the channel/tenant kill switch is active — in
-    that case NO WorkItem/ingest_event is created.
+    that case NO WorkItem/ingest_event is created. Raises
+    `NonTaskAdmissionRefused` for any kind that is not `task_request` — a
+    non-task event that failed correlation never becomes a WorkItem (F2).
     """
+    if event.kind.value != "task_request":
+        raise NonTaskAdmissionRefused(event.kind.value)
     owns_conn = conn is None
     if owns_conn:
         conn = get_connection()

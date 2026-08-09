@@ -26,6 +26,7 @@ from dse_identity import resolve_principal
 from fastapi import FastAPI, HTTPException, Request
 from ingest_gateway import (
     AdmissionBlocked,
+    NonTaskAdmissionRefused,
     admit_work_item,
     recorded_work_item_id,
     correlate,
@@ -136,7 +137,14 @@ def _base_branch_for_repo(conn, tenant_id: str, repo: str) -> str:
 
 def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
                                extra_payload: dict | None = None,
-                               signal_only: bool = False) -> dict:
+                               signal_only: bool = False,
+                               bot_message_ts: str | None = None) -> dict:
+    """`bot_message_ts`: para cliques de botão — o ts da mensagem do bot onde
+    o botão vive. Correlaciona PRIMEIRO por `{channel, bot_ts}` (F1(b): o
+    prompt pertence a UM item, registrado no source_ref na hora do post);
+    thread compartilhada entre irmãos não desambigua e o mais novo não pode
+    roubar o Approve do mais velho. Miss (prompt pré-fix) cai no caminho
+    normal por thread — comportamento antigo preservado."""
     channel = conv_event.source_ref["channel"]
     sanitized = sanitize_content(conv_event.content_snapshot)
 
@@ -151,7 +159,17 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
         if prior is not None:
             return {"ok": True, "path": "already_ingested", "work_item_id": prior}
 
-        result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
+        result = None
+        if bot_message_ts:
+            result = correlate(
+                conn, tenant_id=tenant_id, event=conv_event,
+                requester_principal=principal,
+                correlation_ref={"channel": channel, "bot_ts": [bot_message_ts]},
+            )
+            if result.kind == "new_task":
+                result = None  # prompt pré-fix sem bot_ts registrado → thread
+        if result is None:
+            result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
 
         if result.kind == "unauthorized":
             conn.commit()
@@ -209,6 +227,38 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
             )
         except AdmissionBlocked:
             return {"ok": True, "path": "blocked_kill_switch"}
+        except NonTaskAdmissionRefused as refusal:
+            # F2 (fantasmas 1611/1612): resposta/clique numa conversa que a
+            # correlação desconhece NUNCA vira tarefa. Orienta na hora, no
+            # canal, com o candidato mais recente do mesmo canal se houver.
+            hint = ""
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, source_ref->>'thread_ts' FROM work_items "
+                    "WHERE tenant_id = %s AND source = 'slack' "
+                    "AND source_ref->>'channel' = %s "
+                    "AND status NOT IN ('done','failed','escalated','blocked','cancelled') "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (tenant_id, channel),
+                )
+                cand = cur.fetchone()
+            if cand:
+                hint = f" A tarefa mais recente aqui é `{cand[0][:15]}…` (thread {cand[1]})."
+            audit_emit(
+                actor=principal,
+                action="non_task_admission_refused",
+                tenant_id=tenant_id,
+                details={"kind": refusal.kind, "channel": channel,
+                         "event_id": conv_event.event_id},
+                conn=conn,
+            )
+            conn.commit()
+            _notify_ephemeral(
+                channel, conv_event.actor.platform_user_id,
+                "Não encontrei a tarefa desta conversa — responda na conversa "
+                "da tarefa original (a thread onde ela foi criada)." + hint,
+            )
+            return {"ok": True, "path": "refused_non_task"}
 
         if result.provenance_work_item_id:
             audit_emit(
@@ -445,7 +495,8 @@ async def slack_interactions(request: Request) -> dict:
         extra_payload["approval_route"] = route
 
     return _handle_conversation_event(
-        conv_event, principal=principal, tenant_id=tenant_id, extra_payload=extra_payload
+        conv_event, principal=principal, tenant_id=tenant_id, extra_payload=extra_payload,
+        bot_message_ts=(payload.get("message") or {}).get("ts"),
     )
 
 
@@ -479,6 +530,19 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     writer = mutable_comment.MutableCommentWriter(backend, store, SURFACE)
 
     surface_ref = {"channel": req.channel}
+    # F1(a): resolve a thread ORIGINAL do item — a mensagem vai como reply
+    # nela. O source_ref é a fonte (o irmão do fan-out compartilha o do
+    # primário, então a conversa é uma só, como o UX sempre pediu).
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source_ref FROM work_items WHERE id = %s", (req.work_item_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    item_source_ref = row[0] if row and isinstance(row[0], dict) else {}
+    if item_source_ref.get("thread_ts"):
+        surface_ref["thread_ts"] = item_source_ref["thread_ts"]
     if req.status == "awaiting_plan_approval":
         surface_ref["blocks"] = approval_blocks(req.body)
     elif req.status == "awaiting_repo_selection":
@@ -498,6 +562,31 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
         if len(repos) >= 2:
             surface_ref["blocks"] = repo_select_blocks(req.work_item_id, repos, req.body)
     comment_ref = writer.upsert(req.work_item_id, surface_ref, req.body)
+
+    # F1(b): todo identificador de conversa que o bot cria é REGISTRADO no
+    # source_ref do item (append em `bot_ts`), para o containment do
+    # correlate casar. É o que endereça o clique de botão ao item CERTO
+    # mesmo com irmãos compartilhando a thread — a thread não desambigua,
+    # o ts da mensagem do prompt sim. Guard de containment torna o append
+    # idempotente (upsert edita a mesma mensagem em toda transição).
+    try:
+        posted_ts = json.loads(comment_ref).get("ts")
+    except (ValueError, AttributeError):
+        posted_ts = None
+    if posted_ts:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE work_items SET source_ref = jsonb_set(source_ref, '{bot_ts}', "
+                    "COALESCE(source_ref->'bot_ts', '[]'::jsonb) || to_jsonb(%s::text)) "
+                    "WHERE id = %s AND NOT "
+                    "(COALESCE(source_ref->'bot_ts', '[]'::jsonb) @> to_jsonb(ARRAY[%s::text]))",
+                    (posted_ts, req.work_item_id, posted_ts),
+                )
+            conn.commit()
+        finally:
+            conn.close()
 
     audit_emit(
         actor=req.actor,

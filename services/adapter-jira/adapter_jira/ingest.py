@@ -20,6 +20,7 @@ from typing import Any
 from dse_audit import emit as audit_emit
 from ingest_gateway import (
     AdmissionBlocked,
+    NonTaskAdmissionRefused,
     admit_work_item,
     recorded_work_item_id,
     classify_task_class,
@@ -97,6 +98,20 @@ def ingest_task_trigger(
                 sanitized_content=sanitized,
                 conn=conn,
             )
+        except NonTaskAdmissionRefused as refusal:
+            # F2: comment de ticket (Jira trata todo comment como
+            # clarification_answer) sem correlacao nunca vira tarefa.
+            # Equivalente Jira da conversa: o TICKET (comment-chain).
+            audit_emit(
+                actor="system:adapter-jira",
+                action="non_task_admission_refused",
+                tenant_id=tenant_id,
+                details={"kind": refusal.kind, "channel": channel,
+                         "event_id": ev.event_id},
+                conn=conn,
+            )
+            conn.commit()
+            return {"ok": True, "path": "refused_non_task"}
         except AdmissionBlocked:
             return {"ok": True, "path": "blocked_kill_switch"}
 
@@ -353,6 +368,20 @@ def ingest_retry_trigger(
                 sanitized_content=sanitized,
                 conn=conn,
             )
+        except NonTaskAdmissionRefused as refusal:
+            # F2: comment de ticket (Jira trata todo comment como
+            # clarification_answer) sem correlacao nunca vira tarefa.
+            # Equivalente Jira da conversa: o TICKET (comment-chain).
+            audit_emit(
+                actor="system:adapter-jira",
+                action="non_task_admission_refused",
+                tenant_id=tenant_id,
+                details={"kind": refusal.kind, "channel": channel,
+                         "event_id": ev.event_id},
+                conn=conn,
+            )
+            conn.commit()
+            return {"ok": True, "path": "refused_non_task"}
         except AdmissionBlocked:
             # Kill switch flipped between the check above and the insert. The
             # gateway already audited it; nothing to add.

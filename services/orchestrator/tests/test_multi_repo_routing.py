@@ -74,6 +74,52 @@ def test_a_different_request_to_the_same_repo_is_a_different_item():
     assert sibling_work_item_id(EVENT, FE) != sibling_work_item_id("slack:C123:1700000000.0002", FE)
 
 
+def test_the_sibling_inherits_the_resolved_base_branch_not_the_null_row():
+    """F3 (medido em wi_6e5c25bf, 2026-08-09): o fan-out copia base_branch da
+    LINHA do primário — que ainda está NULL nesse instante, porque o default
+    `or "main"` do roteamento vive no estado do workflow e só chega ao banco
+    depois. O irmão nasce vazio, pula o único branch onde o default mora
+    (input.repo != None) e pede clarificação de base_branch que o binding do
+    canal já tinha. O fan-out passa a receber o base_branch RESOLVIDO do
+    workflow e o irmão nasce com ele."""
+    import asyncio
+    import json as _json
+    import uuid as _uuid
+
+    import psycopg2
+
+    from dse_orchestrator.local_activities import fan_out_sibling_work_items
+
+    dsn = "postgresql://dse_app:dse_app_dev_only@localhost:5432/dse"
+    primary = f"wi_f3_{_uuid.uuid4().hex[:12]}"
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO work_items (id, tenant_id, source, source_ref, repo, "
+                "base_branch, requester, idempotency_key, status) "
+                "VALUES (%s,'dev-tenant','slack',%s,%s,NULL,'usr_test',%s,'new')",
+                (primary, _json.dumps({"channel": "C_F3", "thread_ts": "1.1"}),
+                 "acme/be", f"idem_{primary}"),
+            )
+        conn.commit()
+
+        result = asyncio.run(fan_out_sibling_work_items({
+            "work_item_id": primary, "tenant_id": "dev-tenant",
+            "repos": ["acme/fe"], "base_branch": "main",
+        }))
+        sib = result["created"][0]
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT base_branch FROM work_items WHERE id = %s", (sib,))
+            assert cur.fetchone()[0] == "main", (
+                "o irmão herda o base_branch resolvido do workflow, não o NULL "
+                "da linha — nascer vazio foi o que gerou a clarificação fantasma"
+            )
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # The candidate set is every repository the tenant HAS.
 #

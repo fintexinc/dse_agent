@@ -9,7 +9,7 @@ lives in the adapter process).
 """
 from .db import get_connection
 from .kill_switch import is_channel_killed
-from .gateway import admit_work_item, record_signal_event, AdmissionBlocked
+from .gateway import admit_work_item, record_signal_event, AdmissionBlocked, NonTaskAdmissionRefused
 from .correlate import correlate, CorrelationResult
 from .steering import is_authorized_to_steer
 from .security import (
@@ -60,6 +60,7 @@ __all__ = [
     "admit_work_item",
     "record_signal_event",
     "AdmissionBlocked",
+    "NonTaskAdmissionRefused",
     "correlate",
     "CorrelationResult",
     "is_authorized_to_steer",

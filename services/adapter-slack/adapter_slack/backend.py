@@ -112,6 +112,12 @@ class SlackCommentBackend:
         kwargs = {"channel": channel, "text": body}
         if blocks:
             kwargs["blocks"] = blocks
+        # F1(a): a mensagem do bot vive DENTRO da conversa do item — reply na
+        # thread, nunca raiz nova. Mensagem-raiz foi o que fantasmou o "main"
+        # e o Approve (ingest 1611/1612): resposta humana em thread que a
+        # correlação desconhece vira tarefa nova, por construção.
+        if surface_ref.get("thread_ts"):
+            kwargs["thread_ts"] = surface_ref["thread_ts"]
         resp = self._client.chat_postMessage(**kwargs)
         ts = resp["ts"]
         return json.dumps({"channel": channel, "ts": ts})

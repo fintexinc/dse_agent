@@ -24,6 +24,7 @@ from dse_identity import resolve_principal
 from fastapi import FastAPI, HTTPException, Request
 from ingest_gateway import (
     AdmissionBlocked,
+    NonTaskAdmissionRefused,
     admit_work_item,
     recorded_work_item_id,
     classify_task_class,
@@ -190,6 +191,23 @@ def _handle_task_creating_event(conv_event, *, principal: str, tenant_id: str,
             )
         except AdmissionBlocked:
             return {"ok": True, "path": "blocked_kill_switch"}
+        except NonTaskAdmissionRefused as refusal:
+            # F2: comentario (clarification_answer/approval/review) que nao
+            # correlacionou nunca vira tarefa. Equivalente GitHub da conversa:
+            # a ISSUE -- o guard de mention ja ignora a maioria; aqui audita e
+            # devolve 200 sem efeito.
+            audit_emit(
+                actor=principal,
+                action="non_task_admission_refused",
+                tenant_id=tenant_id,
+                details={"kind": refusal.kind,
+                         "repo": conv_event.source_ref.get("repo"),
+                         "number": conv_event.source_ref.get("number"),
+                         "event_id": conv_event.event_id},
+                conn=conn,
+            )
+            conn.commit()
+            return {"ok": True, "path": "refused_non_task"}
 
         if result.provenance_work_item_id:
             audit_emit(
