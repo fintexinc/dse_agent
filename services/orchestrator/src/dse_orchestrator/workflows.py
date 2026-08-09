@@ -2579,8 +2579,16 @@ class WorkItemLifecycleWorkflow:
                             if self._cancelled:
                                 return await self._finish_cancelled()
                             if resumed:
-                                input.fix_context = self._l1_failure_context(
-                                    [f for f in l1_result.findings if not f.passed]
+                                # O direcionamento humano do retry viaja na
+                                # frente da evidência (wi_cc72b204: 3 rodadas
+                                # no sintoma com o humano sabendo a causa —
+                                # o comment morria no audit).
+                                input.fix_context = (
+                                    ([self._last_verdict_comment]
+                                     if self._last_verdict_comment else [])
+                                    + self._l1_failure_context(
+                                        [f for f in l1_result.findings if not f.passed]
+                                    )
                                 )
                                 await self._set_status(
                                     WorkItemStatus.implementing,
@@ -2710,7 +2718,13 @@ class WorkItemLifecycleWorkflow:
                         )
                         continue
                     if resumed:
-                        input.fix_context = self._l1_failure_context(failed_checks)
+                        # Mesmo canal do site da porta 1: comment do retry
+                        # na frente da evidência.
+                        input.fix_context = (
+                            ([self._last_verdict_comment]
+                             if self._last_verdict_comment else [])
+                            + self._l1_failure_context(failed_checks)
+                        )
                         await self._set_status(
                             WorkItemStatus.implementing,
                             audit_action="spec_conflict_retry",
