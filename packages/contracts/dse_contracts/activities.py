@@ -661,7 +661,13 @@ class TriggerPreviewInput(BaseModel):
     # `**/*.html` is load-bearing: a plain static page is the most common shape
     # of a UI change, and without it a PR that only edits index.html was
     # classified backend-only and silently skipped the preview.
-    ui_path_globs: list[str] = Field(default_factory=lambda: ["ui/**", "frontend/**", "**/*.html", "**/*.css", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte"])
+    # `**/*.component.ts`: o Angular escreve UI em `.ts`, e `.ts` está nos
+    # globs DEPLOYABLE — sem esta entrada, um change só-de-componente
+    # classificava um FE Angular como serviço de backend e ganhava a receita
+    # errada (medido no wi_cc72b204: `npm: not found` numa imagem JDK). O
+    # sufixo `.component.ts` é convenção inequívoca do framework, então um
+    # backend Node em TypeScript (`src/server.ts`) segue `deployable`.
+    ui_path_globs: list[str] = Field(default_factory=lambda: ["ui/**", "frontend/**", "**/*.html", "**/*.css", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.component.ts"])
     # plan 08 §D — deployable service (back): source/manifest/container that
     # change the artifact served in the preview. Docs/test-only do not match
     # and skip.

@@ -3800,8 +3800,17 @@ class WorkItemLifecycleWorkflow:
                 # pending flag would turn this wait into a hot loop.
                 self._refresh_evidence_requested = False
                 await self._audit("evidence_refresh_requested_by_human", {})
-                await self._run_evidence_pipeline(list(input.last_files_changed),
-                                                  reason="human_request")
+                # Diff ACUMULADO, nunca o do último turno: o paths-filter
+                # classifica a PR INTEIRA. Medido no wi_cc72b204 — a PR do FE
+                # tocou .ts+.html+.scss, o último turno só o .component.ts, e
+                # o refresh classificou o Angular como `deployable` (receita
+                # Java, npm: not found). É a mesma lição da porta 1 v2, aqui
+                # no pipeline de evidência. `last_files_changed` continua como
+                # fallback para histórias antigas sem o campo acumulado.
+                await self._run_evidence_pipeline(
+                    list(input.cumulative_files_changed or input.last_files_changed),
+                    reason="human_request",
+                )
                 continue
 
             comments = self._drain_review_comments()
