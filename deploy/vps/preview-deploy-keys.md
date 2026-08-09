@@ -1,9 +1,17 @@
-# Deploy keys dos previews (G-1) — runbook do operador
+# Credencial de clone dos previews — runbook do operador
 
-O pod de preview clona o branch da PR **por SSH**, com uma **deploy key
+> **Estado atual (decisão de operador, 2026-08-09): NADA A FAZER AQUI.**
+> Este é um ambiente de POC (single-user, repos descartáveis) e o clone usa o
+> **installation token da GitHub App já instalada** (G-1'): nenhum escopo novo,
+> nenhuma secret semeada, nenhum passo manual. O risco de token-no-pod foi
+> explicado e aceito. Este runbook fica como o **caminho de deploy key**, que
+> tem **precedência** se um dia a secret for semeada — e como a referência de
+> como semeá-la.
+
+O pod de preview pode clonar o branch da PR **por SSH**, com uma **deploy key
 read-only por repositório**. O DSE **só copia** essa chave da secret agregada
 para o namespace do preview: ele nunca gera chave, nunca a registra no GitHub e
-nunca retém material além do que o operador semeou (decisão (a), 2026-08-09).
+nunca retém material além do que o operador semeou.
 
 Por que existe: os repos migraram para uma org privada em 2026-08-07 e o clone
 do preview era anônimo (`https://github.com/...`, documentado como "public
@@ -68,16 +76,27 @@ depois disso (`rm -rf ~/.dse-preview-keys`) — a secret é a fonte.
 
 ## O que o DSE faz a partir daí
 
-Ao provisionar um preview, entre criar o namespace e aplicar o resto dos
-manifestos, ele copia o item do repo para a secret `dse-preview-deploy-key`
-daquele namespace (`materialize_deploy_key`, via kubectl — **fora** do conjunto
-de manifestos, porque em modo gitops esse conjunto vira commit num repo git e
-chave privada não vai para git). O pod monta em `/preview-keys/key` e usa
-`GIT_SSH_COMMAND`.
+Ao provisionar um preview, ele resolve a credencial de clone **nesta ordem**
+(`resolve_preview_credential`):
 
-**Repo sem item semeado**: o preview degrada com motivo nomeado
-(`no deploy key seeded for <repo> … see deploy/vps/preview-deploy-keys.md`) em
-vez do `could not read Username` opaco de 300s. Degradar nunca bloqueia a PR
+1. **deploy key** — o item do repo na secret agregada, **se** semeada pelos
+   passos acima. Modo `ssh`: o pod monta `/preview-keys/key` e usa
+   `GIT_SSH_COMMAND`.
+2. **installation token da GitHub App** (G-1', o caminho do POC) — mintado **no
+   momento do trigger, sem cache**. O token vale 1h; o clone leva segundos, e um
+   preview que viva mais que isso já clonou. Modo `token`: o pod lê
+   `/preview-keys/token` via `credential.helper store`, então o token **não
+   aparece no pod spec** (que `kubectl get pod -o yaml` mostra), **não aparece em
+   argv** e **não fica no `.git/config`** do clone.
+
+Nos dois casos o material é materializado na secret `dse-preview-deploy-key`
+daquele namespace, entre criar o namespace e aplicar o resto dos manifestos, via
+kubectl — **fora** do conjunto de manifestos, porque em modo gitops esse conjunto
+vira commit num repo git e credencial não vai para git.
+
+**Nenhum dos dois disponível** (App não configurada e sem secret semeada): o
+preview degrada com motivo nomeado (`no clone credential for <repo> …`) em vez
+do `could not read Username` opaco de 300s. Degradar nunca bloqueia a PR
 (failure mode 9).
 
 ## Rotação

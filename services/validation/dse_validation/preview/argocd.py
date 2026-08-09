@@ -33,6 +33,7 @@ TTL REAPER — documented decision (the addendum prefers kube-janitor, P7):
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -109,6 +110,78 @@ def deploy_key_item_for(repo: str) -> str:
     return repo.replace("/", "__")
 
 
+def _mint_installation_token() -> str | None:
+    """Installation token da GitHub App JÁ instalada, emitido AGORA.
+
+    Deliberadamente SEM cache (decisão de operador 2026-08-09): o token vale
+    1h, o clone leva segundos, e um preview que viva mais que isso já clonou —
+    cachear só criaria a janela em que um token velho é injetado num pod novo.
+    Devolve None quando a App não está configurada (dev/local)."""
+    try:
+        from dse_validation.config import GitHubConfig
+        from dse_validation.github.app_auth import fetch_installation_token
+    except ImportError:  # pragma: no cover — dependência opcional em dev
+        return None
+    gh = GitHubConfig()
+    if not gh.is_configured:
+        return None
+    try:
+        return fetch_installation_token(
+            gh.app_id, gh.private_key_pem, gh.installation_id, gh.api_base_url
+        )
+    except Exception as exc:  # noqa: BLE001 — preview nunca bloqueia (failure mode 9)
+        logger.warning("preview: could not mint an installation token: %s", exc)
+        return None
+
+
+def resolve_preview_credential(
+    cfg: PreviewConfig, repo: str
+) -> tuple[str, str] | tuple[None, None]:
+    """A credencial de clone deste preview, em ordem de precedência:
+
+      1. `ssh`   — item do repo na secret agregada, SE o operador a semeou
+                   (runbook deploy/vps/preview-deploy-keys.md);
+      2. `token` — installation token da App já instalada (G-1', o caminho do
+                   POC: nenhum escopo novo, nenhuma secret manual).
+
+    Devolve `(mode, material_b64)` — material SEMPRE em base64, pronto para a
+    secret — ou `(None, None)` quando nenhum caminho está disponível, e aí o
+    chamador degrada com motivo nomeado."""
+    item = deploy_key_item_for(repo)
+    try:
+        proc = _kubectl(cfg, [
+            "get", "secret", cfg.deploy_keys_secret, "-n", cfg.dse_namespace,
+            "-o", "jsonpath={.data." + item + "}",
+        ])
+        seeded = (getattr(proc, "stdout", "") or "").strip()
+    except RuntimeError:
+        seeded = ""
+    if seeded:
+        return "ssh", seeded
+    token = _mint_installation_token()
+    if token:
+        return "token", base64.b64encode(token.encode()).decode()
+    return None, None
+
+
+def apply_preview_credential(
+    cfg: PreviewConfig, namespace: str, mode: str, material_b64: str
+) -> None:
+    """Materializa a credencial na secret que o pod monta — via kubectl, FORA
+    do manifest set: em modo gitops o set vira commit num repo git, e
+    credencial não vai para git (garantia por construção)."""
+    field = "key" if mode == "ssh" else "token"
+    _kubectl(cfg, ["apply", "-f", "-"], input_text=f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: {DEPLOY_KEY_SECRET}
+  namespace: {namespace}
+type: Opaque
+data:
+  {field}: {material_b64}
+""")
+
+
 def materialize_deploy_key(cfg: PreviewConfig, namespace: str, repo: str) -> bool:
     """G-1 — copia a deploy key READ-ONLY do repo da secret AGREGADA (namespace
     do DSE, semeada pelo operador) para a secret que o pod do preview monta.
@@ -145,7 +218,8 @@ data:
 
 def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                        repo: str, branch: str, kind: str = "ui",
-                       api_proxy_target: str | None = None) -> str:
+                       api_proxy_target: str | None = None,
+                       auth_mode: str = "ssh") -> str:
     """Deployment that runs the PR branch straight from source.
 
     No image is built anywhere in this path, and that is the whole point: this
@@ -171,25 +245,39 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     Readiness is deliberately patient: install/build on a cold container easily
     outlasts a default probe.
     """
-    ssh_url = f"git@github.com:{repo}.git"
     port = cfg.source_port
     period = 5
     failure_threshold = max(6, cfg.source_ready_timeout_s // period)
-    git_env = (
-        "export GIT_SSH_COMMAND='ssh -i /preview-keys/key "
-        "-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes'; "
-    )
+    if auth_mode == "token":
+        # G-1' — installation token da App, lido do VOLUME (nunca do pod spec,
+        # que `kubectl get pod -o yaml` mostra, e nunca em argv). O credential
+        # helper mantém o token fora do .git/config do clone também.
+        clone_url = f"https://github.com/{repo}.git"
+        git_env = (
+            "printf 'https://x-access-token:%s@github.com\\n' "
+            "\"$(cat /preview-keys/token)\" > /tmp/.git-credentials; "
+            "git config --global credential.helper "
+            "'store --file=/tmp/.git-credentials'; "
+        )
+    else:
+        clone_url = f"git@github.com:{repo}.git"
+        git_env = (
+            "export GIT_SSH_COMMAND='ssh -i /preview-keys/key "
+            "-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes'; "
+        )
     # Single-quoted in the shell and injected from values the DSE itself
     # generated (repo slug, `dse/<work_item_id>` branch) — never from PR text.
     if kind == "deployable":
         image = cfg.deployable_image
         script = (
-            "set -eu; " + git_env +
+            "set -eu; "
             "(apt-get update >/dev/null 2>&1 && "
             "apt-get install -y --no-install-recommends git jq openssh-client "
             ">/dev/null 2>&1) || "
             "apk add --no-cache git jq openssh-client >/dev/null 2>&1 || true; "
-            f"git clone --depth 1 --branch '{branch}' '{ssh_url}' /srv/app; "
+            # depois do install: no modo token o git_env chama `git config`
+            + git_env +
+            f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
             "BUILD_CMD=$(jq -r '.commands.build[2]' .dse/validation.json); "
             "sh -c \"$BUILD_CMD\"; "
@@ -225,9 +313,10 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
             start = f"PORT={port} exec npm start -- --proxy-config proxy.preview.json"
         script = (
-            "set -eu; " + git_env +
+            "set -eu; "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
-            f"git clone --depth 1 --branch '{branch}' '{ssh_url}' /srv/app; "
+            + git_env +
+            f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
             "npm install --no-audit --no-fund --loglevel=error; "
             + proxy_step + start
@@ -287,7 +376,8 @@ def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     expires_at: datetime, ttl_seconds: int, cfg: PreviewConfig,
                     *, image: str | None = None, app_port: int | None = None,
                     repo: str = "", branch: str = "", kind: str = "ui",
-                    api_proxy_target: str | None = None) -> dict[str, str]:
+                    api_proxy_target: str | None = None,
+                    auth_mode: str = "ssh") -> dict[str, str]:
     """Plan 08 §D: `image` (D4 — the PR image; defaults to the cfg placeholder)
     and `app_port` (the app's port inside the container; Service/Ingress publish
     80 → targetPort). When `cfg.external_host_template` is set, also generates
@@ -321,7 +411,8 @@ metadata:
 """
     if cfg.mode == "source":
         deploy = _source_deployment(namespace, labels, cfg, repo=repo, branch=branch,
-                                    kind=kind, api_proxy_target=api_proxy_target)
+                                    kind=kind, api_proxy_target=api_proxy_target,
+                                    auth_mode=auth_mode)
         port = cfg.source_port
     else:
         deploy = f"""apiVersion: apps/v1
@@ -768,20 +859,29 @@ def trigger_preview_core(
         sibling_ns, sibling_alive = db.live_sibling_preview_namespace(inp.work_item_id)
         api_proxy_target = resolve_fe_api_target(sibling_ns, sibling_alive, cfg)
 
+    # G-1' — a credencial de clone: secret semeada (precedência) ou
+    # installation token da App, mintado AGORA. Resolvida ANTES dos manifestos
+    # porque o modo decide o script do pod (SSH vs HTTPS+helper).
+    auth_mode, auth_material = resolve_preview_credential(cfg, inp.repo)
+    if auth_mode is None:
+        auth_mode = "ssh"  # sem credencial: o erro nomeado vem do hook abaixo
+
     try:
         manifests = build_manifests(namespace, inp.work_item_id, inp.tenant_id, expires_at, ttl, cfg,
                                     image=pr_image, app_port=app_port,
                                     repo=inp.repo, branch=branch, kind=kind,
-                                    api_proxy_target=api_proxy_target)
+                                    api_proxy_target=api_proxy_target,
+                                    auth_mode=auth_mode)
         if cfg.apply_mode == "kubectl":
-            def _seed_key() -> None:
-                if not materialize_deploy_key(cfg, namespace, inp.repo):
+            def _seed_credential() -> None:
+                if not auth_material:
                     raise RuntimeError(
-                        f"no deploy key seeded for {inp.repo} (G-1: private repos need a "
-                        f"read-only key in the {cfg.deploy_keys_secret} secret — see "
-                        f"deploy/vps/preview-deploy-keys.md)"
+                        f"no clone credential for {inp.repo}: the GitHub App is not "
+                        f"configured and no deploy key is seeded in "
+                        f"{cfg.deploy_keys_secret} (see deploy/vps/preview-deploy-keys.md)"
                     )
-            _apply_manifests(cfg, manifests, after_namespace=_seed_key)
+                apply_preview_credential(cfg, namespace, auth_mode, auth_material)
+            _apply_manifests(cfg, manifests, after_namespace=_seed_credential)
         else:
             gitops.write_preview_dir(cfg.repo_dir, namespace, manifests)
             ensure_applicationset(cfg)
