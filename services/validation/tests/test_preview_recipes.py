@@ -42,6 +42,34 @@ def _cfg() -> PreviewConfig:
     return cfg
 
 
+def test_an_angular_component_ts_only_change_is_ui_not_deployable():
+    """(2) — a lacuna de glob medida junto do wi_cc72b204: `.ts` está em
+    `deployable_globs` e NÃO estava em `ui_path_globs` (que tinha .tsx/.jsx/
+    .vue/.svelte, mas não o `.ts` do Angular). Um change só-de-`.component.ts`
+    num FE Angular classificava como backend e ganhava a receita Java.
+
+    O glob é `**/*.component.ts` — convenção inequívoca de Angular, então um
+    backend Node em TypeScript (`src/server.ts`) segue `deployable`, que é o
+    correto. Sobre os DEFAULTS DO CONTRATO, não sobre uma cópia local: é o que
+    a produção usa."""
+    from dse_contracts.activities import TriggerPreviewInput
+    from dse_validation.preview.paths_filter import preview_decision
+
+    defaults = TriggerPreviewInput(
+        work_item_id="wi_x", tenant_id="t", repo="o/r", pr_number=1, files_changed=[],
+    )
+    kind, _ = preview_decision(
+        ["src/app/admin/grid-payout/grid-payout.component.ts"],
+        defaults.ui_path_globs, defaults.deployable_globs,
+    )
+    assert kind == "ui", "componente Angular é UI, não serviço deployável"
+
+    kind_be, _ = preview_decision(
+        ["src/server.ts"], defaults.ui_path_globs, defaults.deployable_globs,
+    )
+    assert kind_be == "deployable", "backend Node em TS continua deployable"
+
+
 def test_g1_private_repo_clone_is_authenticated_by_deploy_key():
     """4/4 medido: `fatal: could not read Username` — clone HTTPS anônimo
     contra org privada. O clone vai por SSH com a deploy key read-only do
