@@ -96,6 +96,28 @@ def _insert_sibling(conn, *, source_ref: dict, tenant_id: str) -> str:
     return sib
 
 
+def test_a_reply_in_an_orphan_thread_is_refused_with_guidance_not_admitted(fake_slack):
+    """F2, o fantasma 1611 reproduzido: resposta humana numa thread que não
+    correlaciona a item nenhum → ZERO itens criados e orientação postada na
+    hora — nunca um work item indespachável de kind não-task."""
+    conn = psycopg2.connect(DSN)
+    try:
+        before = _work_items_count(conn)
+        result = _post_event({
+            "type": "message", "channel": _CH, "user": "U_ORPHAN",
+            "text": "main", "ts": "7777.000200", "thread_ts": "7777.000100",
+        })
+        assert result["path"] == "refused_non_task", (
+            "kind não-task sem correlação não vira tarefa — era o caminho do "
+            "fantasma processed=false eterno"
+        )
+        assert _work_items_count(conn) == before, "zero fantasmas"
+        assert fake_slack.ephemeral_calls, "a orientação chega na hora, no canal"
+        assert "conversa da tarefa" in fake_slack.ephemeral_calls[-1]["text"]
+    finally:
+        conn.close()
+
+
 def test_a_reply_to_the_bots_question_reaches_the_item_not_a_new_task(fake_slack):
     """A sequência exata do "main" (ingest 1611): bot pergunta, humano responde
     na mensagem do bot → o item recebe o clarification_answer; ZERO itens
