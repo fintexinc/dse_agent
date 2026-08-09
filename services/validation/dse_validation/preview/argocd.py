@@ -284,13 +284,33 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             "JAR=$(ls target/*.jar | grep -v plain | head -1); "
             "exec java -jar \"$JAR\""
         )
+        # Contrato de datasource MEDIDO no repo (2026-08-09, timebox de uma
+        # passada): o app usa `spring.datasource.jdbc-url` (estilo Hikari), e
+        # `SPRING_DATASOURCE_URL` NÃO liga nele — relaxed binding do Boot mapeia
+        # para `spring.datasource.url`, chave que este app não lê. O repo expõe
+        # os próprios placeholders (`${BMO_DB_URL}` etc.), que é o que
+        # funciona. `SPRING_FLYWAY_ENABLED=true` porque o repo desabilita o
+        # Flyway por padrão e o preview PRECISA da migração da PR aplicada.
+        #
+        # Os nomes específicos do repo aqui são a ponte do POC. O mecanismo
+        # geral (G7 no backlog) é o repo DECLARAR seu env de preview no
+        # `.dse/validation.json`, do mesmo jeito que já declara o build — a
+        # plataforma não deveria conhecer o nome de variável de um cliente.
         env_yaml = f"""            - name: SERVER_PORT
               value: "{port}"
+            - name: SPRING_FLYWAY_ENABLED
+              value: "true"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres:5432/preview"
+              value: "jdbc:postgresql://postgres:5432/{cfg.preview_db_name}"
             - name: SPRING_DATASOURCE_USERNAME
               value: "preview"
             - name: SPRING_DATASOURCE_PASSWORD
+              value: "preview"
+            - name: BMO_DB_URL
+              value: "jdbc:postgresql://postgres:5432/{cfg.preview_db_name}"
+            - name: BMO_DB_USER
+              value: "preview"
+            - name: BMO_DB_PASSWORD
               value: "preview"
 """
         probe_yaml = f"""          readinessProbe:
@@ -485,7 +505,7 @@ metadata:
           image: postgres:16-alpine
           env:
             - name: POSTGRES_DB
-              value: "preview"
+              value: "{cfg.preview_db_name}"
             - name: POSTGRES_USER
               value: "preview"
             - name: POSTGRES_PASSWORD

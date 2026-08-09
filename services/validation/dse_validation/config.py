@@ -853,6 +853,11 @@ class PreviewConfig:
             "DSE_PREVIEW_DEPLOY_KEYS_SECRET", "dse-preview-deploy-keys"
         )
         self.dse_namespace = os.environ.get("DSE_NAMESPACE", "dse")
+        # Nome do banco efêmero do preview `deployable`. Default `fee` porque o
+        # testbed Java declara `hibernate.default_catalog: fee` — no Postgres,
+        # catalog é o BANCO, então um nome diferente faz o Hibernate emitir
+        # `fee.tabela` contra um banco que não existe.
+        self.preview_db_name = os.environ.get("DSE_PREVIEW_DB_NAME", "fee")
         self.ingress_class = os.environ.get("DSE_PREVIEW_INGRESS_CLASS", "traefik")
         # plan 08 §D (D4): port the PR's APP listens on inside the container
         # (Service/Ingress always publish 80 → targetPort=app_port).

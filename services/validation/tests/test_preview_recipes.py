@@ -184,7 +184,10 @@ def test_g2_deployable_kind_builds_with_the_repos_own_ruler():
     assert "java -jar" in y
     assert "npm install" not in y, "npm não pertence à receita deployable"
     assert "tcpSocket" in y, "readiness por socket — actuator é opcional no repo"
-    assert "SPRING_DATASOURCE_URL" in y, "o app aponta para o Postgres efêmero"
+    # contrato MEDIDO no repo: jdbc-url (Hikari) não liga em
+    # SPRING_DATASOURCE_URL; os placeholders do próprio repo, sim.
+    assert "BMO_DB_URL" in y and "postgres:5432" in y, "o app aponta para o Postgres efêmero"
+    assert "SPRING_FLYWAY_ENABLED" in y, "a migração da PR precisa rodar (repo desabilita por padrão)"
 
 
 def test_g2_deployable_manifests_include_ephemeral_postgres():
