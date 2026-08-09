@@ -2008,6 +2008,9 @@ _SKILLS_NOTE_CHARS = 2_000
 #: Referência de spec das skills do repo: uma spec completa cabe folgada; o
 #: cap protege o prompt de um arquivo de referência acidental gigante.
 _REFERENCE_SPEC_CHARS = 4_000
+#: Fonte do sujeito na ordem de reauthor (par ts+html por spec): componentes
+#: de UI cabem folgados; o cap protege o prompt de um sujeito gigante.
+_SUBJECT_SOURCE_CHARS = 3_000
 
 
 def _run_pod_command(argv: list[str], *, timeout: int, input_text: str | None = None):
@@ -2945,6 +2948,50 @@ def _pod_reauthor_partition(pod_sh, ordered: list[str]) -> tuple[list[str], list
     return owned, refused
 
 
+def _subject_candidates_for_spec(spec_path: str) -> list[str]:
+    """Espelho determinístico do mapeamento da porta 1, do lado da ordem: a
+    spec aponta seu sujeito por convenção de nome — tira o marcador `-dse` e o
+    sufixo de teste — e o sujeito Angular vem em par (.ts + .html)."""
+    base = spec_path.replace("-dse.spec.", ".spec.").replace("-dse.test.", ".test.")
+    for suf in (".spec.ts", ".spec.js", ".test.ts", ".test.js"):
+        if base.endswith(suf):
+            stem = base[: -len(suf)]
+            return [stem + ".ts", stem + ".html"]
+    return []
+
+
+def _reauthor_order_feedback(
+    owned_ordered: list[str], reauthor_context: str, read_source
+) -> str:
+    """O prompt da ORDEM: instrução humana + evidência (reauthor_context, com
+    o comment do veredito na frente) + a FONTE do sujeito — a peça que o turno
+    de reauthor perdia: o diff do contexto é `git show HEAD`, que na ordem é o
+    commit anterior do PRÓPRIO Tester, e o modelo reescrevia a spec de um
+    componente que não podia ver (wi_53c820f1: signal input clobrado e
+    data-test inventado). `read_source` é o leitor bounded (Pod ou fs)."""
+    parts = [
+        "A human reviewed the repeated failure of your OWN spec file(s) "
+        "and ORDERED them re-authored: the failing assertions are wrong, "
+        "the production code is right. Rewrite EXACTLY these files, at "
+        "these exact paths, asserting the behaviour the production code "
+        f"actually has: {', '.join(owned_ordered)}"
+    ]
+    sources: list[str] = []
+    for spec_path in owned_ordered:
+        for sub in _subject_candidates_for_spec(spec_path):
+            body = (read_source(sub) or "").strip()
+            if body:
+                sources.append(f"// {sub}\n{body}")
+    if sources:
+        parts.append(
+            "## Source under test (READ-ONLY — the spec must match THIS: "
+            "signal inputs via fixture.componentRef.setInput, real data-test "
+            "values, rendered labels)\n" + "\n\n".join(sources)
+        )
+    parts.append((reauthor_context or "")[-1500:])
+    return "\n\n".join(parts)
+
+
 def _reauthor_missing(owned_ordered: list[str], reauthored_files: list[str]) -> list[str]:
     """O delta da ordem: o que foi ordenado COM posse e não foi reescrito.
     Miss total é caso particular (wi_6f00bf0a); o parcial foi medido no
@@ -3229,13 +3276,13 @@ def _tester_pod_sync(
                          "reason": "not_dse_authored_in_pod_git"},
             )
         if owned_ordered:
-            order_feedback = (
-                "A human reviewed the repeated failure of your OWN spec file(s) "
-                "and ORDERED them re-authored: the failing assertions are wrong, "
-                "the production code is right. Rewrite EXACTLY these files, at "
-                "these exact paths, asserting the behaviour the production code "
-                f"actually has: {', '.join(owned_ordered)}\n"
-                + (inp.reauthor_context or "")[-1500:]
+            order_feedback = _reauthor_order_feedback(
+                owned_ordered,
+                inp.reauthor_context or "",
+                lambda p: _pod_sh(
+                    f"cd /workspace && cat -- {_shlex.quote(p)} 2>/dev/null | "
+                    f"head -c {_SUBJECT_SOURCE_CHARS}"
+                ).stdout,
             )
             try:
                 order_ctx = _pod_tester_context(_pod_sh)

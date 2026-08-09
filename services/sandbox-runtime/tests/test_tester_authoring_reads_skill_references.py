@@ -137,6 +137,56 @@ def test_the_subject_source_in_the_prompt_is_what_fixes_the_mechanics(monkeypatc
     assert '[data-test="report-status-badge"]' in contents[0], "e o data-test é o REAL do template"
 
 
+def test_the_order_prompt_is_a_superset_of_the_authoring_prompt(monkeypatch):
+    """Invariante (delta zero medido em 2026-08-08, rc.52): TUDO que a autoria
+    original vê — package.json, exemplo, testes existentes, diff, nota de
+    skills, referência — a ordem de reauthor vê também, MAIS a fonte do
+    sujeito e a instrução humana. Os três vãos da família (forma da store,
+    instrução, fonte do sujeito) nasceram de campos presentes num caminho e
+    ausentes no outro; quem tirar um campo de um dos dois caminhos quebra
+    AQUI, não em produção."""
+    prompts: list[str] = []
+
+    def fake_chat_completion(*, messages, **_kw):
+        prompts.append(messages[0]["content"])
+        return SimpleNamespace(
+            content=json.dumps({"files": [{"path": "src/app/badge-dse.spec.ts", "content": "x"}]}),
+            cost_usd=0.01,
+        )
+
+    gw_stub = types.ModuleType("model_gateway_client.gateway_call")
+    gw_stub.chat_completion = fake_chat_completion
+    pkg_stub = types.ModuleType("model_gateway_client")
+    pkg_stub.gateway_call = gw_stub
+    monkeypatch.setitem(sys.modules, "model_gateway_client", pkg_stub)
+    monkeypatch.setitem(sys.modules, "model_gateway_client.gateway_call", gw_stub)
+
+    ctx = activities._pod_tester_context(_FakePodSh())
+    inp = RunTesterTurnInput(work_item_id="wi_test", tenant_id="t", instruction="badge")
+    activities._model_authored_test_script(inp, ctx, headers=None, virtual_key="vk")
+    feedback = activities._reauthor_order_feedback(
+        [_BADGE_SPEC], "EVIDENCE-TAIL", lambda p: _SUBJECT_SOURCES.get(p, ""),
+    )
+    activities._model_authored_test_script(
+        inp, ctx, headers=None, virtual_key="vk", error_feedback=feedback
+    )
+    authoring, order = prompts
+
+    anchors = {
+        "package_json": ctx.package_json,
+        "example_test": ctx.example_test,
+        "diff": ctx.diff,
+        "skills_note": ctx.skills_note.strip(),
+        "reference_spec": ctx.reference_spec.strip(),
+    }
+    for name, anchor in anchors.items():
+        assert anchor and anchor in authoring, f"autoria perdeu o campo {name}"
+        assert anchor in order, f"a ordem perdeu o campo {name} — o delta voltou"
+    # e os extras que SÓ a ordem tem
+    assert "Source under test" in order and "EVIDENCE-TAIL" in order
+    assert "Source under test" not in authoring
+
+
 def test_the_reference_content_in_the_prompt_is_what_completes_the_authoring(monkeypatch):
     prompts: list[str] = []
 
