@@ -1225,6 +1225,12 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
     the surface can render them as one thing."""
     primary = payload["work_item_id"]
     repos = [r for r in (payload.get("repos") or []) if r]
+    # F3 (wi_6e5c25bf): o base_branch RESOLVIDO vem do estado do workflow — a
+    # linha do primário ainda está NULL neste instante (o default `or "main"`
+    # do roteamento só chega ao banco depois), e o irmão que nascia vazio
+    # pulava o único branch onde o default mora e pedia a clarificação que o
+    # binding do canal já respondia.
+    resolved_base_branch = payload.get("base_branch") or None
     if not repos:
         return {"created": [], "group_id": primary}
 
@@ -1256,12 +1262,13 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
                             requester, data_class, task_class, idempotency_key,
                             group_id, status
                         )
-                        SELECT %s, tenant_id, source, source_ref, %s, base_branch,
+                        SELECT %s, tenant_id, source, source_ref, %s,
+                               COALESCE(%s, base_branch),
                                requester, data_class, task_class, %s, %s, 'new'
                           FROM work_items WHERE id = %s
                         ON CONFLICT (idempotency_key) DO NOTHING
                         """,
-                        (sib, repo, sib, primary, primary),
+                        (sib, repo, resolved_base_branch, sib, primary, primary),
                     )
                     # The payload is copied verbatim so the sibling's
                     # `load_work_item` reads the same task_content the primary

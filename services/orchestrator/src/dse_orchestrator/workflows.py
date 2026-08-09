@@ -1787,6 +1787,9 @@ class WorkItemLifecycleWorkflow:
                             "work_item_id": input.work_item_id,
                             "tenant_id": input.tenant_id,
                             "repos": repos[1:],
+                            # F3: o irmão herda o base_branch RESOLVIDO — a
+                            # linha do primário ainda está NULL aqui.
+                            "base_branch": input.base_branch,
                         },
                         start_to_close_timeout=timedelta(seconds=60),
                         retry_policy=RetryPolicy(maximum_attempts=3),

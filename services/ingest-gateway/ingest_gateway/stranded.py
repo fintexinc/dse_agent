@@ -87,6 +87,12 @@ STRANDED_HUMAN_WAIT_STATUSES = (
     "needs_clarification",
     "awaiting_repo_selection",
     "awaiting_plan_approval",
+    # porta 1 (rc.41): parque de conflito de spec — espera durável por um
+    # veredito humano (retry/reauthor), exatamente a semântica de
+    # awaiting_plan_approval. Faltava aqui desde que o status nasceu: o teste
+    # de totalidade só pegou quando a suite voltou a rodar (2026-08-09), e sem
+    # esta linha o sweep trataria um parque legítimo como item travado.
+    "spec_conflict",
     # post-PR: human review and human merge
     "review_ready",
     "merge_pending",
