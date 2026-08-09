@@ -109,6 +109,40 @@ def deploy_key_item_for(repo: str) -> str:
     return repo.replace("/", "__")
 
 
+def materialize_deploy_key(cfg: PreviewConfig, namespace: str, repo: str) -> bool:
+    """G-1 — copia a deploy key READ-ONLY do repo da secret AGREGADA (namespace
+    do DSE, semeada pelo operador) para a secret que o pod do preview monta.
+
+    Via kubectl, deliberadamente FORA do manifest set: em modo gitops o set
+    vira commit num repo de manifestos, e chave privada não vai para git — a
+    garantia é por construção, não por disciplina de quem edita depois.
+
+    O DSE nunca gera nem registra chave (decisão (a), 2026-08-09): só copia o
+    material que o operador semeou. Devolve False quando o repo não tem item
+    na agregada — o chamador degrada com motivo NOMEADO."""
+    item = deploy_key_item_for(repo)
+    try:
+        proc = _kubectl(cfg, [
+            "get", "secret", cfg.deploy_keys_secret, "-n", cfg.dse_namespace,
+            "-o", "jsonpath={.data." + item + "}",
+        ])
+    except RuntimeError:
+        return False
+    key_b64 = (getattr(proc, "stdout", "") or "").strip()
+    if not key_b64:
+        return False
+    _kubectl(cfg, ["apply", "-f", "-"], input_text=f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: {DEPLOY_KEY_SECRET}
+  namespace: {namespace}
+type: Opaque
+data:
+  key: {key_b64}
+""")
+    return True
+
+
 def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                        repo: str, branch: str, kind: str = "ui",
                        api_proxy_target: str | None = None) -> str:
@@ -524,7 +558,8 @@ def _put_preview_link_in_pr_body(
         logger.warning("writing the preview into the PR body failed (%s): %.200s", inp.work_item_id, exc)
 
 
-def _apply_manifests(cfg: PreviewConfig, manifests: dict[str, str]) -> None:
+def _apply_manifests(cfg: PreviewConfig, manifests: dict[str, str],
+                     *, after_namespace=None) -> None:
     """Apply the preview manifests straight to the cluster.
 
     The alternative is the GitOps path, where Argo CD is what actually creates
@@ -538,6 +573,11 @@ def _apply_manifests(cfg: PreviewConfig, manifests: dict[str, str]) -> None:
     single combined apply would race against the namespace existing.
     """
     _kubectl(cfg, ["apply", "-f", "-"], input_text=manifests["namespace.yaml"])
+    # G-1: a secret da deploy key entra ENTRE o namespace e o resto — o pod
+    # monta esse volume, e um pod aplicado antes da secret fica em
+    # ContainerCreating até o kubelet reconciliar.
+    if after_namespace is not None:
+        after_namespace()
     rest = "\n---\n".join(
         body for name, body in sorted(manifests.items()) if name != "namespace.yaml"
     )
@@ -734,7 +774,14 @@ def trigger_preview_core(
                                     repo=inp.repo, branch=branch, kind=kind,
                                     api_proxy_target=api_proxy_target)
         if cfg.apply_mode == "kubectl":
-            _apply_manifests(cfg, manifests)
+            def _seed_key() -> None:
+                if not materialize_deploy_key(cfg, namespace, inp.repo):
+                    raise RuntimeError(
+                        f"no deploy key seeded for {inp.repo} (G-1: private repos need a "
+                        f"read-only key in the {cfg.deploy_keys_secret} secret — see "
+                        f"deploy/vps/preview-deploy-keys.md)"
+                    )
+            _apply_manifests(cfg, manifests, after_namespace=_seed_key)
         else:
             gitops.write_preview_dir(cfg.repo_dir, namespace, manifests)
             ensure_applicationset(cfg)

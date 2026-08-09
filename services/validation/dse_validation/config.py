@@ -844,6 +844,15 @@ class PreviewConfig:
         # VPS hoje — nasce configurável e vazio; vazio = sem proxy (o shell
         # mostra o 404 real em vez de um alvo inventado).
         self.fe_api_fallback = os.environ.get("DSE_PREVIEW_FE_API_BASE", "")
+        # G-1: a secret AGREGADA que o operador semeia no namespace do DSE
+        # (runbook deploy/vps/preview-deploy-keys.md) — um item por repo, com a
+        # chave SSH read-only daquele repo. O DSE só COPIA dela para o
+        # namespace do preview; nunca gera nem registra chave (decisão (a):
+        # material de credencial é do operador).
+        self.deploy_keys_secret = os.environ.get(
+            "DSE_PREVIEW_DEPLOY_KEYS_SECRET", "dse-preview-deploy-keys"
+        )
+        self.dse_namespace = os.environ.get("DSE_NAMESPACE", "dse")
         self.ingress_class = os.environ.get("DSE_PREVIEW_INGRESS_CLASS", "traefik")
         # plan 08 §D (D4): port the PR's APP listens on inside the container
         # (Service/Ingress always publish 80 → targetPort=app_port).
