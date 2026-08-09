@@ -5,9 +5,16 @@ A preview lives in its own namespace (`preview-<work_item_id>`), created on
 demand, so the worker needs cluster-scoped permission — Kubernetes RBAC cannot
 scope a grant to a namespace NAME PATTERN, only to namespaces that already
 exist. That makes this the widest grant in the chart, so it is deliberately
-narrow in the other axis: exactly the four object kinds a preview is made of,
-and no secret/configmap/RBAC access at all. A compromised worker can create and
-delete preview namespaces; it cannot read a Secret anywhere in the cluster.
+narrow in the other axis: exactly the object kinds a preview is made of, and no
+configmap/RBAC access at all.
+
+Secrets (G-1', 2026-08-09): the preview needs its clone credential mounted from
+a Secret, so `create` is granted broadly (RBAC cannot name an object that does
+not exist yet) while read/modify is pinned by `resourceNames` to the single
+name the preview uses. A compromised worker can create Secrets and can
+read/modify ONLY `dse-preview-deploy-key` — never `dse-poc-secrets`, Vault's or
+Postgres's. The original property ("cannot read a Secret anywhere") is narrowed
+by exactly one name, deliberately and no further.
 
 Off by default. Turn it on only where previews actually run.
 */}}
@@ -34,6 +41,24 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # G-1' (2026-08-09): a credencial de clone (installation token da App, ou a
+  # deploy key semeada) é materializada como Secret NO NAMESPACE DO PREVIEW —
+  # é o que mantém o token fora do pod spec e de argv. Sem isto o provision
+  # morre em `secrets is forbidden` (medido em produção).
+  #
+  # `resourceNames` é o que preserva a propriedade declarada no cabeçalho: o
+  # worker só lê/altera secrets com ESTE nome exato — `dse-poc-secrets`, as do
+  # Vault e as do Postgres seguem inalcançáveis. `create` não aceita
+  # resourceNames (a RBAC do k8s não conhece o nome antes do objeto existir),
+  # então ele fica amplo: o worker pode CRIAR uma secret qualquer, o que não
+  # dá leitura de nada.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["dse-preview-deploy-key"]
+    verbs: ["get", "update", "patch", "delete"]
   # Read-only: `kubectl wait` watches the Deployment, and reading pod status is
   # how a stuck preview gets diagnosed. No exec, no logs, no delete.
   - apiGroups: [""]
