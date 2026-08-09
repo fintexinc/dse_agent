@@ -4137,7 +4137,10 @@ class WorkItemLifecycleWorkflow:
         await self._audit(
             "preview_triggered",
             {"status": preview.status, "url": preview.url,
-             "namespace": preview.namespace, "reason": reason},
+             "namespace": preview.namespace, "reason": reason,
+             # Buraco de observabilidade medido (2026-08-09): o kind do
+             # paths-filter (ui/deployable) não estava no ledger.
+             "kind": getattr(preview, "kind", "")},
         )
 
         if preview.status in ("skipped_backend_only", "skipped_disabled"):

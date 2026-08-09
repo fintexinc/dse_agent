@@ -589,6 +589,38 @@ def count_active_previews(tenant_id: str) -> int:
         conn.close()
 
 
+def live_sibling_preview_namespace(work_item_id: str) -> tuple[str | None, bool]:
+    """G-3 degrau 2 (2026-08-09): o namespace de preview VIVO de um irmão de
+    group_id deste item — o backend para onde o proxy /api do FE aponta. Junta
+    `work_items` (grupo) com `wse_previews` (preview created e não-reaped, TTL
+    válido). Retorna `(namespace, True)` do irmão vivo mais recente, ou
+    `(None, False)` — degrau 1. Nunca casa o próprio item (só IRMÃOS)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.namespace
+                  FROM work_items me
+                  JOIN work_items sib
+                    ON COALESCE(sib.group_id, sib.id) = COALESCE(me.group_id, me.id)
+                   AND sib.id <> me.id
+                  JOIN wse_previews p ON p.work_item_id = sib.id
+                 WHERE me.id = %s
+                   AND p.status = 'created' AND p.reaped_at IS NULL
+                   AND (p.expires_at IS NULL OR p.expires_at > now())
+                   AND p.namespace IS NOT NULL
+                 ORDER BY p.created_at DESC
+                 LIMIT 1
+                """,
+                (work_item_id,),
+            )
+            row = cur.fetchone()
+            return (row[0], True) if row else (None, False)
+    finally:
+        conn.close()
+
+
 def list_oldest_active_previews(tenant_id: str, limit: int = 1) -> list[dict[str, Any]]:
     """The eviction queue for the cap (operator decision 2026-07-23): cap full =>
     the oldest yields its slot to the new PR.

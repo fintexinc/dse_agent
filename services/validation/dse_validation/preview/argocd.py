@@ -82,39 +82,136 @@ def namespace_for(work_item_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Manifests of the minimal preview (pinned nginx serving the default page)
 # ---------------------------------------------------------------------------
+def resolve_fe_api_target(
+    sibling_namespace: str | None, sibling_alive: bool, cfg: PreviewConfig
+) -> str | None:
+    """G-3 — o alvo do proxy /api do preview FE, em dois degraus:
+    degrau 2 (precedência): o irmão de group_id com preview VIVO — o svc
+    in-cluster derivado do namespace (proxy é server-side no ng serve; DNS do
+    cluster resolve, sem depender de ingress); degrau 1: o alvo estável
+    configurado (`fe_api_fallback`). Sem alvo → None → sem proxy: o 404 real
+    aparece em vez de um alvo inventado."""
+    if sibling_alive and sibling_namespace:
+        return f"http://preview.{sibling_namespace}.svc.cluster.local"
+    return cfg.fe_api_fallback or None
+
+
+#: G-1 — a deploy key read-only do repo, montada de secret no namespace do
+#: preview. O nome é fixo por namespace; o CONTEÚDO é a key do repo daquele
+#: preview (copiada de `dse-preview-deploy-keys` do namespace do DSE).
+DEPLOY_KEY_SECRET = "dse-preview-deploy-key"
+
+
+def deploy_key_item_for(repo: str) -> str:
+    """Nome do item dentro da secret agregada `dse-preview-deploy-keys` no
+    namespace do DSE: um por repo, slug determinístico (k8s data keys aceitam
+    [-._a-zA-Z0-9])."""
+    return repo.replace("/", "__")
+
+
 def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
-                       repo: str, branch: str) -> str:
+                       repo: str, branch: str, kind: str = "ui",
+                       api_proxy_target: str | None = None) -> str:
     """Deployment that runs the PR branch straight from source.
 
     No image is built anywhere in this path, and that is the whole point: this
     cluster has no Docker daemon and no registry, so every variant that starts
     with `docker build` is unreachable here by construction. The container
-    clones the branch, installs dependencies and starts the app — enough for the
-    interpreted stacks where a preview earns its keep.
+    clones the branch, installs dependencies and starts the app.
 
-    The clone is unauthenticated, so this covers PUBLIC repos only. A private
-    repo would need a token mounted into a pod that also runs arbitrary code
-    from the branch, which is a credential exposure the preview surface does not
-    justify — it stays out of scope until previews run somewhere isolated.
+    G-1 (2026-08-09, medido 4/4): o clone vai por SSH com a deploy key
+    READ-ONLY do próprio repo, montada de secret no namespace — o limite do
+    antigo docstring ("a token in a pod running arbitrary branch code") é
+    respeitado por construção: a key não alcança nada além do repo que o pod
+    já ia clonar.
 
-    Readiness is deliberately patient: `npm install` on a cold container easily
-    outlasts a default probe, and an impatient probe would report a healthy
-    build as a failed one.
+    G-2: a receita segue o `kind` do paths-filter — `ui` = npm (como sempre);
+    `deployable` = o comando de build do PRÓPRIO .dse/validation.json (a régua
+    do L1, `commands.build[2]` via jq — nunca uma segunda receita), jar, e
+    datasource apontando para o Postgres efêmero do namespace (Flyway do app
+    migra no boot).
+
+    G-3: `api_proxy_target` (ui) gera proxy.preview.json NO DEPLOY — nunca
+    commitado no repo do cliente — e o ng serve o consome via --proxy-config.
+
+    Readiness is deliberately patient: install/build on a cold container easily
+    outlasts a default probe.
     """
-    url = f"https://github.com/{repo}.git"
+    ssh_url = f"git@github.com:{repo}.git"
     port = cfg.source_port
     period = 5
     failure_threshold = max(6, cfg.source_ready_timeout_s // period)
+    git_env = (
+        "export GIT_SSH_COMMAND='ssh -i /preview-keys/key "
+        "-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes'; "
+    )
     # Single-quoted in the shell and injected from values the DSE itself
     # generated (repo slug, `dse/<work_item_id>` branch) — never from PR text.
-    script = (
-        "set -eu; "
-        "apk add --no-cache git >/dev/null 2>&1 || true; "
-        f"git clone --depth 1 --branch '{branch}' '{url}' /srv/app; "
-        "cd /srv/app; "
-        "npm install --no-audit --no-fund --loglevel=error; "
-        f"PORT={port} exec npm start"
-    )
+    if kind == "deployable":
+        image = cfg.deployable_image
+        script = (
+            "set -eu; " + git_env +
+            "(apt-get update >/dev/null 2>&1 && "
+            "apt-get install -y --no-install-recommends git jq openssh-client "
+            ">/dev/null 2>&1) || "
+            "apk add --no-cache git jq openssh-client >/dev/null 2>&1 || true; "
+            f"git clone --depth 1 --branch '{branch}' '{ssh_url}' /srv/app; "
+            "cd /srv/app; "
+            "BUILD_CMD=$(jq -r '.commands.build[2]' .dse/validation.json); "
+            "sh -c \"$BUILD_CMD\"; "
+            "JAR=$(ls target/*.jar | grep -v plain | head -1); "
+            "exec java -jar \"$JAR\""
+        )
+        env_yaml = f"""            - name: SERVER_PORT
+              value: "{port}"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://postgres:5432/preview"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "preview"
+            - name: SPRING_DATASOURCE_PASSWORD
+              value: "preview"
+"""
+        probe_yaml = f"""          readinessProbe:
+            tcpSocket: {{ port: {port} }}
+            periodSeconds: {period}
+            failureThreshold: {failure_threshold}
+"""
+        resources_yaml = """          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits: { cpu: "1", memory: "1536Mi" }
+"""
+    else:
+        image = cfg.source_image
+        proxy_step = ""
+        start = f"PORT={port} exec npm start"
+        if api_proxy_target:
+            proxy_conf = json.dumps({"/api": {
+                "target": api_proxy_target, "changeOrigin": True, "secure": False,
+            }})
+            proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
+            start = f"PORT={port} exec npm start -- --proxy-config proxy.preview.json"
+        script = (
+            "set -eu; " + git_env +
+            "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
+            f"git clone --depth 1 --branch '{branch}' '{ssh_url}' /srv/app; "
+            "cd /srv/app; "
+            "npm install --no-audit --no-fund --loglevel=error; "
+            + proxy_step + start
+        )
+        env_yaml = f"""            - name: PORT
+              value: "{port}"
+            - name: NODE_ENV
+              value: "development"
+"""
+        probe_yaml = f"""          readinessProbe:
+            httpGet: {{ path: /, port: {port} }}
+            periodSeconds: {period}
+            failureThreshold: {failure_threshold}
+"""
+        resources_yaml = """          resources:
+            requests: { cpu: "50m", memory: "192Mi" }
+            limits: { cpu: "500m", memory: "768Mi" }
+"""
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -131,33 +228,32 @@ metadata:
       labels:
         app: preview
     spec:
+      volumes:
+        - name: deploy-key
+          secret:
+            secretName: {DEPLOY_KEY_SECRET}
+            defaultMode: 256
       containers:
         - name: web
-          image: {cfg.source_image}
+          image: {image}
           command: ["sh", "-c"]
           args:
             - {json.dumps(script)}
+          volumeMounts:
+            - name: deploy-key
+              mountPath: /preview-keys
+              readOnly: true
           ports:
             - containerPort: {port}
           env:
-            - name: PORT
-              value: "{port}"
-            - name: NODE_ENV
-              value: "development"
-          resources:
-            requests: {{ cpu: "50m", memory: "192Mi" }}
-            limits: {{ cpu: "500m", memory: "768Mi" }}
-          readinessProbe:
-            httpGet: {{ path: /, port: {port} }}
-            periodSeconds: {period}
-            failureThreshold: {failure_threshold}
-"""
+{env_yaml}{resources_yaml}{probe_yaml}"""
 
 
 def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     expires_at: datetime, ttl_seconds: int, cfg: PreviewConfig,
                     *, image: str | None = None, app_port: int | None = None,
-                    repo: str = "", branch: str = "") -> dict[str, str]:
+                    repo: str = "", branch: str = "", kind: str = "ui",
+                    api_proxy_target: str | None = None) -> dict[str, str]:
     """Plan 08 §D: `image` (D4 — the PR image; defaults to the cfg placeholder)
     and `app_port` (the app's port inside the container; Service/Ingress publish
     80 → targetPort). When `cfg.external_host_template` is set, also generates
@@ -190,7 +286,8 @@ metadata:
     janitor/ttl: "{ttl_seconds}s"  # kube-janitor upgrade path (see docstring)
 """
     if cfg.mode == "source":
-        deploy = _source_deployment(namespace, labels, cfg, repo=repo, branch=branch)
+        deploy = _source_deployment(namespace, labels, cfg, repo=repo, branch=branch,
+                                    kind=kind, api_proxy_target=api_proxy_target)
         port = cfg.source_port
     else:
         deploy = f"""apiVersion: apps/v1
@@ -233,6 +330,69 @@ metadata:
       targetPort: {port}
 """
     manifests = {"namespace.yaml": ns, "deployment.yaml": deploy, "service.yaml": svc}
+
+    # G-2: Postgres efêmero no namespace para o preview `deployable` — o app
+    # Spring aponta seu datasource para o Service `postgres` e o Flyway/JPA do
+    # PRÓPRIO app migra no boot (a migração da PR viaja no jar). emptyDir: o
+    # dado morre com o namespace no TTL, que é exatamente o que se quer.
+    if kind == "deployable":
+        manifests["postgres.yaml"] = f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {namespace}
+  labels:
+{labels}spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      volumes:
+        - name: data
+          emptyDir: {{}}
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: "preview"
+            - name: POSTGRES_USER
+              value: "preview"
+            - name: POSTGRES_PASSWORD
+              value: "preview"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec: {{ command: ["pg_isready", "-U", "preview", "-d", "preview"] }}
+            periodSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests: {{ cpu: "50m", memory: "128Mi" }}
+            limits: {{ cpu: "500m", memory: "512Mi" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {namespace}
+  labels:
+{labels}spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+"""
 
     hostname = cfg.external_hostname_for(namespace)
     if hostname:
@@ -560,10 +720,19 @@ def trigger_preview_core(
         if cfg.mode == "source" else cfg.sync_timeout_s
     )
 
+    # G-3 degrau 2: se este item tem um irmão de group_id com preview VIVO, o
+    # proxy /api do FE aponta para o backend dele (svc in-cluster). Só para
+    # kind=ui; deployable não faz proxy.
+    api_proxy_target = None
+    if kind == "ui":
+        sibling_ns, sibling_alive = db.live_sibling_preview_namespace(inp.work_item_id)
+        api_proxy_target = resolve_fe_api_target(sibling_ns, sibling_alive, cfg)
+
     try:
         manifests = build_manifests(namespace, inp.work_item_id, inp.tenant_id, expires_at, ttl, cfg,
                                     image=pr_image, app_port=app_port,
-                                    repo=inp.repo, branch=branch)
+                                    repo=inp.repo, branch=branch, kind=kind,
+                                    api_proxy_target=api_proxy_target)
         if cfg.apply_mode == "kubectl":
             _apply_manifests(cfg, manifests)
         else:
@@ -586,7 +755,7 @@ def trigger_preview_core(
             )
         return PreviewRef(
             work_item_id=inp.work_item_id, pr_number=inp.pr_number,
-            status="degraded", namespace=namespace, detail=detail[:900],
+            status="degraded", namespace=namespace, detail=detail[:900], kind=kind,
         )
 
     # plan 08 §D (D3): external URL (browser-reachable) when configured;

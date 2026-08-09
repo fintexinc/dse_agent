@@ -833,6 +833,17 @@ class PreviewConfig:
         # `{namespace}` is substituted. When set, build_manifests also generates
         # the INGRESS with that hostname (otherwise no Ingress is created).
         self.external_host_template = os.environ.get("DSE_PREVIEW_EXTERNAL_HOST", "")
+        # G-2 (2026-08-09): imagem da receita `deployable` (kind do
+        # paths-filter). O build vem do .dse/validation.json do repo (a régua
+        # do L1); a imagem só precisa de JDK — jq/git/ssh instalados no boot.
+        self.deployable_image = os.environ.get(
+            "DSE_PREVIEW_DEPLOYABLE_IMAGE", "eclipse-temurin:17-jdk"
+        )
+        # G-3 degrau 1: alvo estável do proxy /api do preview FE quando não há
+        # irmão com preview vivo. MEDIDO 2026-08-09: não existe API estável na
+        # VPS hoje — nasce configurável e vazio; vazio = sem proxy (o shell
+        # mostra o 404 real em vez de um alvo inventado).
+        self.fe_api_fallback = os.environ.get("DSE_PREVIEW_FE_API_BASE", "")
         self.ingress_class = os.environ.get("DSE_PREVIEW_INGRESS_CLASS", "traefik")
         # plan 08 §D (D4): port the PR's APP listens on inside the container
         # (Service/Ingress always publish 80 → targetPort=app_port).

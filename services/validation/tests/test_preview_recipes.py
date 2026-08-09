@@ -85,21 +85,17 @@ def test_g2_deployable_manifests_include_ephemeral_postgres():
     assert "name: postgres" in joined, "Service `postgres` para o datasource"
 
 
-def test_g2_kind_is_recorded_in_the_ledger(monkeypatch, tmp_path):
-    """Buraco de observabilidade medido: preview_triggered não grava o kind —
-    a autópsia precisou inferir ui/deployable pelos arquivos."""
-    events: list[dict] = []
-
-    def _recorder(**kw):
-        events.append(kw)
-
-    monkeypatch.setattr(argocd, "audit_emit", _recorder)
+def test_g2_kind_is_recorded_in_the_ledger(tmp_path):
+    """Buraco de observabilidade medido: o kind (ui/deployable) do paths-filter
+    não chegava ao ledger — o `preview_triggered` do workflow lê `preview.kind`,
+    então o core tem que devolvê-lo mesmo no caminho DEGRADADO (o 4/4 medido).
+    Antes do fix o PreviewRef degradado vinha com kind=''."""
     cfg = _cfg()
     cfg.kube_context = "k3d-cluster-that-does-not-exist"
     cfg.repo_dir = str(tmp_path / "repo")
     cfg.sync_timeout_s = 5
     import uuid
-    argocd.trigger_preview_core(
+    ref = argocd.trigger_preview_core(
         TriggerPreviewInput(
             work_item_id=f"wi_kind_{uuid.uuid4().hex[:10]}", tenant_id="dev-tenant",
             repo=_FE_REPO, pr_number=17,
@@ -107,11 +103,8 @@ def test_g2_kind_is_recorded_in_the_ledger(monkeypatch, tmp_path):
         ),
         cfg=cfg,
     )
-    triggered = [e for e in events if e.get("action") == "preview_triggered"]
-    assert triggered, "o trigger emite mesmo degradando (medido em produção)"
-    assert triggered[0]["details"].get("kind") == "ui", (
-        "o kind do paths-filter pertence ao ledger"
-    )
+    assert ref.status == "degraded", "sem cluster, degrada (como em produção)"
+    assert ref.kind == "ui", "o kind do paths-filter viaja no PreviewRef até o ledger"
 
 
 def test_g3_fe_proxy_targets_the_live_sibling_or_the_fallback():
