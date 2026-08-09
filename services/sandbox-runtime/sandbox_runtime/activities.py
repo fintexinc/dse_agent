@@ -2962,9 +2962,16 @@ def _reauthor_script_writes(
     executou no vazio (wi_6f00bf0a: spec intacta, ordem consumida, zero
     evidência). Devolve também os caminhos VISTOS, crus: quando nada
     sobrevive, eles são a matéria do `tester_reauthor_missed`."""
+    def _stem_key(p: str) -> str:
+        # A deriva medida (wi_53c820f1): o modelo insere/remove o marcador
+        # `-dse` da casa antes do sufixo de teste. Stem-equivalência é SÓ isso
+        # — qualquer outra diferença continua caminho novo, recusado.
+        return p.replace("-dse.spec.", ".spec.").replace("-dse.test.", ".test.")
+
     accepted: list[tuple[str, str]] = []
     seen: list[str] = []
     owned = set(owned_ordered or [])
+    by_key = {_stem_key(o): o for o in owned}
     for s in (order_script or []):
         if s.get("tool") != "write_file":
             continue
@@ -2978,8 +2985,11 @@ def _reauthor_script_writes(
         if path.startswith("./"):
             path = path[2:]
         content = str(s.get("content") or "")
-        if path in owned and content:
-            accepted.append((path, content))
+        target = path if path in owned else by_key.get(_stem_key(path))
+        if target and content:
+            # A escrita aterrissa SEMPRE no caminho ordenado — a variante
+            # derivada nunca vira arquivo (o in-place da porta 5 é absoluto).
+            accepted.append((target, content))
     return accepted, seen
 
 
@@ -3262,7 +3272,11 @@ def _tester_pod_sync(
                         action="tester_spec_reauthored",
                         tenant_id=inp.tenant_id,
                         work_item_id=inp.work_item_id,
+                        # `script_write_paths` ao lado de `files` torna o
+                        # mapeamento da deriva visível: caminho visto ≠ caminho
+                        # escrito é a evidência do stem-remap.
                         details={"files": reauthored_files, "reason": "human_order",
+                                 "script_write_paths": script_paths_seen[:10],
                                  "cost_usd": order_cost},
                     )
             # O miss NUNCA é mudo — nem o PARCIAL (wi_53c820f1: ordenadas 2,

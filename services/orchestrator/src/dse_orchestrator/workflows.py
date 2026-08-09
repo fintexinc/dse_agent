@@ -454,6 +454,11 @@ class WorkItemLifecycleWorkflow:
         # --- Porta 1: deadlock de posse de spec (espera durável) ---
         self._spec_conflict_received = False
         self._spec_conflict_payload: dict[str, Any] | None = None
+        #: O comment do último veredito de spec_conflict — o canal de
+        #: INSTRUÇÃO do humano para a ordem de reauthor (wi_53c820f1: "estilo
+        #: por classe/atributo, nunca display computado" precisa chegar ao
+        #: prompt, não morrer no audit).
+        self._last_verdict_comment = ""
         # --- Phase 2: operator-driven budget retry (WSB-E4-T1) ---
         self._budget_raise_requested = False
         self._budget_new_max: float | None = None
@@ -1321,6 +1326,7 @@ class WorkItemLifecycleWorkflow:
         # do cenário wi_8edaef39 (park 2 "resolvido" sem nenhum signal novo).
         self._spec_conflict_received = False
         self._spec_conflict_payload = None
+        self._last_verdict_comment = str(payload.get("comment") or "")
         verdict = str(payload.get("verdict") or "").strip().lower()
         await self._audit(
             "spec_conflict_resolved",
@@ -2233,7 +2239,11 @@ class WorkItemLifecycleWorkflow:
                                     return await self._finish_cancelled()
                                 if resumed == "reauthor":
                                     input.reauthor_specs = pincer_specs
-                                    input.reauthor_context = pincer_detail[-1500:]
+                                    input.reauthor_context = (
+                                        (self._last_verdict_comment + "\n\n"
+                                         if self._last_verdict_comment else "")
+                                        + pincer_detail[-1500:]
+                                    )
                                     # o humano deu nova direção; o contador de
                                     # no-ops recomeça com ela
                                     self._noop_coder_turns = 0
@@ -2681,9 +2691,14 @@ class WorkItemLifecycleWorkflow:
                         # próxima rodada é do TESTER (re-autoria in-
                         # place). Nada de fix_context — um turno de
                         # Coder aqui perseguiria a asserção que o
-                        # humano acabou de julgar errada.
+                        # humano acabou de julgar errada. A INSTRUÇÃO do
+                        # veredito (comment) viaja na frente da evidência.
                         input.reauthor_specs = list(own_specs)
-                        input.reauthor_context = (exh_finding.detail or "")[-1500:]
+                        input.reauthor_context = (
+                            (self._last_verdict_comment + "\n\n"
+                             if self._last_verdict_comment else "")
+                            + (exh_finding.detail or "")[-1500:]
+                        )
                         await self._set_status(
                             WorkItemStatus.implementing,
                             audit_action="tester_reauthor_ordered",
