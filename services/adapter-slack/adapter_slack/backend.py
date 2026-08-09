@@ -133,17 +133,28 @@ class FakeSlackClient:
 
     _next_ts: float = 1000.0
     messages: dict[str, str] = field(default_factory=dict)  # ts -> text (current state)
+    #: ts -> thread_ts com que a mensagem foi postada (None = raiz de canal).
+    #: O harness precisa disto para simular a semântica REAL do Slack: responder
+    #: a uma mensagem threaded carrega o thread_ts da raiz; responder a uma
+    #: mensagem de canal cria thread nova com thread_ts = ts dela — exatamente a
+    #: bifurcação que fantasmou o "main" e o Approve (ingest 1611/1612).
+    message_threads: dict[str, str | None] = field(default_factory=dict)
     post_calls: list[dict] = field(default_factory=list)
     update_calls: list[dict] = field(default_factory=list)
     ephemeral_calls: list[dict] = field(default_factory=list)
     threads: dict[str, list[dict]] = field(default_factory=dict)  # "channel:ts" -> replies
     replies_calls: list[dict] = field(default_factory=list)
 
-    def chat_postMessage(self, *, channel: str, text: str, blocks: list | None = None) -> dict:
+    def chat_postMessage(
+        self, *, channel: str, text: str, blocks: list | None = None,
+        thread_ts: str | None = None,
+    ) -> dict:
         self._next_ts += 1
         ts = f"{self._next_ts:.6f}"
         self.messages[ts] = text
-        self.post_calls.append({"channel": channel, "text": text, "ts": ts, "blocks": blocks})
+        self.message_threads[ts] = thread_ts
+        self.post_calls.append({"channel": channel, "text": text, "ts": ts,
+                                "blocks": blocks, "thread_ts": thread_ts})
         return {"ok": True, "channel": channel, "ts": ts}
 
     def chat_update(self, *, channel: str, ts: str, text: str, blocks: list | None = None) -> dict:
