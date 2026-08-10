@@ -314,12 +314,13 @@ def _spec_subject_prefixes(spec_path: str) -> list[str]:
 def preexisting_spec_conflicts(
     test_detail: str, *, tester_owned: list[str], diff_files: list[str]
 ) -> list[str]:
-    """As specs que o L1 contou como falhando e que NENHUM ator deste item pode
-    consertar: não são do Tester do item (que repara as próprias) e testam um
-    sujeito que o diff tocou (o Coder as quebrou mas tem edição de teste
-    revertida). Porta 1 é escalar, não editar: isto DETECTA o impasse — julgar
-    "asserção obsoleta vs lógica errada" é semântico e pertence ao humano para
-    quem o workflow vai parar (não há sinal confiável no fix_context; medido)."""
+    """As specs que o L1 contou como falhando, que não são do Tester do item e
+    que testam um sujeito que o diff tocou. Desde 2026-08-10 o Coder PODE
+    editá-las (decisão de operador; a edição entra no diff da PR) — então o
+    parque não significa mais "ninguém pode agir": significa que a chance do
+    Coder (v3) rodou e o laço NÃO CONVERGIU. Julgar "asserção obsoleta vs
+    lógica errada" segue humano — mas o Retry com direcionamento agora é
+    efetivo, não anulado por revert."""
     owned = set(tester_owned or [])
     diffs = list(diff_files or [])
     out: list[str] = []
@@ -1302,19 +1303,25 @@ class WorkItemLifecycleWorkflow:
         if reason == "tester_spec_exhaustion":
             comment = (
                 "The Tester's OWN spec(s) keep failing identically and no actor "
-                "in the loop may act — the Coder cannot edit tests, the Tester "
-                "does not re-author a spec that delivered a verdict. A human "
-                "call is needed. Specs: " + ", ".join(specs)
+                "in the loop may act — the Coder cannot edit the Tester's "
+                "specs, the Tester does not re-author a spec that delivered a "
+                "verdict. A human call is needed. Specs: " + ", ".join(specs)
                 + (". Expected vs received: " + " | ".join(expected_vs_received)
                    if expected_vs_received else "")
                 + ". Diff files: " + ", ".join(diff_files)
                 + ". Failing assertions:\n" + assertions[:900]
             )
         else:
+            # Decisão de operador 2026-08-10: o Coder PODE editar spec de
+            # cliente (a edição entra no diff da PR). Este parque agora
+            # significa "o laço não convergiu" — a chance do Coder (v3) já
+            # rodou e as specs seguem quebradas; o Retry com direcionamento
+            # é efetivo, não mais anulado por revert.
             comment = (
-                "Pre-existing spec(s) broken by this change's diff — no actor in "
-                "the loop may edit them (Coder: test edits revert; Tester: own "
-                "specs only). Specs: " + ", ".join(specs)
+                "Pre-existing spec(s) still failing after the Coder's attempt "
+                "(the Coder MAY update customer specs since 2026-08-10; the "
+                "change lands in the PR diff for human review). Specs: "
+                + ", ".join(specs)
                 # O par Expected/Received também no parque de spec de cliente —
                 # é o dossiê mínimo legível do A6 (a renderização completa é
                 # B3/B4); só o de exaustão o trazia.

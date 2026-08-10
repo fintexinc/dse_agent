@@ -15,8 +15,11 @@ The three operations and the real incidents that produced them:
   - `restore_lockfile_churn`: npm rewrote 16 lines of package-lock.json with no
     change to the paired manifest, and diff_budget failed the task.
   - `revert_test_edits`: the Coder edited a shared test seed and broke a sibling
-    test — tests belong to the Tester; any test edit by the Coder is reverted to
-    the state at the start of the turn.
+    test (issue #1). Originally EVERY test edit reverted; desde a decisão de
+    operador de 2026-08-10, o revert protege apenas o INSTRUMENTO do laço — as
+    specs que o Tester autorou (autoria via histórico git, mesmo oráculo do
+    reauthor). Edição de spec pré-existente do CLIENTE sobrevive e entra no
+    diff da PR, onde o revisor humano a vê.
 """
 from __future__ import annotations
 
@@ -24,7 +27,12 @@ import logging
 import os
 import subprocess
 
-from dse_contracts.paths import is_disposable_artifact, is_test_path, lockfile_manifest_for
+from dse_contracts.paths import (
+    DSE_COMMIT_SUBJECT_PREFIXES,
+    is_disposable_artifact,
+    is_test_path,
+    lockfile_manifest_for,
+)
 
 try:
     from .scoped_git import NO_CUSTOMER_HOOKS
@@ -106,10 +114,47 @@ def restore_lockfile_churn(workspace_dir: str) -> list[str]:
     return restored
 
 
+def _has_tester_marker(rel: str) -> bool:
+    """O marcador de nome do Tester (`-dse`/`_dse`) — o fallback de autoria
+    quando não há histórico git (arquivo novo, git indisponível). Mesma regra
+    do `_is_dse_authored` de activities."""
+    name = rel.rsplit("/", 1)[-1]
+    stem = name.split(".", 1)[0]
+    return stem.endswith("-dse") or stem.endswith("_dse") or "-dse" in name or "_dse" in name
+
+
+def _is_platform_authored(workspace_dir: str, rel: str) -> bool:
+    """Autoria pelo histórico git: todo commit da plataforma é
+    subject-prefixado (`DSE_COMMIT_SUBJECT_PREFIXES`), então um arquivo cujo
+    histórico só tem esses subjects é do DSE; um commit humano em qualquer
+    ponto torna-o do CLIENTE. Sem histórico ou sem git: o marcador de nome
+    decide."""
+    try:
+        out = subprocess.run(
+            ["git", "log", "--format=%s", "--", rel],
+            cwd=workspace_dir, capture_output=True, text=True, timeout=15,
+        )
+        subjects = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        if subjects:
+            return all(s.startswith(DSE_COMMIT_SUBJECT_PREFIXES) for s in subjects)
+    except Exception:  # noqa: BLE001 — git indisponível: o marcador decide
+        pass
+    return _has_tester_marker(rel)
+
+
 def revert_test_edits(workspace_dir: str, turn_start_sha: str) -> list[str]:
-    """Revert ANY Coder change under test paths to the state at the start of the
-    turn: edit/removal → `git checkout <sha>`; new (untracked) → remove.
-    Best-effort. Returns the reverted paths."""
+    """Revert Coder changes to the tests the LOOP ITSELF authored — and only
+    those. Best-effort. Returns the reverted paths.
+
+    Decisão de operador (2026-08-10): specs pré-existentes do CLIENTE são
+    editáveis pelo Coder — a mudança entra no diff da PR e o revisor humano a
+    vê (o gate "o DSE nunca aprova o próprio trabalho" segue na PR). O que
+    permanece intocável pelo Coder é o INSTRUMENTO DE VERIFICAÇÃO do laço: as
+    specs que o Tester autorou (histórico git só com subjects da plataforma,
+    ou marcador `-dse` sem histórico) — sem isso o Coder pode enfraquecer no
+    meio do laço o teste que valida o próprio código. Arquivo NOVO de teste do
+    Coder em convenção de cliente é engenharia legítima e fica; arquivo novo
+    FORJANDO o marcador do Tester é removido."""
     try:
         porcelain = subprocess.run(
             ["git", "status", "--porcelain", "-uall"], cwd=workspace_dir,
@@ -130,9 +175,14 @@ def revert_test_edits(workspace_dir: str, turn_start_sha: str) -> list[str]:
             continue
         try:
             if status.strip() == "??":
+                # Novo e sem história: só o marcador denuncia forja de autoria.
+                if not _has_tester_marker(rel):
+                    continue
                 os.remove(os.path.join(workspace_dir, rel))
                 reverted.append(rel)
             else:
+                if not _is_platform_authored(workspace_dir, rel):
+                    continue  # spec do cliente: a edição sobrevive (2026-08-10)
                 proc = subprocess.run(
                     ["git", *NO_CUSTOMER_HOOKS, "checkout", turn_start_sha, "--", rel], cwd=workspace_dir,
                     capture_output=True, text=True, timeout=30,

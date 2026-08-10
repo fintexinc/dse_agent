@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from temporalio import activity
 
 from dse_audit import emit as audit_emit
+from dse_contracts.paths import DSE_COMMIT_SUBJECT_PREFIXES
 from dse_contracts import (
     ACTIVITY_CHECKPOINT_SANDBOX,
     ACTIVITY_PROVISION_SANDBOX,
@@ -2388,7 +2389,9 @@ def _model_authored_test_script(
 
 
 #: Commit subjects the platform writes for its own turns (scoped_git.commit).
-_DSE_COMMIT_PREFIXES = ("tester(", "coder(", "checkpoint(", "chore(dse)")
+# Fonte única em dse_contracts.paths (a regra que vive em cada call site
+# diverge — ver hooksPath); o alias preserva os usos locais.
+_DSE_COMMIT_PREFIXES = DSE_COMMIT_SUBJECT_PREFIXES
 
 
 def _is_dse_authored(path: str, workspace_dir: str | None = None) -> bool:
