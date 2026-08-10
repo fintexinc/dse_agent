@@ -150,6 +150,7 @@ class FakeSlackClient:
     ephemeral_calls: list[dict] = field(default_factory=list)
     threads: dict[str, list[dict]] = field(default_factory=dict)  # "channel:ts" -> replies
     replies_calls: list[dict] = field(default_factory=list)
+    views_open_calls: list[dict] = field(default_factory=list)
 
     def chat_postMessage(
         self, *, channel: str, text: str, blocks: list | None = None,
@@ -176,6 +177,13 @@ class FakeSlackClient:
         status message, so it must not count towards the 'exactly 1 post'
         invariant."""
         self.ephemeral_calls.append({"channel": channel, "user": user, "text": text})
+        return {"ok": True}
+
+    def views_open(self, *, trigger_id: str, view: dict) -> dict:
+        """Modal de direcionamento do Retry (A6). O fake só registra — o que os
+        testes pinam é O QUE foi aberto (callback_id/private_metadata), nunca a
+        renderização do Slack."""
+        self.views_open_calls.append({"trigger_id": trigger_id, "view": view})
         return {"ok": True}
 
     def conversations_replies(self, *, channel: str, ts: str) -> dict:

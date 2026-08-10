@@ -189,3 +189,48 @@ def test_approval_unexpected_status_is_declined_never_guesses(tenant_id, tempora
     )
     assert outcome == DispatchOutcome.DECLINED_UNEXPECTED_STATUS
     assert details["status"] == "implementing"
+
+
+# --------------------------------------------------------------------------
+# A6 (rc do canal mínimo) — vereditos de parque roteiam pelo MESMO encanamento
+# do Approve. Medido na cena do caso 3 (wi_bff43dc9/wi_d41d893b): o clique num
+# item em `spec_conflict` caía em `declined_unexpected_status` — o parque não
+# tinha rota, e a decisão humana só entrava por terminal (signal manual).
+# --------------------------------------------------------------------------
+def test_park_verdict_with_spec_conflict_routes_to_spec_conflict_resolution():
+    from dse_contracts.constants import SIGNAL_SPEC_CONFLICT_RESOLUTION
+
+    route = _route_signal(
+        "spec_conflict", "approval",
+        _payload("button:dse_park_retry=retry", park_verdict="retry",
+                 fix_context="o reducer novo renomeou o campo — atualize as specs"),
+    )
+    assert route.signal_name == SIGNAL_SPEC_CONFLICT_RESOLUTION
+    assert route.payload["verdict"] == "retry"
+    # O direcionamento viaja como `comment` — é o canal da rc.54: o comment do
+    # veredito vira instrução (fix_context) do turno seguinte do Coder.
+    assert route.payload["comment"] == (
+        "o reducer novo renomeou o campo — atualize as specs"
+    )
+    assert route.payload["actor"] == "usr_alice"
+
+
+def test_park_escalate_routes_with_the_escalate_verdict():
+    from dse_contracts.constants import SIGNAL_SPEC_CONFLICT_RESOLUTION
+
+    route = _route_signal(
+        "spec_conflict", "approval",
+        _payload("button:dse_park_escalate=escalate", park_verdict="escalate"),
+    )
+    assert route.signal_name == SIGNAL_SPEC_CONFLICT_RESOLUTION
+    assert route.payload["verdict"] == "escalate"
+    assert route.payload["comment"] == "button:dse_park_escalate=escalate"
+
+
+def test_a_plain_approval_on_spec_conflict_still_declines_never_guesses():
+    """Um clique de Approve/Reject de PLANO (sem marker de parque) num item em
+    spec_conflict continua recusado — P6: rota só com o marker determinístico
+    do botão de parque, nunca por adivinhação."""
+    route = _route_signal("spec_conflict", "approval", _payload("button:dse_plan_approve=approve"))
+    assert route.signal_name is None
+    assert route.reason == "unexpected_status"
