@@ -2053,7 +2053,53 @@ def _suite_verdict_deferred() -> bool:
     }
 
 
-def _tester_repo_context(workspace_dir: str) -> tuple[str, str, set[str]]:
+def _example_candidates(existing: set[str], diff_files: list[str]) -> list[str]:
+    """Os testes existentes em ordem de PROXIMIDADE do diff (D1).
+
+    O exemplo ensina fixtures, mocks e imports — e só ensina o certo se vier do
+    subsistema que a mudança tocou. Ordem: (1) o teste cujo STEM casa com um
+    arquivo do diff (`Foo.java` → `FooTest.java`, `foo.ts` → `foo.spec.ts`);
+    (2) o teste que compartilha o diretório mais profundo com algum arquivo do
+    diff; (3) o resto, por caminho, para ser determinístico.
+
+    Antes disto o exemplo era o primeiro que o `os.walk` topava — ordem do
+    sistema de arquivos — e num repo grande isso é um subsistema aleatório."""
+    def _stem(path: str) -> str:
+        return path.rsplit("/", 1)[-1].split(".", 1)[0]
+
+    diff_stems = {_stem(d) for d in diff_files}
+    diff_dirs = [d.rsplit("/", 1)[0] for d in diff_files if "/" in d]
+
+    def _shared_depth(rel: str) -> int:
+        parts = rel.split("/")
+        best = 0
+        for d in diff_dirs:
+            dp = d.split("/")
+            n = 0
+            for a, b in zip(parts, dp):
+                if a != b:
+                    break
+                n += 1
+            best = max(best, n)
+        return best
+
+    def _rank(rel: str) -> tuple[int, int, str]:
+        stem = _stem(rel)
+        # `FooTest`/`FooSpec`/`foo.spec` → o sujeito é o stem sem o sufixo
+        subject = stem
+        for suffix in ("Test", "Tests", "Spec", "IT"):
+            if subject.endswith(suffix) and len(subject) > len(suffix):
+                subject = subject[: -len(suffix)]
+                break
+        matches_stem = subject in diff_stems or stem in diff_stems
+        return (0 if matches_stem else 1, -_shared_depth(rel), rel)
+
+    return sorted(existing, key=_rank)
+
+
+def _tester_repo_context(
+    workspace_dir: str, diff_files: list[str] | None = None
+) -> tuple[str, str, set[str]]:
     """Deterministic context so authoring imitates the REAL repo (found in the
     real run: the model wrote Jest in a node:test repo with no deps and also
     overwrote the original test — nothing ever ran). Returns
@@ -2066,7 +2112,6 @@ def _tester_repo_context(workspace_dir: str) -> tuple[str, str, set[str]]:
     except OSError:
         pkg = "(no package.json — likely Python/pytest)"
     existing: set[str] = set()
-    example = ""
     for root, _dirs, files in os.walk(workspace_dir):
         if "/.git" in root or "/node_modules" in root:
             continue
@@ -2074,11 +2119,16 @@ def _tester_repo_context(workspace_dir: str) -> tuple[str, str, set[str]]:
             rel = os.path.relpath(os.path.join(root, f), workspace_dir)
             if is_test_path(rel):
                 existing.add(rel)
-                if not example:
-                    try:
-                        example = f"# {rel}\n" + open(os.path.join(root, f)).read()[:3000]
-                    except OSError:
-                        pass
+
+    example = ""
+    for rel in _example_candidates(existing, diff_files or []):
+        try:
+            with open(os.path.join(workspace_dir, rel), encoding="utf-8",
+                      errors="replace") as fh:
+                example = f"# {rel}\n" + fh.read()[:3000]
+            break
+        except OSError:
+            continue
     return pkg, example or "(no existing tests — use the ecosystem's default runner)", existing
 
 
@@ -2188,13 +2238,22 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         if rel and is_test_path(rel)
     }
     example = ""
+    # D1: os candidatos vêm por PROXIMIDADE DO DIFF, não em ordem alfabética —
+    # o exemplo ensina fixtures/mocks/imports e só ensina o certo se vier do
+    # subsistema que a mudança tocou (o alfabético entregava um subsistema
+    # aleatório, origem provável dos testes que não compilam).
+    changed = [
+        ln.strip() for ln in
+        _read("git show --name-only --pretty=format: HEAD", 4000).splitlines()
+        if ln.strip()
+    ]
     # `--` because `-` sorts before every other path character: a repository
     # file called `-e.test.js` would otherwise reach `cat` as an OPTION, return
     # rc 0 with empty output, and the prompt would say "no existing tests" while
     # listing those same tests as forbidden. And more than one candidate,
     # because the old local reader fell through to the next file when one could
     # not be read.
-    for candidate in sorted(existing)[:3]:
+    for candidate in _example_candidates(existing, changed)[:3]:
         body = _read(f"cat -- {_sh_quote(candidate)}", _EXAMPLE_TEST_CHARS)
         if body.strip():
             example = f"# {candidate}\n{body}"
@@ -2257,7 +2316,16 @@ def _local_tester_context(workspace_dir: str) -> _TesterContext:
         diff = proc.stdout[-_TESTER_DIFF_CHARS:]
     except Exception:  # noqa: BLE001 — the diff is context, not a requirement
         pass
-    package_json, example_test, existing_tests = _tester_repo_context(workspace_dir)
+    changed: list[str] = []
+    try:
+        names = _sp.run(["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+                        cwd=workspace_dir, capture_output=True, text=True, timeout=30)
+        changed = [ln.strip() for ln in names.stdout.splitlines() if ln.strip()]
+    except Exception:  # noqa: BLE001 — proximidade é melhoria, nunca requisito
+        pass
+    package_json, example_test, existing_tests = _tester_repo_context(
+        workspace_dir, diff_files=changed
+    )
     # Espelho do read de referência do caminho K8s ("the two paths must show
     # the model the same thing").
     reference_spec = ""
