@@ -522,3 +522,74 @@ def test_a_cursor_ahead_of_a_reset_source_rebuilds_the_read_model():
         conn.rollback()
         conn.close()
         _cleanup(wi_id)
+
+
+def test_a_repo_resolved_after_admission_reaches_the_console():
+    """O item PRIMÁRIO de um pedido do Slack nasce SEM repo — o roteamento o
+    resolve segundos depois (repo_routing_decided) e o writer do orquestrador
+    o grava com `repo = COALESCE(%s, repo)`, bumpando updated_at. O painel,
+    porém, mostrava "—" para sempre: o `ON CONFLICT DO UPDATE SET` do upsert
+    lista status/fase/título/PR e NÃO lista repo/base_branch/source_id, então
+    a PRIMEIRA projeção (repo NULL) vencia todas as seguintes.
+
+    Custo real (2026-08-10): o operador leu o "—" como "o DSE não identificou
+    o repositório do backend" e levantou a hipótese de que os itens do BE
+    rodavam sem repo — três verificações de ponta a ponta (banco, clone,
+    files_changed por turno) foram gastas para provar que a plataforma estava
+    certa e o painel, mentindo. Um painel que mente sobre a identidade do
+    trabalho custa mais que um painel que não mostra nada.
+    """
+    conn = psycopg2.connect(DSN)
+    wi_id = f"wi-crm-{uuid.uuid4().hex[:10]}"
+    try:
+        # nasce sem repo, como todo item primário vindo do Slack
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO work_items (id, tenant_id, source, source_ref, repo,
+                                        base_branch, requester, status, risk_class,
+                                        budget, idempotency_key)
+                VALUES (%s, 'crm-test', 'slack', %s::jsonb, NULL, NULL,
+                        'usr_test', 'queued', 'low', %s::jsonb, %s)
+                """,
+                (wi_id, json.dumps({"channel": "C1", "thread_ts": "1.0"}),
+                 json.dumps({"max_usd": 5.0}), f"idem-{wi_id}"),
+            )
+        conn.commit()
+        drain(conn)
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT repo FROM console_rm.work_items_view WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            assert cur.fetchone()["repo"] is None, "antes do roteamento não há repo"
+
+        # o roteamento resolve o repo (o writer real usa COALESCE + updated_at)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE work_items SET repo = %s, base_branch = %s, "
+                "status = 'implementing', updated_at = now() WHERE id = %s",
+                ("fintexinc/bmo-fee-calculator-be-dse", "main", wi_id),
+            )
+        conn.commit()
+        drain(conn)
+
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT repo, base_branch, source_id, status FROM "
+                "console_rm.work_items_view WHERE work_item_id = %s", (wi_id,),
+            )
+            wi = cur.fetchone()
+        assert wi["status"] == "running", "a mesma passada projetou o status novo"
+        assert wi["repo"] == "fintexinc/bmo-fee-calculator-be-dse", (
+            "o repo resolvido depois da admissão tem que chegar ao painel — "
+            "o '—' eterno mandou o operador caçar um bug que não existia"
+        )
+        assert wi["base_branch"] == "main"
+        assert wi["source_id"] == "fintexinc/bmo-fee-calculator-be-dse", (
+            "source_id deriva do repo: sem atualizá-lo o painel mostra o id cru"
+        )
+    finally:
+        _cleanup(wi_id)
+        conn.close()
