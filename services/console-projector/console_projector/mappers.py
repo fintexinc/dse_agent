@@ -18,6 +18,12 @@ STATUS_MAP: dict[str, tuple[str, str | None]] = {
     "ready": ("ready", None),
     "queued": ("queued", None),
     "awaiting_plan_approval": ("blocked", "plan approval"),
+    # Parque da porta 1/beco 1: parado esperando veredito humano — mesma
+    # família do plan approval. Faltou quando o status entrou no enum (rc.46);
+    # o KeyError deixou o control-plane vermelho DETERMINÍSTICO por dias,
+    # mascarado pela fama de flaky do grupo — e o console congelado na última
+    # projeção para todo item parqueado.
+    "spec_conflict": ("blocked", "spec conflict"),
     "implementing": ("running", "coding"),
     "validating": ("running", "validating"),
     "pr_open": ("pr_ready", "pr open"),
