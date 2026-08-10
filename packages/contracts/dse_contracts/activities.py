@@ -103,6 +103,13 @@ class CoderTurnResult(BaseModel):
     # projector uses this to tell a metered turn from a legacy one, so the same
     # money is never counted twice.
     ledger_id: int | None = None
+    #: Caminhos de teste que o post-turn REVERTEU por serem instrumento do
+    #: Tester (história git com commit `tester(`). O workflow precisa disto
+    #: para distinguir "o Coder não fez nada" de "o Coder tentou editar o
+    #: instrumento e a reversão desfez" — no wi_36acfb3d a segunda virou a
+    #: primeira e a escalação culpou o ator errado. Aditivo (histórias velhas
+    #: decodificam com []).
+    reverted_test_paths: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
