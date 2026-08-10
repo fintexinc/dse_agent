@@ -66,3 +66,20 @@ def test_a_plan_with_no_production_file_still_produces_a_usable_note():
     )
     assert "these files" not in note
     assert "Tester" in note, "as demais regras continuam valendo"
+
+
+def test_the_note_grants_the_permission_the_policy_grants():
+    """A nota dizia só o que é PROIBIDO. Desde a decisão de operador de
+    2026-08-10 o Coder PODE atualizar spec de cliente — e um ator que nunca é
+    autorizado não exerce a permissão. Medido: o item parou três vezes num
+    impasse que ele tinha permissão de resolver."""
+    note = plan_constraints_note(_FILES)
+    low = note.lower()
+    assert "customer" in low or "pre-existing" in low, (
+        "a nota precisa NOMEAR a spec do cliente como editável — hoje ela só "
+        "fala do que é proibido"
+    )
+    assert "pr diff" in low or "pull request" in low, (
+        "a permissão vem com a sua contrapartida: a mudança fica visível na PR"
+    )
+    assert "tester" in low, "a fronteira que sobrevive continua nomeada"
