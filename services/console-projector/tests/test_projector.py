@@ -30,6 +30,41 @@ from conftest import DSN
 _SUPER_DSN = DSN.replace("dse_app:dse_app_dev_only", "dse:dse_dev_only")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _serials_above_every_known_run_key():
+    """The visible sources restart their BIGSERIALs per disposable schema, but
+    console_rm.runs_view keys runs by the GLOBAL `<source>:<serial>`. A row from
+    another incarnation of the sources — dev data, or debris a best-effort
+    cleanup missed — can therefore squat a small serial, and the projector's
+    ON CONFLICT (run_key) DO NOTHING swallows this run's insert silently (the
+    exact-count assertions below go red without anything being wrong with the
+    code under test). Deleting squatters is not an option: on a shared database
+    they may be another incarnation's REAL rows. Instead, move this run's
+    serials past every run_key console_rm has ever seen — collision becomes
+    impossible by construction. Uses the migration role (sequence setval), like
+    _cleanup; no-ops when Postgres is away (_require_postgres skips the tests)."""
+    try:
+        conn = psycopg2.connect(_SUPER_DSN)
+    except Exception:
+        yield
+        return
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(max(split_part(run_key, ':', 2)::bigint), 0) "
+                "FROM console_rm.runs_view WHERE run_key ~ '^(audit|ledger):[0-9]+$'"
+            )
+            top = int(cur.fetchone()[0])
+            for seq in ("audit_log_id_seq", "model_call_ledger_id_seq"):
+                cur.execute(
+                    f"SELECT setval('{seq}', GREATEST((SELECT last_value FROM {seq}), %s) + 1, true)",
+                    (top,),
+                )
+    finally:
+        conn.close()
+    yield
+
+
 def _cleanup(wi_id: str) -> None:
     """Teardown using the migration role (dse_app cannot delete from the ledger —
     correct: the read model inherits the SoR's discipline). Best-effort."""
@@ -414,3 +449,76 @@ def test_a_backfilled_turn_stays_single_across_a_full_replay():
     finally:
         _cleanup(wi_id)
         conn.close()
+
+
+def test_a_cursor_ahead_of_a_reset_source_rebuilds_the_read_model():
+    """The disposable-schema harness (with_test_database, the CI boundary)
+    restarts every BIGSERIAL at 1, while console_rm — schema-qualified, so
+    database-global — survives OUTSIDE the boundary carrying the cursors of a
+    previous incarnation of the sources. `id > cursor` then matches nothing and
+    drain() "converges" having projected nothing: the work_items_view row is
+    there (timestamp cursor; now() is globally monotonic) but last_event=None
+    and runs_view stays empty. An append-only source can only be BEHIND its id
+    cursor when it is not the same source anymore, and the only correct cursor
+    for a reset source is 0 — full replay, the documented DR path, idempotent
+    by design. This pins that deterministically in EVERY environment by moving
+    the cursor beyond anything the visible sources will ever show this run.
+
+    Asserts only work_item-scoped surfaces plus the cursor position. runs_view
+    is keyed by the GLOBAL run_key `<source>:<serial id>`, so in a shared
+    console_rm a leftover row from another incarnation of the sources can squat
+    the key and ON CONFLICT DO NOTHING swallows the insert — counting it here
+    would be nondeterministic exactly in the environments this test exists for.
+    Run content stays pinned (exact counts and cost) by the tests above, which
+    run against same-incarnation ids."""
+    conn = psycopg2.connect(DSN)
+    wi_id = f"wi-crm-{uuid.uuid4().hex[:10]}"
+    try:
+        _seed(conn, wi_id)
+        floors: dict[str, int] = {}
+        with conn.cursor() as cur:
+            for source in ("audit_log", "model_call_ledger"):
+                cur.execute(f"SELECT COALESCE(max(id), 0) FROM {source}")
+                floors[source] = cur.fetchone()[0]
+                cur.execute(
+                    "INSERT INTO console_rm.projection_cursor (source) VALUES (%s) "
+                    "ON CONFLICT (source) DO NOTHING",
+                    (source,),
+                )
+                cur.execute(
+                    "UPDATE console_rm.projection_cursor SET last_id = %s + 1000000 "
+                    "WHERE source = %s",
+                    (floors[source], source),
+                )
+        conn.commit()
+        drain(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT last_event FROM console_rm.work_items_view WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            wi = cur.fetchone()
+            assert wi is not None
+            assert "coder turn completed" in (wi["last_event"] or "")
+            cur.execute(
+                "SELECT count(*) AS n FROM console_rm.timeline_events WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            assert cur.fetchone()["n"] == 2
+            # the cursor landed ON the source it can see, not beyond it — a fix
+            # that clamped to max(id) instead of replaying from 0 would keep the
+            # timeline assertion above red; one that replayed without advancing
+            # goes red here (>= not ==: a live projector may advance it further).
+            for source, floor in floors.items():
+                cur.execute(
+                    "SELECT last_id FROM console_rm.projection_cursor WHERE source = %s",
+                    (source,),
+                )
+                last_id = cur.fetchone()["last_id"]
+                assert floor <= last_id < floors[source] + 1000000, (
+                    f"{source} cursor still points at the previous incarnation: {last_id}"
+                )
+    finally:
+        conn.rollback()
+        conn.close()
+        _cleanup(wi_id)

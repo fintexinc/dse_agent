@@ -63,6 +63,30 @@ def _advance(cur, source: str, *, last_id: int | None = None, last_seen=None,
     )
 
 
+def _effective_last_id(cur, source: str, last_id: int) -> int:
+    """An id cursor is only meaningful against the incarnation of the source it
+    was advanced on. audit_log and model_call_ledger are append-only BIGSERIALs,
+    so max(id) BELOW the cursor means the table was reset under a surviving read
+    model (a disposable test schema restarting serials at 1; a restored
+    database) — trusting the cursor then leaves the projector permanently blind:
+    `id > cursor` matches nothing and every pass converges on 0. The only
+    correct cursor for a reset source is 0 — full replay, the documented DR
+    path, idempotent by design. `source` doubles as the table name for both id
+    sources (literal call sites, never user input)."""
+    if last_id <= 0:
+        return last_id
+    cur.execute(f"SELECT COALESCE(max(id), 0) AS max_id FROM {source}")
+    max_id = int(cur.fetchone()["max_id"])
+    if max_id >= last_id:
+        return last_id
+    logger.warning(
+        "%s regressed below its cursor (max %s < cursor %s) — source was reset; "
+        "rebuilding the read model from 0 (DR replay)",
+        source, max_id, last_id,
+    )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # work_items -> work_items_view
 # ---------------------------------------------------------------------------
@@ -196,6 +220,7 @@ def _project_evidence(cur) -> int:
 
 def _project_audit(cur) -> int:
     last_id, _, _ = _cursor(cur, "audit_log")
+    last_id = _effective_last_id(cur, "audit_log", last_id)
     cur.execute(
         "SELECT id, ts, work_item_id, tenant_id, actor, action, details FROM audit_log "
         "WHERE id > %s AND work_item_id IS NOT NULL ORDER BY id LIMIT %s",
@@ -299,6 +324,7 @@ def _maybe_run_from_audit(cur, row) -> None:
 
 def _project_ledger(cur) -> int:
     last_id, _, _ = _cursor(cur, "model_call_ledger")
+    last_id = _effective_last_id(cur, "model_call_ledger", last_id)
     cur.execute(
         "SELECT id, tenant_id, work_item_id, stage, model, cost_usd, tokens_in, tokens_out, created_at "
         "FROM model_call_ledger WHERE id > %s ORDER BY id LIMIT %s",
