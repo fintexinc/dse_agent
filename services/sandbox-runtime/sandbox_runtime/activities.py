@@ -866,6 +866,7 @@ async def _run_coder_turn_impl(
                     details={"paths": items[:20]},
                 )
         files_changed = list(post.files_changed)
+        reverted_test_paths = list(post.reverted_tests or [])
     else:
         # Layer 2 (deterministic, P1): delete NEW (untracked) files that are
         # obvious CLI JUNK (unsolicited report/log/scratch) before the commit —
@@ -907,11 +908,9 @@ async def _run_coder_turn_impl(
 
         _restore_lockfile_churn_audited(workspace_dir, inp.tenant_id, inp.work_item_id, stage="coder")
 
-        # The Coder does NOT own the tests — the Tester authors them in ISOLATED
-        # files (found in the real run on issue #1: the Coder edited the shared
-        # seed in test/api.test.js and broke a pre-existing SIBLING test → the fix
-        # cycle never converges, because fixing summary.js does not fix the test).
-        # Revert ANY Coder change under test paths to the turn's starting state.
+        # Desde 2026-08-10 o revert protege só o INSTRUMENTO do Tester
+        # (autoria via histórico git; ver workspace_hygiene.revert_test_edits);
+        # edição de spec de cliente e arquivos do próprio Coder sobrevivem.
         reverted_tests = _revert_coder_test_edits(workspace_dir, base_sha)
         if reverted_tests:
             audit_emit(
@@ -919,8 +918,10 @@ async def _run_coder_turn_impl(
                 action="coder_test_edits_reverted",
                 tenant_id=inp.tenant_id,
                 work_item_id=inp.work_item_id,
-                details={"reverted": reverted_tests[:20], "reason": "tests belong to the Tester stage"},
+                details={"reverted": reverted_tests[:20],
+                         "reason": "tester-authored instrument"},
             )
+        reverted_test_paths = list(reverted_tests)
 
         # Deterministic commit/push — the substrate never has git access.
         git_session = ScopedGitSession(workspace_dir=workspace_dir, branch=branch)
@@ -964,6 +965,7 @@ async def _run_coder_turn_impl(
         sandbox_id=artifacts.sandbox_id,
         diff_summary=artifacts.diff_summary,
         files_changed=files_changed or artifacts.files_changed,
+        reverted_test_paths=reverted_test_paths,
         cost_usd=artifacts.cost_usd,
         tokens_in=artifacts.tokens_in,
         tokens_out=artifacts.tokens_out,
