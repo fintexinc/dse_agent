@@ -299,6 +299,8 @@ orchestrator:
   # item in 9m14s (~$108/h), and review_round_cap permits roughly $60 by design.
   # 0 disables the ceiling and restores that behaviour.
   defaultWorkItemMaxUsd: 25.0
+  # Turnos do Coder por item. Compartilhado com o laço do Tester.
+  coderRetryCap: 3
   workerVersioning:
     enabled: false
     buildId: "dev"

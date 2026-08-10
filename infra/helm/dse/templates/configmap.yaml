@@ -68,6 +68,9 @@ data:
   # Per-WorkItem dollar ceiling applied when work_items.budget carries no
   # max_usd of its own — which is every item today. 0 disables it.
   DSE_DEFAULT_WORK_ITEM_MAX_USD: {{ .Values.orchestrator.defaultWorkItemMaxUsd | quote }}
+  # Teto de TENTATIVAS do Coder (turnos), distinto do teto de GASTO acima:
+  # foi ele que encerrou os itens do dia com ~US$ 3,59 de 25 gastos.
+  DSE_CODER_RETRY_CAP: {{ .Values.orchestrator.coderRetryCap | quote }}
   DSE_WORKER_USE_VERSIONING: {{ ternary "true" "false" .Values.orchestrator.workerVersioning.enabled | quote }}
   DSE_WORKER_BUILD_ID: {{ .Values.orchestrator.workerVersioning.buildId | quote }}
   DSE_EGRESS_PORT: {{ .Values.egressProxy.port | quote }}

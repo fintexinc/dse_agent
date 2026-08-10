@@ -62,6 +62,14 @@ _ghcrTag: &ghcrTag "v0.1.0-rc.70"
 # bursts (an agent turn, a LiteLLM boot) are still absorbed. Requests are a
 # scheduling promise, not a quota — sizing them for peak wastes the whole node.
 orchestrator:
+  # Decisão de operador (2026-08-10): teto de GASTO desligado (0 = sem teto) e
+  # teto de TENTATIVAS ampliado. O que vinha encerrando os itens era o de
+  # tentativas (3 turnos), não o de gasto — os itens morriam com ~US$ 3,59 de
+  # 25 disponíveis. Exposição aceita: sem o teto de gasto, um laço patológico
+  # não tem mais freio automático; o freio passa a ser o cap de turnos e o
+  # olho do operador.
+  defaultWorkItemMaxUsd: 0
+  coderRetryCap: 8
   replicas: 1                  # POC: 1 replica on the 2-core node (HA out of scope; frees ~400m of CPU)
   image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.70", digest: "" }
   resources:
