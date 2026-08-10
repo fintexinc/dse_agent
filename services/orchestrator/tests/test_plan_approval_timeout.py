@@ -54,7 +54,9 @@ from dse_orchestrator.local_activities import (
     _STATUS_BODIES,
     check_clarification_completeness,
     emit_history_metric,
+    resolve_budget_cap,
     resolve_plan_approver,
+    resolve_retry_caps,
 )
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import (
@@ -153,6 +155,15 @@ def build_db_free_activities(ledger: _Ledger, state: FakeControlPlane) -> list[A
         check_clarification_completeness,
         resolve_plan_approver,
         emit_history_metric,
+        # As duas pontes de env → workflow, também puras (só leem os. environ).
+        # Faltavam aqui, e o custo NÃO era zero: o workflow chama as duas, elas
+        # morriam em NotFoundError, e cada morte é uma tarefa de activity
+        # entregue, falhada e reagendada dentro de um ambiente time-skipping
+        # cujo relógio só anda em janela ociosa. Foi assim que
+        # test_verdict_landing_* caiu no CI de afb9616 sem reproduzir local.
+        # `resolve_budget_cap` já faltava antes de `resolve_retry_caps` existir.
+        resolve_budget_cap,
+        resolve_retry_caps,
     ] + build_fake_activities(state)
 
 

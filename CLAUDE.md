@@ -43,6 +43,11 @@ e um único processo resolve o primeiro para todos.
   Espera keyed em `work_items.status` trava para sempre; espere o status do WORKFLOW.
 - `_tail(stdout or stderr)` descarta stderr sempre que stdout é não-vazio — foi assim que
   todo gate L1 publicou a evidência errada por dois dias (#60). Cuidado com esse `or`.
+- `--suite services/orchestrator` **não roda a suite inteira**: os arquivos de
+  `SUITE_SHARDS` (`test_plan_approval_timeout.py`, `test_phase4_merge_base_and_learning.py`,
+  `test_iteration_caps_debounce.py`) só saem em `--group control-plane-slow`. Verde no
+  `--suite` com o CI vermelho nesses três já aconteceu. Ao tocar no orchestrator, rode os
+  DOIS grupos: `--group control-plane --group control-plane-slow`.
 
 ## Definição de pronto
 
