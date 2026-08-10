@@ -414,3 +414,61 @@ def test_a_backfilled_turn_stays_single_across_a_full_replay():
     finally:
         _cleanup(wi_id)
         conn.close()
+
+
+def test_a_cursor_ahead_of_a_reset_source_rebuilds_the_read_model():
+    """The disposable-schema harness (with_test_database, the CI boundary)
+    restarts every BIGSERIAL at 1, while console_rm — schema-qualified, so
+    database-global — survives OUTSIDE the boundary carrying the cursors of a
+    previous incarnation of the sources. `id > cursor` then matches nothing and
+    drain() "converges" having projected nothing: the work_items_view row is
+    there (timestamp cursor; now() is globally monotonic) but last_event=None
+    and runs_view stays empty. An append-only source can only be BEHIND its id
+    cursor when it is not the same source anymore, and the only correct cursor
+    for a reset source is 0 — full replay, the documented DR path, idempotent
+    by design. This pins that deterministically in EVERY environment by moving
+    the cursor beyond anything the visible sources will ever show this run."""
+    conn = psycopg2.connect(DSN)
+    wi_id = f"wi-crm-{uuid.uuid4().hex[:10]}"
+    try:
+        _seed(conn, wi_id)
+        with conn.cursor() as cur:
+            for source in ("audit_log", "model_call_ledger"):
+                cur.execute(
+                    "INSERT INTO console_rm.projection_cursor (source) VALUES (%s) "
+                    "ON CONFLICT (source) DO NOTHING",
+                    (source,),
+                )
+                cur.execute(
+                    f"UPDATE console_rm.projection_cursor SET last_id = "
+                    f"(SELECT COALESCE(max(id), 0) + 1000000 FROM {source}) "
+                    f"WHERE source = %s",
+                    (source,),
+                )
+        conn.commit()
+        drain(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT last_event FROM console_rm.work_items_view WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            wi = cur.fetchone()
+            assert wi is not None
+            assert "coder turn completed" in (wi["last_event"] or "")
+            cur.execute(
+                "SELECT count(*) AS n FROM console_rm.timeline_events WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            assert cur.fetchone()["n"] == 2
+            cur.execute(
+                "SELECT count(*) AS n, sum(cost_usd) AS cost FROM console_rm.runs_view "
+                "WHERE work_item_id = %s",
+                (wi_id,),
+            )
+            runs = cur.fetchone()
+            assert runs["n"] == 2
+            assert float(runs["cost"]) == pytest.approx(2.46)
+    finally:
+        conn.rollback()
+        conn.close()
+        _cleanup(wi_id)
