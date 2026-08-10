@@ -46,6 +46,11 @@ async def test_the_testers_own_uncompilable_specs_park_instead_of_dying(time_ski
         # correto hoje — o erro é do CÓDIGO, não desacordo teste-vs-código).
         tester_tests_passed=False,
         tester_returncode=2,
+        tester_failure_output=(
+            "[ERROR] /workspace/src/test/java/com/acme/"
+            "AdvisorFeeCalculationServiceTest.java:[42,9] cannot find symbol\n"
+            "  symbol:   method setRetired(boolean)\n"
+        ),
         coder_files_changed_by_turn=[["src/main/App.java"]],
     )
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"

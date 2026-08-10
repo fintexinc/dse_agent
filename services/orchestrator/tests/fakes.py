@@ -173,6 +173,9 @@ class FakeControlPlane:
     tester_tests_ran: bool = True
     tester_tests_passed: bool = True
     tester_returncode: int = 0
+    #: `failure_output` do turno — o texto que o workflow classifica (carga/
+    #: compilação morta = defeito do Tester; asserção falhando = do Coder).
+    tester_failure_output: str = ""
     l2_cost_usd: float = 0.0
     coder_cost_usd: float = 0.01
     # L2: fails N times (objections) before approving
@@ -289,6 +292,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             tests_ran=state.tester_tests_ran,
             tests_passed=state.tester_tests_passed,
             returncode=state.tester_returncode,
+            failure_output=state.tester_failure_output,
             cost_usd=state.tester_cost_usd,
         )
 

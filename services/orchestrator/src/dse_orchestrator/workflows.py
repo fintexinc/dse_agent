@@ -2534,6 +2534,63 @@ class WorkItemLifecycleWorkflow:
                     ):
                         input.coder_retry_count += 1
                         if input.coder_retry_count > input.coder_retry_cap:
+                            # O que o Tester escreveu é o que está reprovando, e
+                            # o cap acabou: o dono do defeito é o TESTER, e só
+                            # um humano pode mandá-lo reescrever (`reauthor`).
+                            # Morrer aqui deixava o humano sem dossiê e sem
+                            # saída — medido 2026-08-10 em toda a família do
+                            # dia (testes que nem compilam, rc=2).
+                            # ESTREITO de propósito: só quando a suíte morreu na
+                            # CARGA/COMPILAÇÃO (zero veredito — o que o Tester
+                            # escreveu não compila). Uma asserção falhando é
+                            # trabalho do CODER e continua indo ao cap como
+                            # sempre (pin test_an_ordinary_failing_suite_...).
+                            tester_own_defect = bool(
+                                _LOAD_FAILURE_MARK.search(
+                                    getattr(tester_result, "failure_output", "") or ""
+                                )
+                            )
+                            if (
+                                tester_own_defect
+                                and workflow.patched("tester-own-failure-parks-v1")
+                                and getattr(tester_result, "test_files", None)
+                            ):
+                                own_specs = list(tester_result.test_files)
+                                resumed = await self._park_spec_conflict(
+                                    own_specs,
+                                    "\n".join(self._tester_failure_context(tester_result)),
+                                    list(input.cumulative_files_changed),
+                                    reason="tester_spec_exhaustion",
+                                )
+                                if self._cancelled:
+                                    return await self._finish_cancelled()
+                                if resumed == "reauthor":
+                                    input.reauthor_specs = own_specs
+                                    input.reauthor_context = (
+                                        (self._last_verdict_comment + "\n\n"
+                                         if self._last_verdict_comment else "")
+                                        + "\n".join(self._tester_failure_context(tester_result))[-1500:]
+                                    )
+                                    input.coder_retry_count = 0
+                                    await self._set_status(
+                                        WorkItemStatus.implementing,
+                                        audit_action="tester_reauthor_ordered",
+                                        details={"specs": own_specs,
+                                                 "reason": "tester_spec_exhaustion"},
+                                    )
+                                    continue
+                                if resumed:
+                                    # O humano mandou seguir: a chance nova
+                                    # precisa de turnos, senão o cap volta a
+                                    # estourar na mesma linha.
+                                    input.coder_retry_count = 0
+                                    await self._set_status(
+                                        WorkItemStatus.implementing,
+                                        audit_action="spec_conflict_retry",
+                                        details={"specs": own_specs,
+                                                 "reason": "tester_spec_exhaustion"},
+                                    )
+                                    continue
                             return await self._finish_failed(
                                 "tester_failed_after_retry_cap",
                                 audit_action="tester_retry_cap_exhausted",
