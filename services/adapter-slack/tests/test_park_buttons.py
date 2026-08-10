@@ -204,6 +204,72 @@ def test_the_retry_click_opens_the_direction_modal_and_records_nothing_yet(fake_
         conn.close()
 
 
+def test_the_retry_modal_opens_through_the_real_ratelimit_wrapper(monkeypatch):
+    """MEDIDO em produção (2026-08-10 10:01:52, primeiro clique real do
+    canal): o Retry caiu em `AttributeError: 'RateLimitedSlackClient' object
+    has no attribute 'views_open'`. O fake dos testes tinha o método; o
+    wrapper REAL não — o fixture que troca `build_real_slack_client` pelo fake
+    puro escondeu exatamente a camada que quebrou. Este teste monta o wrapper
+    de produção em volta do fake, como `build_real_slack_client` monta em
+    volta do WebClient."""
+    import time as _time
+
+    from adapter_slack.ratelimit import RateLimitedSlackClient
+
+    fake = FakeSlackClient()
+    monkeypatch.setattr(
+        app_module, "build_real_slack_client",
+        lambda token, *, deadline: RateLimitedSlackClient(fake, deadline=_time.monotonic()),
+    )
+    _, post = _parked_item_with(fake, ts="9006.000100")
+    _post_interaction({
+        "type": "block_actions",
+        "trigger_id": "trig_9006",
+        "channel": {"id": _CH},
+        "message": {"ts": post["ts"], "thread_ts": post.get("thread_ts")},
+        "user": {"id": "U_PARK_REQ"},
+        "action_ts": "9006.000900",
+        "actions": [{"action_id": "dse_park_retry", "value": "retry"}],
+    })
+    assert fake.views_open_calls, (
+        "o wrapper de produção tem que expor views_open — sem isso o Retry "
+        "morre em AttributeError e o humano fica sem modal"
+    )
+
+
+def _parked_item_with(fake, *, ts: str) -> tuple[str, dict]:
+    """Como _parked_item, mas com um fake já embrulhado fora do fixture."""
+    from dse_identity import resolve_principal
+
+    created = _post_event({
+        "type": "app_mention", "channel": _CH, "ts": ts,
+        "user": "U_PARK_REQ", "text": f"park scenario {ts}",
+    })
+    work_item_id = created["work_item_id"]
+    conn = psycopg2.connect(DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE work_items SET status='spec_conflict' WHERE id=%s",
+                        (work_item_id,))
+            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
+            tenant_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
+                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                (tenant_id, resolve_principal("slack", "U_PARK_REQ")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    resp = client.post("/internal/status-comment", json={
+        "work_item_id": work_item_id, "channel": _CH,
+        "body": "Parqueado.", "actor": "system:orchestrator",
+        "status": "spec_conflict",
+    })
+    assert resp.status_code == 200
+    return work_item_id, fake.post_calls[-1]
+
+
 def test_the_modal_submission_records_retry_with_the_direction_as_fix_context(fake_slack):
     """A submissão do modal é o veredito: retry + o texto livre viajando como
     `fix_context` (rc.54: comment→instrução do Coder)."""
