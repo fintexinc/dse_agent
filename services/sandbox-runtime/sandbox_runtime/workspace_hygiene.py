@@ -123,12 +123,17 @@ def _has_tester_marker(rel: str) -> bool:
     return stem.endswith("-dse") or stem.endswith("_dse") or "-dse" in name or "_dse" in name
 
 
-def _is_platform_authored(workspace_dir: str, rel: str) -> bool:
-    """Autoria pelo histórico git: todo commit da plataforma é
-    subject-prefixado (`DSE_COMMIT_SUBJECT_PREFIXES`), então um arquivo cujo
-    histórico só tem esses subjects é do DSE; um commit humano em qualquer
-    ponto torna-o do CLIENTE. Sem histórico ou sem git: o marcador de nome
-    decide."""
+def _is_tester_instrument(workspace_dir: str, rel: str) -> bool:
+    """O arquivo é o INSTRUMENTO do laço — algo que o TESTER escreveu?
+
+    Polaridade importa (medido no wi_fadd43185, 2026-08-10): `coder(` também é
+    subject de plataforma, mas um arquivo com história só-de-`coder(` é
+    trabalho do PRÓPRIO Coder entre turnos — revertê-lo mata o trabalho dele
+    (o application-test.yml criado no turno 2 e revertido no turno 3 custou o
+    cap inteiro de retries). Instrumento é o que tem commit `tester(` na
+    história — E nenhum commit humano (commit humano em qualquer ponto torna o
+    arquivo do CLIENTE, editável pela decisão de 2026-08-10). Sem histórico ou
+    sem git: o marcador de nome decide."""
     try:
         out = subprocess.run(
             ["git", "log", "--format=%s", "--", rel],
@@ -136,7 +141,9 @@ def _is_platform_authored(workspace_dir: str, rel: str) -> bool:
         )
         subjects = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
         if subjects:
-            return all(s.startswith(DSE_COMMIT_SUBJECT_PREFIXES) for s in subjects)
+            all_platform = all(s.startswith(DSE_COMMIT_SUBJECT_PREFIXES) for s in subjects)
+            touched_by_tester = any(s.startswith("tester(") for s in subjects)
+            return all_platform and touched_by_tester
     except Exception:  # noqa: BLE001 — git indisponível: o marcador decide
         pass
     return _has_tester_marker(rel)
@@ -181,8 +188,8 @@ def revert_test_edits(workspace_dir: str, turn_start_sha: str) -> list[str]:
                 os.remove(os.path.join(workspace_dir, rel))
                 reverted.append(rel)
             else:
-                if not _is_platform_authored(workspace_dir, rel):
-                    continue  # spec do cliente: a edição sobrevive (2026-08-10)
+                if not _is_tester_instrument(workspace_dir, rel):
+                    continue  # do cliente OU do próprio Coder: a edição sobrevive
                 proc = subprocess.run(
                     ["git", *NO_CUSTOMER_HOOKS, "checkout", turn_start_sha, "--", rel], cwd=workspace_dir,
                     capture_output=True, text=True, timeout=30,
