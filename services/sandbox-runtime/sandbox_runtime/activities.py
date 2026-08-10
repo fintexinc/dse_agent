@@ -2559,6 +2559,19 @@ def plan_constraints_note(expected_files: list[str]) -> str:
         "you make to specs the TESTER authored are reverted before the commit. "
         "Fixing production code that a spec exposes is your job."
     )
+    # A nota dizia só o que era proibido. Um ator que nunca é autorizado não
+    # exerce a permissão: desde a decisão de operador de 2026-08-10 o Coder PODE
+    # atualizar spec PRÉ-EXISTENTE do repositório, e a supervisão passou a ser o
+    # diff da PR — mas o texto não acompanhou, e o item parou três vezes num
+    # impasse que ele tinha permissão de resolver.
+    lines.append(
+        "- A PRE-EXISTING spec of the repository (a customer spec) that your change "
+        "breaks IS yours to deal with: update the assertion when it pins behaviour "
+        "this task deliberately changed, or fix the code when it exposes a real "
+        "defect. That edit lands in the PR diff for human review — it is legitimate "
+        "work, not a violation. Never delete, skip or empty a test to make the suite "
+        "pass."
+    )
     lines.append(
         "- Do NOT create documentation/report files (README, *_REPORT.md, "
         "CHANGELOG…) — the change and the tests speak for themselves."

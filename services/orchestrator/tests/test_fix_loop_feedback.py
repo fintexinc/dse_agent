@@ -47,9 +47,16 @@ def test_the_suite_output_reaches_the_coder():
 
 
 def test_the_coder_is_told_not_to_delete_the_tests():
-    """The cheapest way to make a suite pass is to remove it. Say so."""
-    joined = "\n".join(WF._tester_failure_context(_tester(failure_output="boom")))
-    assert "do not weaken or delete the tests" in joined.lower()
+    """The cheapest way to make a suite pass is to remove it. Say so.
+
+    Evoluiu em 2026-08-10: a frase era ABSOLUTA ("do not weaken or delete the
+    tests") e passou a proibir o que a política concede — atualizar spec de
+    CLIENTE, cuja supervisão migrou para o diff da PR. O que este pin defende
+    continua valendo e ficou MAIS explícito: apagar cobertura nunca é conserto.
+    A permissão é para ATUALIZAR uma asserção obsoleta, nunca para deletar."""
+    joined = "\n".join(WF._tester_failure_context(_tester(failure_output="boom"))).lower()
+    assert "never delete, skip or empty a test" in joined
+    assert "deleting coverage is not fixing" in joined
 
 
 def test_missing_output_is_reported_as_missing_not_as_silence():
@@ -81,7 +88,7 @@ def test_a_real_failing_assertion_is_still_announced_as_one():
     failed.status = GateStatus.FAIL
     joined = "\n".join(WF._tester_failure_context(failed))
     assert "is FAILING" in joined
-    assert "do not weaken or delete the tests" in joined.lower()
+    assert "never delete, skip or empty a test" in joined.lower()
 
 
 def test_the_message_and_the_escalation_agree_on_what_ended_the_run():

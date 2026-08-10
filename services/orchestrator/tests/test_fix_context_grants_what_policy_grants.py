@@ -55,8 +55,11 @@ def test_the_tester_failure_note_does_not_forbid_what_policy_allows():
         "proibição ABSOLUTA: desde 2026-08-10 atualizar spec de CLIENTE é permitido, e "
         "esta frase é a última coisa que o Coder lê antes de agir"
     )
-    assert "Tester" in text, (
+    assert "tester" in text.lower(), (
         "a proibição que SOBREVIVE precisa ser nomeada: o instrumento do Tester"
+    )
+    assert "never delete" in text.lower(), (
+        "a permissão é para ATUALIZAR asserção obsoleta, nunca para apagar cobertura"
     )
 
 

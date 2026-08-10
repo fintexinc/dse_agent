@@ -852,9 +852,23 @@ class WorkItemLifecycleWorkflow:
                 f"{rc}) and its output was not captured. "
                 "Re-read the tests and the code under test, and look for the mismatch."
             ]
+        # A proibição era ABSOLUTA ("do not weaken or delete the tests") e, desde a
+        # decisão de operador de 2026-08-10, proíbe o que a política concede: spec do
+        # CLIENTE é editável, e a mudança entra no diff da PR para revisão humana. Como
+        # esta nota é a ÚLTIMA coisa que o Coder lê antes de agir, ela decidia o
+        # comportamento — o item parou três vezes num impasse que ele podia resolver.
+        # O que sobrevive é a fronteira que importa: o instrumento do Tester.
         return [
-            "The test suite you must satisfy is FAILING. Fix the code so it passes; "
-            "do not weaken or delete the tests.\n"
+            "The test suite you must satisfy is FAILING.\n"
+            "- If a spec THE TESTER wrote for this task is failing, fix the CODE. Those "
+            "specs are the loop's ruler and your edits to them are reverted.\n"
+            "- If a PRE-EXISTING spec of the repository is failing, judge it: when the "
+            "assertion pins behaviour this task deliberately changed, UPDATE the spec; "
+            "when it exposes a real defect in the new code, fix the code. Updating a "
+            "customer spec is legitimate work — it lands in the PR diff for human "
+            "review.\n"
+            "- NEVER delete, skip or empty a test to make the suite pass. Deleting "
+            "coverage is not fixing; update the assertion or fix the code.\n"
             f"Exit code: {getattr(tester_result, 'returncode', '?')}\n"
             f"Output:\n{output}"
         ]
@@ -943,9 +957,14 @@ class WorkItemLifecycleWorkflow:
             lines.append(f"- {f.check} [{status}]: {detail or 'no detail reported'}")
         if not lines:
             return []
+        # "change nothing else" era a segunda proibição absoluta que chegava ao Coder
+        # junto com a evidência da spec quebrada (2026-08-10). O objetivo da frase é
+        # conter o raio de explosão do conserto, e isso continua valendo — o que ela
+        # não pode fazer é vetar a atualização de uma spec de cliente que o próprio
+        # gate está apontando como reprovada.
         return [
-            "The L1 validation pipeline rejected the previous attempt. "
-            "Fix these, and change nothing else:\n" + "\n".join(lines)
+            "The L1 validation pipeline rejected the previous attempt. Fix exactly "
+            "these, without widening the change:\n" + "\n".join(lines)
         ]
 
     def _agent_instruction(self, *, include_objections: bool = False) -> str:
