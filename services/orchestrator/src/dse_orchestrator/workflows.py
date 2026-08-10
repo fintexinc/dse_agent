@@ -84,6 +84,7 @@ with workflow.unsafe.imports_passed_through():
         LOCAL_ACTIVITY_RECORD_SKILL_EPISODE,
         LOCAL_ACTIVITY_RESOLVE_APPROVER,
         LOCAL_ACTIVITY_RESOLVE_BUDGET_CAP,
+        LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS,
         LOCAL_ACTIVITY_ROUTE_REPOS,
         LOCAL_ACTIVITY_UPDATE_STATUS,
     )
@@ -481,6 +482,8 @@ class WorkItemLifecycleWorkflow:
         #: Rodadas consecutivas em que o L1 passou VERDE sobre diff vazio
         #: (wi_f1d2d66d): 1ª = retry com instrução nomeando o vazio; 2ª =
         #: failed nomeado, preemptando o breaker genérico de fingerprint.
+        #: A resolucao dos tetos de deploy roda uma vez por execucao.
+        self._retry_caps_resolved = False
         self._empty_diff_rounds = 0
         self._empty_diff_note: str | None = None
         #: Caminhos revertidos pela proteção de instrumento nos turnos no-op —
@@ -1477,6 +1480,56 @@ class WorkItemLifecycleWorkflow:
             {"boundary": boundary, "spent_usd": round(self._input.spent_usd, 6), "max_usd": cap},
         )
 
+    async def _resolve_deployment_retry_caps(self) -> None:
+        """Aplica os tetos de RETENTATIVA publicados pelo deploy.
+
+        Mesma razão de existir do `_resolve_default_budget` logo abaixo: o env
+        não é legível dentro do workflow, e o número resolvido precisa cair na
+        history para o replay ser determinístico.
+
+        Medido em 2026-08-10 (wi_82254f59, wi_fadd43185, wi_176dfa72): o
+        operador publicou `DSE_CODER_RETRY_CAP=8`, conferiu o env no pod, e os
+        itens continuaram morrendo em `l1_failed_after_3_retries` — porque o
+        dispatcher inicia o workflow com uma STRING e `_coerce_input` monta o
+        dataclass dos DEFAULTS. O teto virou decoração.
+
+        Roda UMA vez, na admissão, e só sobre valor ainda no default: quem
+        passou input completo (testes, scripts) continua mandando."""
+        if not workflow.patched("deployment-retry-caps-v1"):
+            return
+        if self._retry_caps_resolved:
+            return
+        self._retry_caps_resolved = True
+        try:
+            resolved = await workflow.execute_activity(
+                LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS,
+                {"work_item_id": self._input.work_item_id},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            # Falha aberta e RUIDOSA, como o irmão do orçamento: um worker
+            # antigo sem esta Activity registrada não pode travar o item.
+            logger.warning("resolve_retry_caps failed; keeping the input's caps")
+            await self._audit("retry_caps_unavailable", {})
+            return
+        published = resolved.get("coder_retry_cap")
+        if published is None:
+            return
+        default_cap = WorkItemLifecycleInput.__dataclass_fields__["coder_retry_cap"].default
+        if self._input.coder_retry_cap != default_cap:
+            # O chamador decidiu; o default de deploy não atropela decisão.
+            await self._audit(
+                "retry_caps_kept_from_input",
+                {"coder_retry_cap": self._input.coder_retry_cap, "published": published},
+            )
+            return
+        self._input.coder_retry_cap = int(published)
+        await self._audit(
+            "retry_caps_applied",
+            {"coder_retry_cap": self._input.coder_retry_cap, "source": "deployment_default"},
+        )
+
     async def _resolve_default_budget(self, boundary: str) -> None:
         """Reads the deployment default for the per-WorkItem ceiling in an
         Activity — outside the workflow sandbox — so the resolved number lands in
@@ -2137,6 +2190,8 @@ class WorkItemLifecycleWorkflow:
     # ------------------------------------------------------------------
     async def _run_implementation_phase(self) -> WorkItemLifecycleResult:
         input = self._input
+
+        await self._resolve_deployment_retry_caps()
 
         # WSB-E4-T1 — budget at admission (never cuts mid-Activity, only here).
         await self._audit(

@@ -87,6 +87,7 @@ LOCAL_ACTIVITY_PREVIEW_ENABLED = "preview_enabled_for_repo"
 # sandbox and its RESULT lands in history — replay stays deterministic even if
 # the ConfigMap changes between worker versions (P1).
 LOCAL_ACTIVITY_RESOLVE_BUDGET_CAP = "resolve_budget_cap"
+LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS = "resolve_retry_caps"
 
 _DSN = os.environ.get(
     "DSE_DATABASE_URL", "postgresql://dse_app:dse_app_dev_only@localhost:5432/dse"
@@ -983,6 +984,39 @@ def _default_work_item_max_usd() -> float | None:
     return value if value > 0 else None
 
 
+@activity.defn(name=LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS)
+async def resolve_retry_caps(payload: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    """Tetos de RETENTATIVA do deploy, lidos do env FORA do sandbox do workflow.
+
+    Existe pelo mesmo motivo que `resolve_budget_cap` (logo abaixo): o env não
+    pode ser lido dentro do workflow, e o número resolvido precisa cair na
+    history para o replay ser determinístico.
+
+    O que isto conserta (medido 2026-08-10, wi_82254f59): o dispatcher inicia o
+    workflow com `start_workflow(WORKFLOW_TYPE, work_item_id, ...)` — uma
+    STRING —, então `_coerce_input` monta o dataclass a partir dos DEFAULTS e
+    `coder_retry_cap` valia 3 para sempre. O operador publicou
+    `DSE_CODER_RETRY_CAP=8`, viu o env no pod, e os itens continuaram morrendo
+    em `l1_failed_after_3_retries`. `apply_to_input` — a função que carregaria
+    o env — não tem um único call site de produção.
+
+    Devolve só o que estiver DECLARADO no env: chave ausente = o chamador
+    mantém o que já tem, e quem passou input completo continua mandando."""
+    out: dict[str, Any] = {}
+    raw = os.environ.get("DSE_CODER_RETRY_CAP")
+    if raw is not None and raw.strip():
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("DSE_CODER_RETRY_CAP=%r is not an integer; ignoring", raw)
+        else:
+            if value > 0:
+                out["coder_retry_cap"] = value
+            else:
+                logger.warning("DSE_CODER_RETRY_CAP=%r is not positive; ignoring", raw)
+    return out
+
+
 @activity.defn(name=LOCAL_ACTIVITY_RESOLVE_BUDGET_CAP)
 async def resolve_budget_cap(payload: dict[str, Any]) -> dict[str, Any]:
     """Deployment default for the per-WorkItem ceiling, for items whose
@@ -1327,6 +1361,7 @@ LOCAL_ACTIVITIES = [
     post_tracking_comment,
     preview_enabled_for_repo,
     resolve_budget_cap,
+    resolve_retry_caps,
     fan_out_sibling_work_items,
     route_repos,
 ]

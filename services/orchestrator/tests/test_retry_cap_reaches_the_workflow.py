@@ -65,9 +65,19 @@ async def test_the_published_cap_reaches_a_workflow_started_with_a_bare_id(
     work_item_id = new_work_item_id("capenv")
     insert_work_item(work_item_id)
     _seed_task_content(work_item_id)
+    # Falha SEMPRE, com detalhe diferente a cada rodada — e a diferenca e em
+    # LETRAS, nao em numeros: `_repair_fingerprint` normaliza digitos de
+    # proposito (uma queixa que so mudou de linha continua sendo a mesma).
+    # Sem isso o breaker de "nao converge" encerra em 3 turnos e o teste
+    # mediria o breaker, nao o teto.
+    from dse_contracts.activities import L1Finding
+
     state = FakeControlPlane(
         plan_risk_class="low",
-        l1_fail_times=99,  # nunca fica verde: o item so morre no teto
+        l1_findings_by_call=[
+            [L1Finding(check="test", passed=False, detail=f"falha distinta {chr(97 + n)}")]
+            for n in range(12)
+        ],
         coder_files_changed_by_turn=[["src/app.py"]],
     )
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
@@ -106,9 +116,14 @@ async def test_an_explicit_input_still_wins_over_the_deployment_default(
 
     work_item_id = new_work_item_id("capexplicit")
     insert_work_item(work_item_id)
+    from dse_contracts.activities import L1Finding
+
     state = FakeControlPlane(
         plan_risk_class="low",
-        l1_fail_times=99,
+        l1_findings_by_call=[
+            [L1Finding(check="test", passed=False, detail=f"falha distinta {chr(97 + n)}")]
+            for n in range(12)
+        ],
         coder_files_changed_by_turn=[["src/app.py"]],
     )
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
