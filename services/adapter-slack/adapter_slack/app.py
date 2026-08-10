@@ -41,15 +41,24 @@ from ingest_gateway import (
 )
 from pydantic import BaseModel
 
-from .backend import SlackCommentBackend, approval_blocks, build_real_slack_client, repo_select_blocks
+from .backend import (
+    SlackCommentBackend,
+    approval_blocks,
+    build_real_slack_client,
+    park_blocks,
+    repo_select_blocks,
+    retry_direction_modal,
+)
 from .comment_store import SURFACE, PgCommentStateStore
 from .config import get_slack_bot_token, get_slack_signing_secret, get_tenant_id
 from .events import (
     build_event_from_app_mention,
     build_event_from_block_action,
     build_event_from_thread_message,
+    build_event_from_view_submission,
     build_repo_select_signal_event,
     parse_slack_approval,
+    parse_slack_park,
 )
 from .ratelimit import SlackRateLimited
 
@@ -394,6 +403,11 @@ async def slack_interactions(request: Request) -> dict:
     form = await request.form()
     payload = json.loads(form["payload"])
 
+    # A6: a submissão do modal de direcionamento do Retry é um payload de tipo
+    # próprio — chega aqui com a MESMA verificação de assinatura dos cliques.
+    if payload.get("type") == "view_submission":
+        return _handle_view_submission(payload)
+
     if payload.get("type") != "block_actions":
         return {"ok": True}
 
@@ -484,6 +498,57 @@ async def slack_interactions(request: Request) -> dict:
         _notify_ephemeral(channel, user_id, f"✅ Using *{repo}* — starting work now.")
         return {"ok": True, "path": "repo_selected", "work_item_id": work_item_id, "repo": repo}
 
+    # A6 — botões de parque: veredito pelo MESMO encanamento do Approve
+    # (evento kind=approval + marker determinístico; o dispatcher roteia pelo
+    # status). Retry abre o modal ANTES de qualquer veredito — ele só nasce na
+    # submissão. Gate de steering em paridade com o repo_confirm: um veredito
+    # de parque é direção injetada na tarefa; deny-by-default.
+    if action.get("action_id", "").startswith("dse_park_"):
+        channel = payload["channel"]["id"]
+        if not is_authorized_to_steer(tenant_id, principal):
+            audit_emit(actor=principal, action="steering_rejected_unauthorized",
+                       tenant_id=tenant_id,
+                       details={"kind": "park_verdict",
+                                "action_id": action.get("action_id", "")})
+            _notify_ephemeral(
+                channel, user_id,
+                "Você não tem permissão para decidir o destino desta tarefa.",
+            )
+            return {"ok": True, "path": "unauthorized"}
+        message = payload.get("message") or {}
+        if action["action_id"] == "dse_park_retry":
+            try:
+                build_real_slack_client(
+                    get_slack_bot_token(), deadline=time.monotonic() + 2.5
+                ).views_open(
+                    trigger_id=payload.get("trigger_id", ""),
+                    view=retry_direction_modal(
+                        channel=channel,
+                        message_ts=message.get("ts", ""),
+                        thread_ts=message.get("thread_ts") or message.get("ts", ""),
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — sem modal não há veredito; o botão continua lá
+                logger.warning("views_open failed (park retry modal)", exc_info=True)
+                _notify_ephemeral(
+                    channel, user_id,
+                    "Não consegui abrir o modal do Retry — tente de novo.",
+                )
+            return {"ok": True, "path": "park_modal_opened"}
+        verdict = parse_slack_park(action.get("action_id", ""), action.get("value", ""))
+        if verdict is None:
+            audit_emit(actor=principal, action="park_verdict_ignored_unknown",
+                       tenant_id=tenant_id,
+                       details={"action_id": action.get("action_id", ""),
+                                "value": action.get("value", "")})
+            return {"ok": True, "path": "park_verdict_unknown"}
+        conv_event = build_event_from_block_action(payload, resolved_principal=principal)
+        return _handle_conversation_event(
+            conv_event, principal=principal, tenant_id=tenant_id,
+            extra_payload={"park_verdict": verdict},
+            bot_message_ts=message.get("ts"),
+        )
+
     conv_event = build_event_from_block_action(payload, resolved_principal=principal)
 
     # C1 (report 07): derives the button's verdict/route into DETERMINISTIC
@@ -500,12 +565,61 @@ async def slack_interactions(request: Request) -> dict:
     )
 
 
+def _handle_view_submission(payload: dict) -> dict:
+    """A submissão do modal de direcionamento do Retry (A6). O veredito nasce
+    AQUI — o clique que abriu o modal não gravou nada. O texto livre viaja como
+    `fix_context` (rc.54: comment→instrução do turno do Coder); vazio é retry
+    sem direcionamento, veredito igualmente válido.
+
+    Devolve corpo vazio: para view_submission, 200 sem `response_action` é o
+    que FECHA o modal no cliente Slack."""
+    view = payload.get("view") or {}
+    if view.get("callback_id") != "dse_park_retry":
+        return {}
+    try:
+        meta = json.loads(view.get("private_metadata") or "{}")
+    except ValueError:
+        meta = {}
+    channel = meta.get("channel")
+    message_ts = meta.get("message_ts")
+    if not channel or not message_ts:
+        logger.warning("view_submission sem private_metadata utilizável — descartada")
+        return {}
+    user_id = payload["user"]["id"]
+    principal = resolve_principal("slack", user_id)
+    team_id = (payload.get("team") or {}).get("id") or payload.get("user", {}).get("team_id")
+    tenant_id = _resolve_tenant_for(team_id)
+    if not is_authorized_to_steer(tenant_id, principal):
+        audit_emit(actor=principal, action="steering_rejected_unauthorized",
+                   tenant_id=tenant_id, details={"kind": "park_verdict_modal"})
+        return {}
+    values = (view.get("state") or {}).get("values") or {}
+    ctx = ((values.get("dse_park_ctx") or {}).get("dse_park_ctx_input") or {})
+    direction = (ctx.get("value") or "").strip()
+    conv_event = build_event_from_view_submission(
+        payload, resolved_principal=principal,
+        content=f"button:dse_park_retry=retry {direction}".strip(),
+        channel=channel, thread_ts=meta.get("thread_ts") or message_ts,
+    )
+    extra_payload: dict = {"park_verdict": "retry"}
+    if direction:
+        extra_payload["fix_context"] = direction
+    _handle_conversation_event(
+        conv_event, principal=principal, tenant_id=tenant_id,
+        extra_payload=extra_payload, bot_message_ts=message_ts,
+    )
+    return {}
+
+
 class StatusCommentRequest(BaseModel):
     work_item_id: str
     channel: str
     body: str
     actor: str  # resolved principal of who/what triggered the update (e.g. "system:orchestrator")
     status: str | None = None  # Phase B: when 'awaiting_plan_approval', builds the buttons
+    # A6: qual parque é — decide QUAIS vereditos renderizar (reauthor só existe
+    # no parque de spec própria do Tester). Nulo em todo status não-parque.
+    park_reason: str | None = None
 
 
 @app.post("/internal/status-comment")
@@ -545,6 +659,13 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
         surface_ref["thread_ts"] = item_source_ref["thread_ts"]
     if req.status == "awaiting_plan_approval":
         surface_ref["blocks"] = approval_blocks(req.body)
+    elif req.status == "spec_conflict":
+        # A6: os vereditos do parque como botões — a decisão humana entra pelo
+        # canal. O corpo JÁ é o dossiê (specs, Expected/Received, asserções) —
+        # o workflow o escreve; aqui só entram os botões aplicáveis.
+        surface_ref["blocks"] = park_blocks(
+            req.body, include_reauthor=(req.park_reason == "tester_spec_exhaustion")
+        )
     elif req.status == "awaiting_repo_selection":
         # Ambiguous repo: offer a static_select with the tenant's repos. With < 2
         # repos it degrades to plain text (nothing to pick -> just the text

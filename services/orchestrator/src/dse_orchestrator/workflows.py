@@ -1128,7 +1128,9 @@ class WorkItemLifecycleWorkflow:
             pr_number=self._input.pr_number,
         )
 
-    async def _post_status_comment(self, status: str, *, detail: str = "") -> None:
+    async def _post_status_comment(
+        self, status: str, *, detail: str = "", park_reason: str | None = None,
+    ) -> None:
         """Cheap oversight (never leave a surface without the current state):
         every consequential transition reflects the status on the originating
         surface's single comment. BEST-EFFORT — it never blocks the transition
@@ -1142,11 +1144,19 @@ class WorkItemLifecycleWorkflow:
         # executions post, old replays skip deterministically.
         if not workflow.patched("status-comment-surfacing-v1"):
             return
+        payload: dict[str, Any] = {
+            "work_item_id": self._input.work_item_id, "tenant_id": self._input.tenant_id,
+            "status": status, "detail": detail,
+        }
+        # A6: qual parque é — o adapter só renderiza Reauthor no de spec
+        # própria do Tester. Chave só quando existe (aditivo; histórias velhas
+        # replayam sem ela).
+        if park_reason:
+            payload["park_reason"] = park_reason
         try:
             await workflow.execute_activity(
                 ACTIVITY_POST_TRACKING_COMMENT,
-                {"work_item_id": self._input.work_item_id, "tenant_id": self._input.tenant_id,
-                 "status": status, "detail": detail},
+                payload,
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )
@@ -1305,10 +1315,16 @@ class WorkItemLifecycleWorkflow:
                 "Pre-existing spec(s) broken by this change's diff — no actor in "
                 "the loop may edit them (Coder: test edits revert; Tester: own "
                 "specs only). Specs: " + ", ".join(specs)
+                # O par Expected/Received também no parque de spec de cliente —
+                # é o dossiê mínimo legível do A6 (a renderização completa é
+                # B3/B4); só o de exaustão o trazia.
+                + (". Expected vs received: " + " | ".join(expected_vs_received)
+                   if expected_vs_received else "")
                 + ". Diff files: " + ", ".join(diff_files)
                 + ". Failing assertions:\n" + assertions[:900]
             )
-        await self._post_status_comment("spec_conflict", detail=comment)
+        await self._post_status_comment("spec_conflict", detail=comment,
+                                        park_reason=reason)
 
         def decided() -> bool:
             return (self._spec_conflict_received or self._cancelled

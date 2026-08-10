@@ -869,6 +869,10 @@ async def post_tracking_comment(payload: dict[str, Any]) -> dict[str, Any]:
     # github/jira do not have the field (do not send it — their models are strict).
     if source == "slack":
         extra_fields = {**extra_fields, "status": status}
+        # A6: qual parque é — decide os vereditos renderizados (Reauthor só no
+        # parque de spec própria do Tester). Slack-only, como o `status`.
+        if payload.get("park_reason"):
+            extra_fields = {**extra_fields, "park_reason": payload["park_reason"]}
     import httpx
     try:
         with httpx.Client(timeout=httpx.Timeout(8.0, connect=2.0)) as client:

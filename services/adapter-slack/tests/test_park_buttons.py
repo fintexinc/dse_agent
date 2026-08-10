@@ -72,6 +72,8 @@ def _parked_item(fake_slack, *, ts: str, park_reason: str | None = None) -> tupl
     """Um item real parqueado: admissão pelo caminho normal, status
     `spec_conflict` no banco (como o workflow deixa), e a mensagem de parque
     postada pelo endpoint REAL — devolve (work_item_id, bot_post)."""
+    from dse_identity import resolve_principal
+
     created = _post_event({
         "type": "app_mention", "channel": _CH, "ts": ts,
         "user": "U_PARK_REQ", "text": f"park scenario {ts}",
@@ -82,6 +84,15 @@ def _parked_item(fake_slack, *, ts: str, park_reason: str | None = None) -> tupl
         with conn.cursor() as cur:
             cur.execute("UPDATE work_items SET status='spec_conflict' WHERE id=%s",
                         (work_item_id,))
+            # O clique de parque passa pelo gate de steering (deny-by-default,
+            # paridade com o repo_confirm) — o decisor entra na allowlist.
+            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
+            tenant_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
+                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                (tenant_id, resolve_principal("slack", "U_PARK_REQ")),
+            )
         conn.commit()
     finally:
         conn.close()

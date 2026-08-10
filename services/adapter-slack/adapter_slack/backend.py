@@ -47,6 +47,61 @@ def approval_blocks(body: str) -> list[dict]:
     ]
 
 
+def park_blocks(body: str, *, include_reauthor: bool = False) -> list[dict]:
+    """Block Kit do PARQUE (A6, rc do canal mínimo): o dossiê resumido que o
+    workflow já escreve no corpo + os vereditos como botões — a decisão humana
+    entra pelo canal, nunca por terminal.
+
+    Retry abre o modal de direcionamento (o veredito nasce na SUBMISSÃO);
+    Escalar é direto. Reauthor SÓ quando o parque é de spec própria do Tester
+    (`tester_spec_exhaustion`) — no parque de spec de cliente o veredito não
+    autoriza ninguém e renderizá-lo seria um botão que mente. `discard` não
+    existe como veredito no workflow (verificado 2026-08-09): sem botão."""
+    elements = [
+        {"type": "button", "action_id": "dse_park_retry", "style": "primary",
+         "text": {"type": "plain_text", "text": "Retry"}, "value": "retry"},
+        {"type": "button", "action_id": "dse_park_escalate", "style": "danger",
+         "text": {"type": "plain_text", "text": "Escalar"}, "value": "escalate"},
+    ]
+    if include_reauthor:
+        elements.insert(1, {
+            "type": "button", "action_id": "dse_park_reauthor",
+            "text": {"type": "plain_text", "text": "Reauthor"}, "value": "reauthor",
+        })
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": body[:2990]}},
+        {"type": "actions", "block_id": "dse_park_verdict", "elements": elements},
+    ]
+
+
+def retry_direction_modal(*, channel: str, message_ts: str, thread_ts: str) -> dict:
+    """A view do modal de direcionamento do Retry. O campo é OPCIONAL — retry
+    sem texto é um veredito válido. O private_metadata carrega o endereço da
+    mensagem de origem (o payload de view_submission não o traz), e é ele que
+    permite correlacionar a submissão ao item pelo MESMO bot_ts do clique."""
+    return {
+        "type": "modal",
+        "callback_id": "dse_park_retry",
+        "private_metadata": json.dumps(
+            {"channel": channel, "message_ts": message_ts, "thread_ts": thread_ts}
+        ),
+        "title": {"type": "plain_text", "text": "Retry"},
+        "submit": {"type": "plain_text", "text": "Enviar"},
+        "close": {"type": "plain_text", "text": "Cancelar"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "dse_park_ctx",
+                "optional": True,
+                "label": {"type": "plain_text",
+                          "text": "Contexto para o Coder — opcional"},
+                "element": {"type": "plain_text_input", "multiline": True,
+                            "action_id": "dse_park_ctx_input"},
+            }
+        ],
+    }
+
+
 def repo_select_blocks(work_item_id: str, repos: list[str], body: str) -> list[dict]:
     """Block Kit for the repo selector (ambiguous-repo clarification — resolve_repo
     Rung 5). One section (the question text) + one actions block holding the

@@ -44,6 +44,7 @@ from dse_contracts.constants import (
     SIGNAL_MERGED_BY_HUMAN,
     SIGNAL_PLAN_APPROVAL,
     SIGNAL_REVIEW_COMMENT,
+    SIGNAL_SPEC_CONFLICT_RESOLUTION,
 )
 from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
@@ -61,6 +62,13 @@ _STATUS_PR_READY = "pr_ready"
 # States in which an approval on the PR is still a legitimate review signal
 # (the reviewer may approve after having previously requested changes).
 _APPROVAL_REVIEW_STATES = {_STATUS_PR_READY, "review_feedback"}
+# A6 (rc do canal mínimo) — um clique de botão de PARQUE chega como
+# kind=approval com o marker `park_verdict` (conjunto fechado; o adapter só
+# emite estes três). Roteia para o gate de spec_conflict SÓ quando o item
+# está parqueado — um clique atrasado (status já mudou) cai no decline P6,
+# nunca num palpite.
+_STATUS_SPEC_CONFLICT = "spec_conflict"
+_PARK_VERDICTS = {"retry", "escalate", "reauthor"}
 
 
 class DispatchOutcome:
@@ -184,6 +192,22 @@ def _route_signal(status: str | None, kind: str, raw_payload: dict[str, Any]) ->
         return SignalRoute(SIGNAL_REVIEW_COMMENT, {"text": content, "comment": content}, "steering")
 
     if kind == "approval":  # WSA-E6-T3: routes by status
+        park_verdict = str(raw_payload.get("park_verdict") or "").lower()
+        if park_verdict:
+            if status == _STATUS_SPEC_CONFLICT and park_verdict in _PARK_VERDICTS:
+                return SignalRoute(
+                    SIGNAL_SPEC_CONFLICT_RESOLUTION,
+                    {
+                        "verdict": park_verdict,
+                        # O direcionamento do modal viaja como `comment` — é o
+                        # canal da rc.54: o workflow o entrega ao Coder como
+                        # fix_context do turno seguinte.
+                        "comment": raw_payload.get("fix_context") or content,
+                        "actor": _actor_principal(raw_payload),
+                    },
+                    "spec_conflict_resolution",
+                )
+            return SignalRoute(None, None, "unexpected_status")
         if status == _STATUS_AWAITING_PLAN_APPROVAL:
             return SignalRoute(SIGNAL_PLAN_APPROVAL, _plan_approval_payload(raw_payload, content), "plan_approval")
         if status in _APPROVAL_REVIEW_STATES:

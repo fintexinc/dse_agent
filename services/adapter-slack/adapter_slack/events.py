@@ -112,6 +112,46 @@ def build_event_from_block_action(payload: dict[str, Any], *, resolved_principal
     )
 
 
+#: A6 — botões de parque. O veredito é o VALUE do botão, validado contra o
+#: conjunto fechado (marker determinístico, nunca texto livre): `retry` e
+#: `escalate` existem em todo parque; `reauthor` só no de spec própria do
+#: Tester (o render já não o oferece fora dele, e o dispatcher revalida).
+PARK_VERDICTS = ("retry", "escalate", "reauthor")
+
+
+def parse_slack_park(action_id: str, value: str) -> str | None:
+    """Veredito de parque do clique — `dse_park_<verdict>`. Devolve None para
+    qualquer coisa fora do conjunto fechado (o chamador ignora com audit em
+    vez de adivinhar — P6)."""
+    candidate = (value or "").strip().lower()
+    if candidate in PARK_VERDICTS and action_id == f"dse_park_{candidate}":
+        return candidate
+    return None
+
+
+def build_event_from_view_submission(
+    payload: dict[str, Any], *, resolved_principal: str, content: str,
+    channel: str, thread_ts: str,
+) -> ConversationEvent:
+    """Submissão do modal de direcionamento (Retry) -> kind=approval, o mesmo
+    encanamento do clique. O `message_id` vem do id da view (único por
+    abertura de modal — duas submissões humanas são dois eventos); `channel`/
+    `thread_ts` vêm do private_metadata, porque o payload de view_submission
+    não carrega a mensagem de origem."""
+    view = payload.get("view") or {}
+    message_id = view.get("id") or f"viewsubmit-{payload.get('trigger_id', '0')}"
+    return ConversationEvent.build(
+        platform=Platform.slack,
+        thread_key=f"{channel}:{thread_ts}",
+        message_id=message_id,
+        kind=EventKind.approval,
+        source_ref={"channel": channel, "thread_ts": thread_ts},
+        actor=_actor_from_user_id(payload["user"]["id"], resolved_principal),
+        content_snapshot=content,
+        signature_verified=True,
+    )
+
+
 def build_repo_select_signal_event(
     payload: dict[str, Any], action: dict[str, Any], *, resolved_principal: str, content: str
 ) -> ConversationEvent:
