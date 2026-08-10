@@ -285,14 +285,19 @@ runtime:
   # on the testbed with the node at load 2.26 of 4 — there was nothing to
   # protect. The limit is a ceiling, not a reservation (`requests` stays at
   # 250m), so a sandbox only takes what is idle.
-  sandboxCpuLimit: "3"
+  # VPS de 8 vCPU desde 2026-08-10 (era 2). O limite é teto, não reserva.
+  sandboxCpuLimit: "4"
   # 1536Mi is under what an Angular `ng build --configuration production`
   # needs, and V8 sizes its heap from the NODE (16 GB here), not the cgroup —
   # so it happily allocates past the limit and the kernel kills it. The node
   # has ~10 GB free with everything running, so this costs nothing real and
   # removes the failure mode that already killed this repository's checkpoint
   # commits once, when husky ran the same linter on them.
-  sandboxMemLimit: "3Gi"
+  # 8Gi com o nó em 31 GB (era 3Gi com 16). O teto do Pod deixou de ser a
+  # única defesa: desde a rc.72 o NODE_OPTIONS do sandbox deriva o heap do V8
+  # DESTE limite — antes o V8 mirava a memória do NÓ e o kernel matava o lint
+  # (exit 134), falha que o upgrade da VPS PIOROU em vez de resolver.
+  sandboxMemLimit: "8Gi"
 
 networkPolicy:
   kubeApiServer:

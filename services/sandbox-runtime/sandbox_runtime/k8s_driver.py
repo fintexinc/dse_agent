@@ -136,6 +136,36 @@ class K8sSandboxConfig:
     ttl_seconds: int = _ttl_seconds_from_env()
 
 
+#: Fração do limite do container que o heap velho do V8 pode ocupar. O resto é
+#: o heap novo, buffers, o binário — memória real que o cgroup também conta.
+_NODE_HEAP_FRACTION = 0.75
+
+
+def node_heap_mib(mem_limit: str) -> int | None:
+    """Teto de `--max-old-space-size` (MiB) derivado do LIMITE DO CONTAINER.
+
+    O V8 dimensiona o heap pela memória do NÓ, não pelo cgroup: num nó grande
+    com container pequeno ele aloca alegremente além do teto e o kernel mata o
+    processo (exit 134, medido no wi_8b083140 no lint do Angular). Subir o
+    limite do Pod ameniza, mas é frágil na direção contrária — quando a VPS
+    dobrou de 16 para 32 GB o problema PIOROU. Derivar do limite é o que
+    sobrevive a qualquer redimensionamento.
+
+    Devolve None para valor ilegível: um teto errado é pior que nenhum (o
+    padrão do V8 ao menos é conhecido)."""
+    text = (mem_limit or "").strip()
+    for suffix, factor in (("Gi", 1024), ("Mi", 1), ("G", 1000), ("M", 1)):
+        if text.endswith(suffix):
+            try:
+                value = float(text[: -len(suffix)])
+            except ValueError:
+                return None
+            if suffix == "G":
+                return int(value * 1000 / 1.048576 * _NODE_HEAP_FRACTION)
+            return int(value * factor * _NODE_HEAP_FRACTION)
+    return None
+
+
 def pod_name_for(work_item_id: str) -> str:
     slug = "".join(c if c.isalnum() or c == "-" else "-" for c in work_item_id.lower())
     return f"dse-sbx-{slug}"[:63].rstrip("-")
@@ -249,6 +279,14 @@ def build_pod_manifest(request: SandboxProvisionRequest, cfg: K8sSandboxConfig |
                     # emptyDir; this also makes Maven read the proxies file
                     # provision() writes to /tmp/.m2/settings.xml.
                     {"name": "MAVEN_OPTS", "value": "-Duser.home=/tmp"},
+                    # O mesmo problema do MAVEN_OPTS acima, para o Node: o V8
+                    # mira a memória do NÓ e é morto pelo cgroup (exit 134).
+                    # Derivado do limite, não do nó — ver node_heap_mib.
+                    *(
+                        [{"name": "NODE_OPTIONS",
+                          "value": f"--max-old-space-size={_heap}"}]
+                        if (_heap := node_heap_mib(cfg.mem_limit)) else []
+                    ),
                     {"name": "DSE_WORK_ITEM_ID", "value": request.work_item_id},
                     {"name": "DSE_TENANT_ID", "value": request.tenant_id},
                     {"name": "DSE_TASK_BRANCH", "value": request.branch},

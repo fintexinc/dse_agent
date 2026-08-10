@@ -44,10 +44,11 @@ def test_an_unparseable_limit_yields_no_ceiling_instead_of_a_wrong_one():
     assert node_heap_mib("banana") is None
 
 
-def test_the_sandbox_pod_carries_the_node_ceiling(monkeypatch):
+def test_the_sandbox_pod_carries_the_node_ceiling():
     """O env chega ao Pod, na mesma lista onde MAVEN_OPTS já resolve o mesmo
-    problema para a JVM."""
-    monkeypatch.setenv("DSE_SANDBOX_MEM_LIMIT", "8Gi")
+    problema para a JVM. A config é construída explicitamente: `mem_limit` é
+    lido no IMPORT (a import-time hazard que o próprio módulo documenta), e em
+    produção isso é correto — o env vem do configmap antes do processo subir."""
     from sandbox_runtime import k8s_driver
     from sandbox_runtime.driver import SandboxProvisionRequest
 
@@ -57,7 +58,7 @@ def test_the_sandbox_pod_carries_the_node_ceiling(monkeypatch):
             workspace_path="/workspace", checkpoint_path="/checkpoint.git",
             image="node:22",
         ),
-        k8s_driver.K8sSandboxConfig(),
+        k8s_driver.K8sSandboxConfig(mem_limit="8Gi"),
     )
     env = {e["name"]: e["value"] for e in manifest["spec"]["containers"][0]["env"]}
     assert "NODE_OPTIONS" in env, (
