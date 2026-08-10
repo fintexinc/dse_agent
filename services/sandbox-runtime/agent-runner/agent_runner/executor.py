@@ -67,6 +67,41 @@ def build_claude_gateway_env(req: AgentTurnRequest) -> dict[str, str]:
     }
 
 
+def _provider_error_text(message: object) -> str:
+    """O que um ResultMessage com `is_error` sabe sobre a falha, em uma linha.
+
+    Tudo por `getattr`: o SDK evolui e um campo que sumiu não pode derrubar o
+    turno — perder o motivo já é ruim, trocar o motivo por um AttributeError
+    seria pior."""
+    parts = [
+        str(getattr(message, "subtype", "") or ""),
+        str(getattr(message, "api_error_status", "") or ""),
+        str(getattr(message, "terminal_reason", "") or ""),
+        str(getattr(message, "result", "") or ""),
+        str(getattr(message, "errors", "") or ""),
+    ]
+    return " | ".join(p for p in parts if p and p != "None")[:600]
+
+
+def _with_provider_context(error: str, provider_error: str) -> str:
+    """Cola o motivo do provedor na mensagem que o CLI mascarou.
+
+    A máscara é literal: em 2026-08-10 o crédito da Anthropic acabou, o
+    LiteLLM devolveu `"Your credit balance is too low…"` e o que chegou ao
+    worker foi `Exception: Claude Code returned an error result: success` —
+    uma frase que termina na palavra `success`. Sem marcador,
+    `_raise_if_permanent_provider_error` (sandbox_runtime/activities.py) não
+    casa nada, a falha é tratada como transitória e a atividade reentrega:
+    15 tentativas no wi_957b9aad, ~1h47 de silêncio até o prazo da atividade.
+
+    Aqui NÃO se classifica nada — só se para de jogar fora a evidência. Quem
+    decide "isto é fatura, não tente de novo" continua sendo o classificador
+    de sempre, que agora recebe o texto que precisa."""
+    if not provider_error or provider_error in error:
+        return error
+    return f"{error} | provider: {provider_error}"
+
+
 def _run_claude_agent(req: AgentTurnRequest) -> AgentTurnResult:
     try:
         import claude_agent_sdk as sdk
@@ -92,6 +127,7 @@ def _run_claude_agent(req: AgentTurnRequest) -> AgentTurnResult:
     thoughts: list[str] = []
     tool_calls: list[str] = []
     totals = {"cost": 0.0, "tin": 0, "tout": 0}
+    provider_error = [""]  # lista: o closure de _consume escreve aqui
 
     async def _consume() -> None:
         async for message in sdk.query(prompt=req.instruction, options=options):
@@ -106,6 +142,17 @@ def _run_claude_agent(req: AgentTurnRequest) -> AgentTurnResult:
                 usage = message.usage or {}
                 totals["tin"] += int(usage.get("input_tokens", 0) or 0)
                 totals["tout"] += int(usage.get("output_tokens", 0) or 0)
+                # O MESMO objeto carrega o motivo, e ele era descartado aqui.
+                # Em 2026-08-10 o crédito da Anthropic acabou: o LiteLLM
+                # devolveu "Your credit balance is too low…", o CLI mascarou
+                # como `Exception: Claude Code returned an error result:
+                # success` e o que chegou ao worker não tinha marcador algum —
+                # `_raise_if_permanent_provider_error` não casou, e a atividade
+                # reentregou 15 vezes enquanto o operador auditava o produto.
+                # `result`/`errors`/`api_error_status` são onde o texto do
+                # provedor viaja; `subtype` é a única pista quando não há texto.
+                if getattr(message, "is_error", False):
+                    provider_error[0] = _provider_error_text(message)
 
     try:
         asyncio.run(asyncio.wait_for(_consume(), timeout=req.timeout_seconds))
@@ -128,7 +175,9 @@ def _run_claude_agent(req: AgentTurnRequest) -> AgentTurnResult:
             cost_usd=totals["cost"],
             tokens_in=totals["tin"],
             tokens_out=totals["tout"],
-            error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            error=_with_provider_context(
+                f"{type(exc).__name__}: {str(exc)[:500]}", provider_error[0]
+            ),
             error_kind="substrate_error",
         )
 

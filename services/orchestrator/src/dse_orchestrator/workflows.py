@@ -328,6 +328,73 @@ def _spec_id_is_owned(spec_id: str, owned: set[str]) -> bool:
     )
 
 
+#: Os dois marcadores que `_detail_with` (validation/l1/quality_checks.py)
+#: escreve no detail de um gate. Duplicados como literais porque o orchestrator
+#: não importa o serviço de validação — mesma razão de `_TESTER_INFRA_RETURNCODES`
+#: abaixo. Se um dos dois mudar lá, este recorte volta a pegar a cauda.
+_COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$", re.M)
+_RAW_TAIL_MARK = "--- raw output (tail) ---"
+
+
+def _reauthor_evidence(detail: str | None, limit: int = 1500) -> str:
+    """O trecho do detail que viaja na ORDEM DE REESCRITA — a causa, não a cauda.
+
+    Medido no wi_3355102d (2026-08-10): o detail do gate `test` tinha 4.329
+    chars, `ApplicationContext` estava nele e NÃO estava nos últimos 1500. O
+    corte antigo (`detail[-1500:]`) entregava ao Tester a lista
+    `Unconditional classes:` do relatório de auto-configuração do Spring, e ele
+    reescreveu duas vezes sem nunca saber que o contexto não carregava.
+
+    `_detail_with` põe deliberadamente as linhas que o gate CONTOU na frente,
+    logo depois do summary — então quando esse bloco existe, a cabeça é a
+    evidência e é ela que vai. Quando não existe (o contexto do Tester monta a
+    política primeiro e o output do runner por último), a cauda continua sendo
+    a evidência certa e nada muda: é o mesmo cuidado de #60, do outro lado do
+    cano."""
+    text = detail or ""
+    if len(text) <= limit:
+        return text
+    mark = _COUNTED_BLOCK_MARK.search(text)
+    if mark is None:
+        return text[-limit:]
+    end = text.find(_RAW_TAIL_MARK, mark.end())
+    return text[: end if end != -1 else len(text)][:limit]
+
+
+#: Extensões de código que aparecem em saída de compilador/runner com o caminho
+#: na frente (`src/app/x.ts(311,5): error TS2322`, `.../Foo.java:[12,3] error`).
+_PATH_IN_OUTPUT = re.compile(
+    r"[\w./\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|py|go|rb|cs|vue|svelte)\b"
+)
+#: As convenções de teste dos dois testbeds. Duplicadas aqui pelo mesmo motivo
+#: dos marcadores acima (`dse_contracts.paths.is_test_path` é a fonte única, e
+#: o workflow não a importa).
+_TEST_PATH_HINTS = (".spec.", ".test.", "/tests/", "/test/", "__tests__/")
+
+
+def _failure_blames_the_coder(failure_output: str | None) -> bool:
+    """A saída acusa SÓ arquivo de produção?
+
+    Medido no wi_957b9aad (2026-08-10): o turno do Tester terminou em
+    `typecheck_failed` cujos quatro erros estavam em quatro arquivos de
+    produção — `grid-payout.component.ts`, `grid-payouts.reducer.ts` (dois) e
+    `fee-schedule-calculations.service.ts` — e o ledger registrou
+    `tester_failed_retrying`. O mecanismo estava certo (a rodada volta para o
+    Coder, no cap do Coder); o NOME é que mentia, e o nome é o que um humano lê
+    para decidir onde está o gargalo.
+
+    Conservador de propósito: qualquer spec citada, ou nenhum caminho
+    reconhecível, mantém o rótulo antigo. Reclassificar a menos é barato;
+    reclassificar a mais volta a ensinar a conclusão errada."""
+    paths = _PATH_IN_OUTPUT.findall(failure_output or "")
+    if not paths:
+        return False
+    matches = _PATH_IN_OUTPUT.finditer(failure_output or "")
+    return not any(
+        any(h in m.group(0) for h in _TEST_PATH_HINTS) for m in matches
+    )
+
+
 def _spec_subject_prefixes(spec_path: str) -> list[str]:
     """Caminhos candidatos do SUJEITO de uma spec, pelas duas convenções dos
     testbeds: lado a lado (Angular — `foo.component.spec.ts` testa
@@ -2461,7 +2528,7 @@ class WorkItemLifecycleWorkflow:
                                     input.reauthor_context = (
                                         (self._last_verdict_comment + "\n\n"
                                          if self._last_verdict_comment else "")
-                                        + pincer_detail[-1500:]
+                                        + _reauthor_evidence(pincer_detail)
                                     )
                                     # o humano deu nova direção; o contador de
                                     # no-ops recomeça com ela — e o ORÇAMENTO
@@ -2637,12 +2704,19 @@ class WorkItemLifecycleWorkflow:
                         # `fix_context`: no closed history reaches this branch at all.
                         input.coder_retry_count += 1
                         input.fix_context = self._tester_failure_context(tester_result)
+                        blames_coder = _failure_blames_the_coder(
+                            getattr(tester_result, "failure_output", "")
+                        )
                         await self._set_status(
                             WorkItemStatus.implementing,
-                            audit_action="tester_failed_retrying",
+                            audit_action=(
+                                "coder_broke_the_build_retrying" if blames_coder
+                                else "tester_failed_retrying"
+                            ),
                             details={"attempt": input.coder_retry_count,
                                      "returncode": tester_result.returncode,
-                                     "outcome": infra_outcome},
+                                     "outcome": infra_outcome,
+                                     "blamed": "coder" if blames_coder else "tester"},
                         )
                         continue
 
@@ -2700,7 +2774,7 @@ class WorkItemLifecycleWorkflow:
                                     input.reauthor_context = (
                                         (self._last_verdict_comment + "\n\n"
                                          if self._last_verdict_comment else "")
-                                        + "\n".join(self._tester_failure_context(tester_result))[-1500:]
+                                        + _reauthor_evidence("\n".join(self._tester_failure_context(tester_result)))
                                     )
                                     input.coder_retry_count = 0
                                     await self._set_status(
@@ -2728,11 +2802,18 @@ class WorkItemLifecycleWorkflow:
                             )
                         if workflow.patched("fix-loop-carries-the-failure-v1"):
                             input.fix_context = self._tester_failure_context(tester_result)
+                        blames_coder = _failure_blames_the_coder(
+                            getattr(tester_result, "failure_output", "")
+                        )
                         await self._set_status(
                             WorkItemStatus.implementing,
-                            audit_action="tester_failed_retrying",
+                            audit_action=(
+                                "coder_broke_the_build_retrying" if blames_coder
+                                else "tester_failed_retrying"
+                            ),
                             details={"attempt": input.coder_retry_count,
-                                     "returncode": tester_result.returncode},
+                                     "returncode": tester_result.returncode,
+                                     "blamed": "coder" if blames_coder else "tester"},
                         )
                         continue
 
@@ -3060,7 +3141,7 @@ class WorkItemLifecycleWorkflow:
                         input.reauthor_context = (
                             (self._last_verdict_comment + "\n\n"
                              if self._last_verdict_comment else "")
-                            + (exh_finding.detail or "")[-1500:]
+                            + _reauthor_evidence(exh_finding.detail)
                         )
                         await self._set_status(
                             WorkItemStatus.implementing,
