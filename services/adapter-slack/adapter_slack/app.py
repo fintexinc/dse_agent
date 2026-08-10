@@ -241,6 +241,16 @@ def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
         )
     elif result.get("path") == "signal" and message_ts:
         _ack_update(channel, message_ts, ack_text)
+    elif result.get("path") in ("refused_non_task", "not_correlated") and message_ts:
+        # Item 4 (síncrono): clique num item que JÁ TERMINOU. A falha aparece
+        # NA MENSAGEM clicada — o ephemeral genérico ("não encontrei a
+        # tarefa") aponta para o lado errado: ela existe, ela acabou. Zero
+        # signal nasceu (o caminho de refusal não grava nada).
+        _ack_update(
+            channel, message_ts,
+            "⚠️ Não consegui aplicar: a tarefa desta conversa não está mais "
+            "ativa (encerrada ou cancelada).",
+        )
 
 
 def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,

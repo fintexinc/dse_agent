@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any, NamedTuple
 
@@ -81,6 +82,11 @@ class DispatchOutcome:
     # dispatcher cannot know (deterministically) which gate to route to — NEVER
     # guesses (P6). Consumed (processed=true) with an audit row, not retried.
     DECLINED_UNEXPECTED_STATUS = "declined_unexpected_status"
+    # Item 4 (rc do canal mínimo): o workflow do signal está MORTO ("already
+    # completed"/"workflow not found" — a classe B8). Antes isto era
+    # SIGNAL_FAILED, ou seja, retry INFINITO de uma entrega impossível.
+    # Permanente: consumido com auditoria + aviso no canal.
+    SIGNAL_PERMANENTLY_UNDELIVERABLE = "signal_permanently_undeliverable"
 
 
 _CHANGES_REQUESTED_STATES = {"changes_requested", "request_changes", "changes-requested"}
@@ -218,6 +224,58 @@ def _route_signal(status: str | None, kind: str, raw_payload: dict[str, Any]) ->
     return SignalRoute(None, None, "unhandled_kind")
 
 
+def _is_permanent_signal_failure(exc: BaseException) -> bool:
+    """True quando o destino do signal NÃO EXISTE MAIS — retry é inútil por
+    construção. Casa as duas mensagens que o Temporal devolve para workflow
+    encerrado/inexistente (a segunda foi medida hoje mesmo, no cancel do
+    wi_8a7036e7: "workflow not found for ID"). Qualquer outra exceção continua
+    transitória → retry."""
+    msg = str(exc).lower()
+    return "already completed" in msg or "workflow not found" in msg
+
+
+def _notify_undeliverable(work_item_id: str, reason: str) -> None:
+    """Item 4 — a falha de entrega vira MENSAGEM na conversa do item, editando
+    a mesma mensagem mutável que o humano clicou (via o endpoint do adapter; o
+    writer edita in-place e limpa os botões). Nunca o clique que parece ter
+    funcionado e não funcionou.
+
+    Slack apenas nesta rc (GitHub/Jira herdam o mecanismo depois); best-effort
+    de ponta a ponta — o aviso jamais derruba o drain."""
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT source, source_ref FROM work_items WHERE id = %s",
+                    (work_item_id,),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        if not row or row[0] != "slack":
+            return
+        source_ref = row[1] if isinstance(row[1], dict) else {}
+        channel = source_ref.get("channel")
+        if not channel:
+            return
+        url = os.environ.get("DSE_ADAPTER_SLACK_URL", "http://adapter-slack:8801")
+        import httpx
+        with httpx.Client(timeout=httpx.Timeout(5.0, connect=2.0)) as http:
+            http.post(
+                f"{url}/internal/status-comment",
+                json={
+                    "work_item_id": work_item_id,
+                    "channel": channel,
+                    "body": f"⚠️ Não consegui aplicar: {reason}",
+                    "actor": "system:ingest-gateway-dispatcher",
+                },
+            ).raise_for_status()
+    except Exception:  # noqa: BLE001 — aviso é acessório; a auditoria é a fonte de verdade
+        logger.warning("undeliverable notice failed for %s", work_item_id, exc_info=True)
+
+
 async def _dispatch_row(
     client: Client, *, work_item_id: str, event_id: str, kind: str, status: str | None, payload: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
@@ -242,7 +300,14 @@ async def _dispatch_row(
 
     if route.signal_name is None:
         if route.reason == "unexpected_status":
-            # P6 decline-never-truncate: clean boundary, leaves evidence.
+            # P6 decline-never-truncate: clean boundary, leaves evidence — e,
+            # desde o item 4, também AVISO no canal: o decline mudo foi
+            # exatamente o que o caso A1 produziu 2x (clique "funcionou",
+            # nada aconteceu, ninguém soube).
+            _notify_undeliverable(
+                work_item_id,
+                f"o item está em '{status}' e não espera esse veredito",
+            )
             return DispatchOutcome.DECLINED_UNEXPECTED_STATUS, {"status": status, "reason": route.reason}
         return DispatchOutcome.IGNORED_NOT_A_DECISION, {"reason": route.reason}
 
@@ -250,7 +315,22 @@ async def _dispatch_row(
     try:
         await handle.signal(route.signal_name, route.payload)
         return DispatchOutcome.SIGNALED, {"signal": route.signal_name, "reason": route.reason, "status": status}
-    except Exception:
+    except Exception as exc:
+        if _is_permanent_signal_failure(exc):
+            # Workflow morto (B8): retry é inútil por construção. Consome com
+            # auditoria e avisa o canal — antes disto, o evento ficava
+            # `processed=false` PARA SEMPRE, em silêncio.
+            logger.warning(
+                "signal permanently undeliverable for work_item_id=%s event_id=%s: %s",
+                work_item_id, event_id, exc,
+            )
+            _notify_undeliverable(
+                work_item_id,
+                "a tarefa já foi encerrada — o veredito não pode mais ser aplicado",
+            )
+            return DispatchOutcome.SIGNAL_PERMANENTLY_UNDELIVERABLE, {
+                "signal": route.signal_name, "error": str(exc)[:200],
+            }
         logger.exception(
             "signal_workflow failed for work_item_id=%s event_id=%s (will be retried)",
             work_item_id, event_id,

@@ -808,6 +808,13 @@ _STATUS_BODIES = {
     "pr_open": "✅ PR opened — CI is running. Nothing to review yet; this message will update.",
     "pr_ready": "✅ PR opened with the change and evidence — ready for human review.",
     "pr_updated": "🔁 PR updated with the review fix — ready for another review.",
+    # A6: sem esta entrada o parque caía no fallback "DSE status: spec_conflict"
+    # e o DOSSIÊ que o workflow escreve em `detail` (specs, Expected/Received,
+    # asserções) era descartado — botões sobre um corpo vazio.
+    "spec_conflict": (
+        "🧷 Parked — pre-existing specs conflict with this change and no actor "
+        "in the loop may resolve it alone. A human verdict is needed:\n\n{detail}"
+    ),
     "done": "🎉 Merged by a human. Task completed.",
     "failed": "❌ The task failed and stopped: {detail}",
     "escalated": (
