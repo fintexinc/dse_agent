@@ -55,10 +55,26 @@ def _serials_above_every_known_run_key():
                 "FROM console_rm.runs_view WHERE run_key ~ '^(audit|ledger):[0-9]+$'"
             )
             top = int(cur.fetchone()[0])
-            for seq in ("audit_log_id_seq", "model_call_ledger_id_seq"):
+            # ...e também além do CURSOR de cada fonte. O run_key não é o único
+            # sobrevivente global: `projection_cursor` também é, e é ELE quem
+            # decide visibilidade (`id > cursor`). Com a sequence empurrada só
+            # até o topo dos run_keys, a primeira linha de audit de um teste
+            # podia nascer EXATAMENTE no cursor e ficar invisível, enquanto a
+            # segunda passava — medido em 2026-08-10 como um timeline
+            # ['file_change'] sem o 'created' que o teste acabara de inserir.
+            for seq, source in (
+                ("audit_log_id_seq", "audit_log"),
+                ("model_call_ledger_id_seq", "model_call_ledger"),
+            ):
+                cur.execute(
+                    "SELECT COALESCE(max(last_id), 0) FROM console_rm.projection_cursor "
+                    "WHERE source = %s",
+                    (source,),
+                )
+                floor = max(top, int(cur.fetchone()[0]))
                 cur.execute(
                     f"SELECT setval('{seq}', GREATEST((SELECT last_value FROM {seq}), %s) + 1, true)",
-                    (top,),
+                    (floor,),
                 )
     finally:
         conn.close()

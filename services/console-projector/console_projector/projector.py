@@ -160,6 +160,15 @@ def _upsert_work_item(cur, wi) -> None:
             pr_number = EXCLUDED.pr_number, pr_url = EXCLUDED.pr_url,
             risk_class = EXCLUDED.risk_class, budget_usd = EXCLUDED.budget_usd,
             task_class = EXCLUDED.task_class,
+            -- repo/base_branch/source_id são RESOLVIDOS DEPOIS DA ADMISSÃO: um
+            -- item primário do Slack nasce sem repo e o roteamento o grava
+            -- segundos depois. Fora desta lista, a primeira projeção (repo
+            -- NULL) vencia todas as seguintes e o painel mostrava "—" para
+            -- sempre — o operador leu isso como "o DSE não identificou o
+            -- repositório" e gastou três verificações provando o contrário.
+            -- source_id deriva do repo, então acompanha ou mostra o id cru.
+            repo = EXCLUDED.repo, base_branch = EXCLUDED.base_branch,
+            source_id = EXCLUDED.source_id,
             updated_at = EXCLUDED.updated_at
         """,
         (
