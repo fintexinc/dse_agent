@@ -90,3 +90,47 @@ async def test_noops_caused_by_instrument_reverts_park_with_the_dossier(time_ski
         await handle.signal("spec_conflict_resolution", {"verdict": "escalate",
                                                         "actor": "usr_test"})
         await handle.result()
+
+
+def test_exhaustion_recognition_reads_the_surefire_dialect():
+    """wi_893de651: as falhas eram TODAS dos testes do Tester, três rodadas
+    seguidas — e a exaustão nunca foi reconhecida porque o extrator de suites
+    só lê o dialeto jest (`FAIL <path>`). O surefire nomeia a CLASSE
+    (`... <<< FAILURE! -- in com.x.ClasseTest`); a posse casa pelo stem do
+    arquivo do Tester (ClasseTest ↔ .../ClasseTest.java)."""
+    from dse_orchestrator.workflows import exclusively_tester_spec_failures
+
+    detail = (
+        "summary: Tests run: 4, Failures: 2, Errors: 0, Skipped: 0\n"
+        "--- the 2 line(s) this gate counted ---\n"
+        "[ERROR] Tests run: 2, Failures: 2, Errors: 0, Skipped: 0, Time elapsed: 1.2 s "
+        "<<< FAILURE! -- in com.fintex.bmofeecalculatorbe.service.AdvisorFeeCalculationServiceTest\n"
+        "[ERROR] retiredLevelsExcluded  Time elapsed: 0.01 s  <<< FAILURE!\n"
+    )
+    specs = exclusively_tester_spec_failures(
+        ["test"], test_detail=detail,
+        tester_owned=[
+            "src/test/java/com/fintex/bmofeecalculatorbe/service/AdvisorFeeCalculationServiceTest.java",
+        ],
+    )
+    assert specs, (
+        "falha exclusivamente das specs do Tester em dialeto surefire tem que "
+        "ser RECONHECIDA — sem isso o Java nunca parqueia, só queima cap "
+        "(wi_893de651, 3 rodadas)"
+    )
+
+
+def test_a_surefire_failure_in_a_customer_class_is_not_exhaustion():
+    """A mesma extração não pode inventar exaustão: classe que NÃO é do Tester
+    na lista de falhas → fluxo normal (lista vazia)."""
+    from dse_orchestrator.workflows import exclusively_tester_spec_failures
+
+    detail = (
+        "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0 "
+        "<<< FAILURE! -- in com.fintex.bmofeecalculatorbe.LegacyFeeTest\n"
+    )
+    specs = exclusively_tester_spec_failures(
+        ["test"], test_detail=detail,
+        tester_owned=["src/test/java/com/fintex/AdvisorFeeCalculationServiceTest.java"],
+    )
+    assert specs == []

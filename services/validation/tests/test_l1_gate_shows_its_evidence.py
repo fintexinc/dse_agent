@@ -180,3 +180,44 @@ def test_neither_stream_is_dropped(stream):
     kwargs = {"stdout": "", "stderr": ""} | {stream: marker}
     finding = run_test_check(_Stub(1, **kwargs), _test_cfg())
     assert marker in finding.detail
+
+
+# ---------------------------------------------------------------------------
+# Defeito 4 (medido no wi_893de651, 2026-08-10, testbed Java): o surefire
+# escreve as falhas como "[ERROR] ..." — COM colchetes — e o extrator de
+# evidência só reconhecia FAIL/FAILED/ERROR nus. O detail colapsava para a
+# linha-resumo ("summary: Tests run: 1, Failures: 0, Errors: 1") e o Coder
+# consertou CEGO por três rodadas pagas (tateou o application-test.yml sem
+# nunca ver a exceção real). Mesma família do defeito 3: veredito certo,
+# evidência descrevendo outra coisa.
+# ---------------------------------------------------------------------------
+_SUREFIRE_FAIL_STDOUT = (
+    "[INFO] Running com.fintex.bmofeecalculatorbe.BmoFeeCalculatorBeApplicationTests\n"
+    "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 4.1 s "
+    "<<< FAILURE! -- in com.fintex.bmofeecalculatorbe.BmoFeeCalculatorBeApplicationTests\n"
+    "[ERROR] contextLoads  Time elapsed: 0.004 s  <<< ERROR!\n"
+    "java.lang.IllegalStateException: Failed to load ApplicationContext\n"
+    "Caused by: org.springframework.beans.factory.BeanCreationException: "
+    "Error creating bean with name 'dataSource'\n"
+    "[INFO] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0\n"
+    # o mundo real: o mvn imprime um RODAPÉ longo depois das falhas — reactor
+    # summary, help links, total time. O tail cru mostra só isso; a evidência
+    # ([ERROR] do teste) vive ACIMA, fora do alcance de qualquer tail.
+    + "".join(f"[INFO] rodape irrelevante {i}\n" for i in range(300))
+    + "[ERROR] BUILD FAILURE\n"
+)
+
+
+def test_a_surefire_failure_reaches_the_detail_with_its_error_lines():
+    finding = run_test_check(
+        _Stub(1, _SUREFIRE_FAIL_STDOUT, ""),
+        L1Config(test_cmd=["mvn", "test"]),
+    )
+    assert finding.status is GateStatus.FAIL
+    assert "[ERROR]" in finding.detail, (
+        "o detail tem que carregar as linhas [ERROR] do surefire — sem elas o "
+        "fix loop conserta cego (wi_893de651: três rodadas tateando o yml)"
+    )
+    assert "contextLoads" in finding.detail, (
+        "a linha que NOMEIA o teste quebrado é a evidência mínima"
+    )
