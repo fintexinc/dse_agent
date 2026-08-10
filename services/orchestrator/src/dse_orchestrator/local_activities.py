@@ -1255,6 +1255,15 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
 
                 for repo in repos:
                     sib = sibling_work_item_id(event_id, repo)
+                    # `- 'bot_ts'` (A1, medido 2x): o bot_ts é a lista das
+                    # mensagens QUE O BOT POSTOU SOBRE AQUELE item — é o que
+                    # endereça um clique de botão ao dono do prompt (F1(b)).
+                    # Copiá-lo faz o irmão reivindicar as mensagens do
+                    # primário: o clique no Approve do primário correlaciona
+                    # com os DOIS e o mais novo rouba (e recusa) o veredito.
+                    # O resto do source_ref é compartilhado de propósito — a
+                    # conversa é uma só; cada item acumula os SEUS bot_ts
+                    # quando as suas mensagens forem postadas.
                     cur.execute(
                         """
                         INSERT INTO work_items (
@@ -1262,7 +1271,7 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
                             requester, data_class, task_class, idempotency_key,
                             group_id, status
                         )
-                        SELECT %s, tenant_id, source, source_ref, %s,
+                        SELECT %s, tenant_id, source, source_ref - 'bot_ts', %s,
                                COALESCE(%s, base_branch),
                                requester, data_class, task_class, %s, %s, 'new'
                           FROM work_items WHERE id = %s
