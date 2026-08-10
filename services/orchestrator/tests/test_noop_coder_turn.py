@@ -78,7 +78,13 @@ async def test_a_first_turn_that_writes_nothing_still_goes_through_the_gates(
 ):
     """The skip is gated on there being a previous verdict to reuse. A FIRST
     turn that writes nothing is a different failure — there is no earlier gate
-    result for this tree — and must still be judged."""
+    result for this tree — and must still be judged.
+
+    Evoluiu com o wi_f1d2d66d (2026-08-10): julgado continua sendo (L1 roda),
+    mas um L1 verde sobre diff vazio NÃO finaliza mais — o gate devolve ao
+    Coder e, seguindo vazio, o item termina nomeando o não-trabalho. O que
+    este pin garante é o julgamento; review_ready de fachada deixou de ser
+    um desfecho possível."""
     work_item_id = new_work_item_id("noopfirst")
     insert_work_item(work_item_id)
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
@@ -90,9 +96,14 @@ async def test_a_first_turn_that_writes_nothing_still_goes_through_the_gates(
         handle = await time_skipping_env.client.start_workflow(
             WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
             id=work_item_id, task_queue=task_queue)
-        await wait_for_status(handle, {"review_ready", "awaiting_human_review", "done"})
+        status = await wait_for_status(
+            handle, {"review_ready", "awaiting_human_review", "done",
+                     "failed", "escalated"})
 
         assert state.l1_calls >= 1, "the first turn was never judged"
+        assert status not in {"review_ready", "awaiting_human_review", "done"}, (
+            "diff vazio com L1 verde não pode finalizar (wi_f1d2d66d)"
+        )
 
 
 @pytest.mark.asyncio

@@ -57,8 +57,9 @@ async def test_an_empty_diff_with_a_green_l1_never_reaches_review_ready(time_ski
             "wi_f1d2d66d (um arquivo, a spec do Tester, zero produção)"
         )
         result = await handle.result()
-        assert "empty" in (result.detail or "").lower() or "diff" in (result.detail or "").lower(), (
-            f"o terminal tem que NOMEAR o diff vazio, não um genérico: {result.detail!r}"
+        detail = (result.detail or "").lower()
+        assert any(m in detail for m in ("empty", "no_change", "changed no file")), (
+            f"o terminal tem que NOMEAR o não-trabalho, não um genérico: {result.detail!r}"
         )
         # e o Coder ganhou instrução explícita sobre o vazio antes de morrer
         assert any("no code changes" in i.lower() or "produced no" in i.lower()

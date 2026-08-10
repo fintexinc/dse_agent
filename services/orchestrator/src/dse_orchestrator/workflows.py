@@ -452,6 +452,11 @@ class WorkItemLifecycleWorkflow:
         # --- Phase 2: plan approval gate (WSB-E3-T2/T3) ---
         self._plan_approval_received = False
         self._plan_approval_payload: dict[str, Any] | None = None
+        #: Rodadas consecutivas em que o L1 passou VERDE sobre diff vazio
+        #: (wi_f1d2d66d): 1ª = retry com instrução nomeando o vazio; 2ª =
+        #: failed nomeado, preemptando o breaker genérico de fingerprint.
+        self._empty_diff_rounds = 0
+        self._empty_diff_note: str | None = None
         # --- Porta 1: deadlock de posse de spec (espera durável) ---
         self._spec_conflict_received = False
         self._spec_conflict_payload: dict[str, Any] | None = None
@@ -2511,6 +2516,55 @@ class WorkItemLifecycleWorkflow:
                 if workflow.patched("structured-gate-status-v1")
                 else l1_result.passed
             )
+            # Diff de produção VAZIO com L1 verde não é sucesso — é ninguém
+            # tendo implementado nada (medido no wi_f1d2d66d: coder files=[],
+            # spec do Tester falhou mas o deferral confiou no L1, e o L1
+            # passou VACUAMENTE porque a spec vivia fora do que o comando de
+            # teste do repo inclui → PR de fachada com um arquivo). O gate
+            # devolve ao Coder NOMEANDO o vazio; cap ainda vazio = failed
+            # nomeado. `cumulative_files_changed` acumula só turnos do Coder,
+            # então a spec do Tester não mascara o vazio.
+            if (
+                l1_passed
+                and workflow.patched("empty-diff-never-review-ready-v1")
+                and not input.cumulative_files_changed
+            ):
+                self._empty_diff_rounds += 1
+                await self._audit(
+                    "empty_diff_blocked",
+                    {"round": self._empty_diff_rounds,
+                     "reason": "l1 green over an empty production diff"},
+                )
+                # Segunda rodada vazia: falha NOMEADA aqui, antes do breaker
+                # genérico de fingerprint (que diria "gates []" — verdade
+                # inútil). Uma chance com instrução explícita é o bastante:
+                # o BE desta mesma rodada escreveu tudo no turno 2 quando o
+                # L1 reprovou honesto.
+                if self._empty_diff_rounds >= 2:
+                    detail = (
+                        "empty_diff: the coder produced no code changes across "
+                        "all attempts; a green L1 over an empty diff never "
+                        "becomes review_ready"
+                    )
+                    self._input.terminal_detail = detail
+                    await self._set_status(
+                        WorkItemStatus.failed, audit_action="empty_diff_exhausted"
+                    )
+                    await self._post_status_comment("failed", detail=detail)
+                    await self._teardown_sandbox_best_effort("empty_diff_exhausted")
+                    return WorkItemLifecycleResult(
+                        work_item_id=self._input.work_item_id,
+                        status=WorkItemStatus.failed.value,
+                        detail=detail,
+                        pr_number=self._input.pr_number,
+                    )
+                l1_passed = False
+                self._empty_diff_note = (
+                    "Your turns so far have produced NO code changes at all "
+                    "(empty diff). Implement the requested change in the "
+                    "production code per the plan — a green pipeline over an "
+                    "empty diff is not success."
+                )
             if l1_passed and workflow.patched("fix-loop-carries-the-failure-v1"):
                 # Cleared on success, like l2_objections below: a later attempt
                 # must never be handed a failure that has already been fixed.
@@ -2808,7 +2862,15 @@ class WorkItemLifecycleWorkflow:
                             f"{sorted(f.check for f in failed_checks)})"
                         )
                 if workflow.patched("fix-loop-carries-the-failure-v1"):
-                    input.fix_context = self._l1_failure_context(failed_checks)
+                    notes = self._l1_failure_context(failed_checks)
+                    # O gate de diff vazio fala ANTES do contexto do L1 (que é
+                    # vazio quando nenhum check falhou — o caso do gate): sem
+                    # isto, a sobrescrita aqui apagava a única instrução que
+                    # explicava ao Coder por que o turno voltou.
+                    if self._empty_diff_note:
+                        notes = [self._empty_diff_note] + notes
+                        self._empty_diff_note = None
+                    input.fix_context = notes
                 await self._set_status(
                     WorkItemStatus.implementing, audit_action="l1_failed_retrying",
                     # Which checks failed, not how many attempts. `l1_completed`
