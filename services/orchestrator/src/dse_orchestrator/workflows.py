@@ -1341,13 +1341,24 @@ class WorkItemLifecycleWorkflow:
         self, specs: list[str], detail: str, diff_files: list[str],
         *, reason: str = "preexisting_spec_broken_by_diff",
     ) -> str | bool:
-        """Porta 1 do deadlock de posse de spec: para o item em `spec_conflict`
-        na primitiva de espera durável do plan approval, com TUDO que o humano
-        precisa para decidir — qual spec, quais asserções, o diff que a
-        invalidou. Retorna o veredito que resume o laço ("retry" sempre;
-        "reauthor" só no parque de exaustão de spec própria); levanta
-        _EscalateNow para qualquer outro; retorna False se um cancel chegou
-        durante a espera (o chamador finaliza cancelado)."""
+        """ÚLTIMO RECURSO do deadlock de posse de spec: para o item em
+        `spec_conflict` na primitiva de espera durável do plan approval, com
+        TUDO que o humano precisa para decidir — qual spec, quais asserções, o
+        diff que a invalidou.
+
+        O que ele DEIXOU de ser (2026-08-10, e o docstring antigo dizia
+        "Porta 1" como se ainda fosse a regra): conflito em spec de CLIENTE não
+        chega mais aqui — o Coder atualiza a spec e a PR revisa
+        (`client-spec-never-parks-v1`). Exaustão em spec PRÓPRIA também não
+        chega de primeira: as duas primeiras ordens de reescrita saem sozinhas
+        (`auto-reauthor-before-park-v1`), e só o terceiro impasse parqueia.
+        Esta espera NÃO tem prazo — por isso ela ficou como último recurso, e
+        não como a resposta padrão a uma spec vermelha.
+
+        Retorna o veredito que resume o laço ("retry" sempre; "reauthor" só no
+        parque de exaustão de spec própria); levanta _EscalateNow para qualquer
+        outro; retorna False se um cancel chegou durante a espera (o chamador
+        finaliza cancelado)."""
         assertions = (detail or "")[:2000]
         diff_files = list(diff_files or [])
         # AUTONOMIA ANTES DA ESPERA (decisão de operador, 2026-08-10).

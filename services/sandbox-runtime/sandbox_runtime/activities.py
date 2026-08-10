@@ -2290,6 +2290,17 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         '[ -f "$f" ] && { echo "// $f"; cat "$f"; break; }; done',
         _REFERENCE_SPEC_CHARS,
     )
+    # LIMITAÇÃO CONHECIDA, por construção: `workspace_dir` fica None aqui — no
+    # K8s o repositório vive só no Pod, e o worker não tem onde rodar `git`.
+    # Logo `_is_dse_authored` degrada para o MARCADOR DE NOME neste caminho, e
+    # a decisão de renomear para `-dse` é mais grosseira do que no Docker.
+    #
+    # Não é um vão de proteção: a guarda que impede o Tester de sobrescrever
+    # arquivo do cliente sob ordem roda DENTRO do Pod
+    # (`_pod_reauthor_partition`, que consulta o git de lá e recusa história
+    # que não seja da plataforma). Consertar isto de verdade significa
+    # perguntar ao Pod também aqui, no caminho de autoria — item próprio, não
+    # um campo esquecido.
     return _TesterContext(
         package_json=package_json,
         example_test=example or "(no existing tests — use the ecosystem's default runner)",

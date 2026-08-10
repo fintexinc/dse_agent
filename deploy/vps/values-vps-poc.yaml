@@ -68,7 +68,13 @@ orchestrator:
   # 25 disponíveis. Exposição aceita: sem o teto de gasto, um laço patológico
   # não tem mais freio automático; o freio passa a ser o cap de turnos e o
   # olho do operador.
-  defaultWorkItemMaxUsd: 0
+  # 2026-08-10: RELIGADO, folgado. O motivo de desligar (o item morria com
+  # US$ 3,59 de 25 porque o freio real era o cap de 3 turnos) sumiu — o cap
+  # de tentativas agora chega ao workflow de verdade (rc.74) e vale 8. Com o
+  # parque de spec removido, o laço ficou mais longo por desenho, então o
+  # backstop de gasto volta a fazer falta: 8 turnos x US$ 0,3-4 = US$ 3-32 no
+  # pior caso, e 50 é teto de segurança, não de operação.
+  defaultWorkItemMaxUsd: 50
   coderRetryCap: 8
   replicas: 1                  # POC: 1 replica on the 2-core node (HA out of scope; frees ~400m of CPU)
   image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.74", digest: "" }

@@ -13,8 +13,12 @@ que ganhar saída vira XPASS estrito e falha também, exigindo promover a
 célula.
 
 As regras e onde vivem:
-  R1 revert de teste do Coder      — sandbox_runtime/activities.py (coder_test_edits_reverted):
-                                     o Coder NUNCA edita caminho de teste.
+  R1 revert do INSTRUMENTO         — workspace_hygiene.revert_test_edits (2026-08-10):
+                                     o Coder edita spec do CLIENTE à vontade (a mudança
+                                     entra no diff da PR); o que o pós-turno desfaz é a
+                                     edição sobre o INSTRUMENTO deste laço — a spec com
+                                     commit `tester(<este work_item_id>)`. Antes: todo
+                                     caminho de teste era revertido.
   R2 posse do Tester               — activities.py:_is_dse_authored (~2347) + rename guard
                                      (~2329): o Tester nunca destrói spec do cliente.
   R3 reuso existencial + exceção   — activities.py (~2889: reused) + porta 5
@@ -90,7 +94,8 @@ def saidas(c: Celula) -> set[str]:
     s: set[str] = set()
 
     # Coder: autorizado em PRODUÇÃO e nos gates sobre o próprio diff (R6/R7).
-    # R1 o exclui de QUALQUER caminho de teste, sempre.
+    # R1 o exclui apenas do INSTRUMENTO (SPEC_TESTER) — spec do cliente ele
+    # edita, e a saída aparece em R5 logo abaixo.
     if c.arquivo == PRODUCAO:
         s.add("coder")
     if c.modo in {FORBIDDEN_PATHS, DIFF_BUDGET}:
@@ -101,11 +106,13 @@ def saidas(c: Celula) -> set[str]:
     if c.arquivo == SPEC_TESTER and c.modo == ZERO_VEREDITO:
         s.add("tester")
 
-    # R5 (v3, dois estágios) — spec do CLIENTE na lista FAIL com sujeito no
-    # diff acumulado E verde no base: 1º estágio, o Coder (uma rodada com as
-    # asserções exatas — medido no wi_c9c7b200: preservar max-w-[200px] era
-    # mudança no próprio HTML dele); 2º estágio, a reincidência parqueia para
-    # humano. Vermelha no base (quem == "cliente") não entra: é herdada (R8).
+    # R5 (v4, ator único) — spec do CLIENTE na lista FAIL com sujeito no diff
+    # acumulado E verde no base: o CODER resolve, em toda rodada, com as
+    # asserções exatas no contexto. O 2º estágio (parque na reincidência) SAIU
+    # em 2026-08-10 (`client-spec-never-parks-v1`): a política passou a
+    # autorizá-lo a atualizar a spec, e a supervisão migrou para o diff da PR —
+    # pedir clique no meio do laço para o que já é permitido era só atrito.
+    # Vermelha no base (quem == "cliente") não entra: é herdada (R8).
     if (
         c.quem != "cliente"
         and c.arquivo == SPEC_CLIENTE
@@ -113,7 +120,6 @@ def saidas(c: Celula) -> set[str]:
         and c.modo in {ASSERCAO, ZERO_VEREDITO}
     ):
         s.add("coder")
-        s.add("humano:spec_conflict")
 
     # R8 — o vermelho que o item ENCONTROU: a suite já falhava no base_sha, então
     # não é reprovação dele. Não precisa de ator nem de humano: o gate classifica
@@ -127,12 +133,18 @@ def saidas(c: Celula) -> set[str]:
     # sem ator autorizado → parque para humano com dossiê, na primitiva da
     # porta 1.
     if c.arquivo == SPEC_TESTER and c.modo == ASSERCAO:
+        # F3 (2026-08-10): as duas primeiras ordens de reescrita saem SOZINHAS
+        # (`auto-reauthor-before-park-v1`) — é o efeito exato do clique em
+        # Reauthor, que o humano dava sempre igual. O parque continua existindo
+        # como último recurso, no terceiro impasse: sem ele o laço não converge.
+        s.add("tester:auto_reauthor")
         s.add("humano:spec_conflict")
 
     # R10 — a pinça declarada pelo próprio ator: o duplo no-op contra spec
     # própria reprovada com veredito é reconhecimento de exaustão mais forte
     # que uma segunda rodada de L1. Mesma saída, mesmo dossiê, sem L1 extra.
     if c.arquivo == SPEC_TESTER and c.modo == ASSERCAO_CODER_SEM_JOGADA:
+        s.add("tester:auto_reauthor")  # F3: mesma primitiva, mesmo orçamento de 2
         s.add("humano:spec_conflict")
 
     # R2: célula (tester quebrou spec do cliente) é estruturalmente impossível —
@@ -214,12 +226,21 @@ def test_r2_torna_a_celula_impossivel():
     assert "tester" not in saidas(protegida), "o Tester nunca é ator em spec do cliente"
 
 
-def test_porta1_v3_da_ao_coder_a_primeira_chance():
-    """v3: o conflito em spec do cliente verde no base tem DOIS estágios — o
-    Coder (retry automático com as asserções) e o humano (parque na
-    reincidência). A herdada não tem nenhum dos dois: baseline resolve."""
+def test_porta1_v4_o_coder_resolve_spec_de_cliente_sem_pedir_licenca():
+    """v4 (2026-08-10): o conflito em spec do cliente tem UM ator — o Coder — e
+    NENHUM parque. Este pin afirmava o contrário até hoje ("a reincidência
+    parqueia"), e afirmava a política certa PARA A ÉPOCA: spec de cliente era
+    intocável, então parar e perguntar era a única saída honesta.
+
+    A política mudou (spec de cliente é editável, revisada no diff da PR) e o
+    parque virou atrito puro: o humano via 3 falhas em 4.980 e clicava a mesma
+    coisa toda vez. O que NÃO mudou está no pin abaixo — o instrumento do
+    laço continua fora do alcance do Coder."""
     fresca = Celula("coder", SPEC_CLIENTE, ASSERCAO)
-    assert saidas(fresca) == {"coder", "humano:spec_conflict"}
+    assert saidas(fresca) == {"coder"}
+    assert "humano:spec_conflict" not in saidas(fresca), (
+        "spec de cliente não parqueia mais: a supervisão é o diff da PR"
+    )
     herdada = Celula("cliente", SPEC_CLIENTE, ASSERCAO, sujeito_no_diff=True)
     assert saidas(herdada) == {"baseline:not_our_failure"}
 
@@ -229,4 +250,10 @@ def test_deferral_nao_e_saida_e_sim_encaminhamento():
     célula que era o beco 1 tem saída HOJE por causa do parque R9, não do
     deferral: a única saída é o humano, nunca um ator do laço."""
     celula = Celula("tester", SPEC_TESTER, ASSERCAO)
-    assert saidas(celula) == {"humano:spec_conflict"}
+    assert "coder" not in saidas(celula), (
+        "o instrumento do laço continua fora do alcance do Coder — é a régua "
+        "com que ele é julgado"
+    )
+    # F3: a saída deixou de ser SÓ humana. As duas primeiras ordens de
+    # reescrita saem sozinhas; o parque fica para o terceiro impasse.
+    assert saidas(celula) == {"tester:auto_reauthor", "humano:spec_conflict"}

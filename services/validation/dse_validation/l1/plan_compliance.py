@@ -208,8 +208,12 @@ def diff_budget_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
     # 379 of the 400 lines, of which 218 (57.5% of the budget) were the two test
     # files the TESTER wrote one activity earlier — the Coder paid, with a
     # retry, for a diff it did not write. The exemption is not an escape hatch
-    # for the Coder either: any change it makes under a test path is reverted to
-    # the turn-start SHA before the commit (`workspace_hygiene.revert_test_edits`).
+    # for the Coder either — but the boundary MOVED on 2026-08-10: what the
+    # post-turn reverts is now the loop's own INSTRUMENT (the specs whose git
+    # subject is `tester(<this work_item_id>)`), not every test path. The
+    # Coder's edits to a PRE-EXISTING customer spec survive, land in the PR diff
+    # and are reviewed there — and they are not charged here either. Reading
+    # this as "all test edits are reverted" is how the old comment lied.
     budget, budget_source = _effective_diff_budget(plan)
     charged = diff.non_test_lines_changed
     over_budget = charged > budget
