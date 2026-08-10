@@ -50,7 +50,7 @@ global:
 #     vault/otel) stay in the public repositories, with no prefix. ---
 # rc.53: adapters + gateway precisam do F1/F2 (thread do bot, bot_ts, recusa
 # non-task) — parados na rc.31 desde sempre; sobe tudo junto do mesmo main.
-_ghcrTag: &ghcrTag "v0.1.0-rc.67"
+_ghcrTag: &ghcrTag "v0.1.0-rc.70"
 
 # --- CPU requests right-sized against MEASURED usage (2026-07-25) ------------
 # The node sat at 97% CPU *reserved* while using 9%: 1843m of the 2000m was
@@ -63,7 +63,7 @@ _ghcrTag: &ghcrTag "v0.1.0-rc.67"
 # scheduling promise, not a quota — sizing them for peak wastes the whole node.
 orchestrator:
   replicas: 1                  # POC: 1 replica on the 2-core node (HA out of scope; frees ~400m of CPU)
-  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.67", digest: "" }
+  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.70", digest: "" }
   resources:
     # Measured 3m/80Mi idle. Runs validation activities in-process, so it bursts
     # well above idle — hence a request far above measured, and a 1-core limit.
@@ -265,8 +265,8 @@ runtime:
     create: true
   agentRunnerImage:
     repository: ghcr.io/fintexinc/dse_agent/agent-runner
-    # rc.67: surefire visivel -- evidencia real no detail + exaustao reconhece Java
-    tag: "v0.1.0-rc.67"
+    # rc.70: parque do Tester + exemplo por proximidade do diff (D1) + painel do repo
+    tag: "v0.1.0-rc.70"
     digest: ""
   # Ceiling per sandbox, not a concurrency cap: each turn may burst to a full
   # core, and how many run at once follows from what the node has left. On 4
