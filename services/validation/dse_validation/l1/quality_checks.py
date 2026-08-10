@@ -406,6 +406,21 @@ def _counts_from_line(line: str) -> TestCounts | None:
     )
 
 
+#: Linhas que os runners usam como RODAPÉ — a contagem autoritativa da execução.
+#: jest/vitest: "Tests:  3 failed, 4972 passed, 4975 total" (e "Test Suites:").
+#: pytest: a cerca "== 272 passed, 3 failed in 12.4s ==".
+#: O surefire tem regex própria (`_SUREFIRE_RE`) e é tratado por contagem.
+#: Ancorado no INÍCIO da linha, que é o que separa rodapé de nome de teste: o
+#: pytest abre a linha com a contagem (com ou sem a cerca de `=`, que o `-q`
+#: omite), enquanto uma linha de teste do jest verbose abre com `●`, `✓` ou o
+#: nome do describe. Sem a âncora, "…for 403 errors…" vira contagem.
+_FOOTER_LINE_RE = re.compile(
+    r"^\s*(?:Tests|Test Suites|Snapshots)\s*:"
+    r"|^\s*=*\s*\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|deselected)\b",
+    re.IGNORECASE,
+)
+
+
 def _test_counts(text: str) -> TestCounts | None:
     """The counts a test runner printed, as numbers — pytest, jest and surefire
     dialects.
@@ -428,8 +443,26 @@ def _test_counts(text: str) -> TestCounts | None:
         counts = _counts_from_line(line)
         if counts is None:
             continue
-        if counts.failed > 0:
-            return counts
+        # RODAPÉ vence, sempre — e o maior rodapé vence entre rodapés.
+        #
+        # O que estava aqui antes era `if counts.failed > 0: return counts`:
+        # a primeira linha com falha ganhava. Medido em 10/08, nos dois
+        # dialetos e em direções opostas:
+        #   - surefire imprime uma linha por CLASSE antes do total, então o
+        #     gate publicava a primeira classe ("Tests run: 1, Errors: 1")
+        #     sobre um total de 2/2 (wi_82254f59);
+        #   - jest com `verbose` imprime o NOME de cada teste, e um teste
+        #     chamado "...for 403 errors..." virou "403 errors" sobre um
+        #     rodapé real de "3 failed, 4972 passed" (wi_176dfa72). O
+        #     operador leu isso como "longe do verde"; eram três asserções.
+        #
+        # `_SUREFIRE_RE` já é ancorada o bastante para não casar nome de
+        # teste; para os demais dialetos exigimos a forma de rodapé, e entre
+        # candidatos vence o de maior `executed` — o total nunca é menor que
+        # uma linha de classe, que é o que o docstring sempre afirmou.
+        is_footer = bool(_SUREFIRE_RE.search(line)) or bool(_FOOTER_LINE_RE.search(line))
+        if not is_footer:
+            continue
         if fallback is None or counts.executed > fallback.executed:
             fallback = counts
     return fallback

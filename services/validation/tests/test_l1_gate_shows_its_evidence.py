@@ -83,8 +83,12 @@ def test_a_failing_jest_run_names_its_failures_in_the_summary():
     every investigation at the gate instead of at the broken suite."""
     finding = run_test_check(_Stub(1, _COVERAGE_TABLE, _JEST_FAIL_STDERR), _test_cfg())
     assert finding.status is GateStatus.FAIL
-    assert "2 failed" in finding.summary, finding.summary
-    assert "7 failed" in finding.summary or "2 failed" in finding.summary
+    # Evoluiu com o defeito 5 (2026-08-10): entre os dois rodapés do jest
+    # ("Test Suites: 2 failed..." e "Tests: 7 failed..."), o gate passa a
+    # publicar o de TESTES — que é o que o laço de conserto precisa saber.
+    # Antes vencia o primeiro rodapé com falha, que era o de suítes.
+    assert "7 failed" in finding.summary, finding.summary
+    assert "4981 passed" in finding.summary
 
 
 def test_a_failing_run_and_a_green_run_cannot_publish_the_same_summary():
