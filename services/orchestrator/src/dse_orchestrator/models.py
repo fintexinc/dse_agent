@@ -155,6 +155,12 @@ class WorkItemLifecycleInput:
     # em atributo de instância — para sobreviver a um continue_as_new entre o
     # veredito e o turno que o executa; uma ordem perdida em silêncio seria o
     # humano mandando e ninguém obedecendo. Consumida (zerada) no despacho.
+    #: Quantas ordens de reescrita o SISTEMA emitiu sozinho neste item, sem
+    #: clique humano (decisão de operador 2026-08-10). Existe para que a
+    #: autonomia tenha fim: esgotado o orçamento, o impasse volta a ser
+    #: decisão humana, com dossiê e botões. Aditivo — histórias antigas
+    #: decodificam com 0.
+    auto_reauthor_rounds: int = 0
     reauthor_specs: list[str] = field(default_factory=list)
     reauthor_context: str | None = None
 

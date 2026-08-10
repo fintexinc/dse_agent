@@ -24,7 +24,10 @@ from temporalio.worker import Worker
 from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.local_activities import LOCAL_ACTIVITIES
 from dse_orchestrator.models import WorkItemLifecycleInput
-from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
+from dse_orchestrator.workflows import (
+    _AUTO_REAUTHOR_CAP,
+    WorkItemLifecycleWorkflow,
+)
 
 from conftest import DSN, insert_work_item, new_work_item_id, read_audit_actions, wait_for_status
 from fakes import FakeControlPlane, build_fake_activities
@@ -81,6 +84,10 @@ async def _start(state: FakeControlPlane, work_item_id: str, env):
     wf_input = WorkItemLifecycleInput(
         work_item_id=work_item_id, tenant_id="test-tenant", requester="usr_test",
         repo="acme/repo", base_branch="main", acceptance_criteria="crit",
+        # F3 (2026-08-10): as duas primeiras ordens de reescrita saem sozinhas.
+        # O canal de direcionamento HUMANO que este arquivo pina é o segundo
+        # estágio — declarar o orçamento gasto o põe onde ele existe.
+        auto_reauthor_rounds=_AUTO_REAUTHOR_CAP,
     )
     handle = await env.client.start_workflow(
         WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue)

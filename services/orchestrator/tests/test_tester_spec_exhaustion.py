@@ -28,7 +28,10 @@ from dse_contracts.activities import L1Finding
 from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.local_activities import LOCAL_ACTIVITIES
 from dse_orchestrator.models import WorkItemLifecycleInput
-from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
+from dse_orchestrator.workflows import (
+    _AUTO_REAUTHOR_CAP,
+    WorkItemLifecycleWorkflow,
+)
 
 from conftest import DSN, insert_work_item, new_work_item_id, read_audit_actions, wait_for_status
 from fakes import FakeControlPlane, build_fake_activities
@@ -139,6 +142,15 @@ async def _start(state: FakeControlPlane, work_item_id: str, env):
     wf_input = WorkItemLifecycleInput(
         work_item_id=work_item_id, tenant_id="test-tenant", requester="usr_test",
         repo="acme/repo", base_branch="main", acceptance_criteria="crit",
+        # EVOLUIU em 2026-08-10 (F3): o impasse de spec própria passou a emitir a
+        # ordem de reescrita SOZINHO nas duas primeiras vezes (decisão de
+        # operador: "o sistema decide em vez de te perguntar"). O parque humano
+        # que este arquivo inteiro pina não morreu — ele virou o SEGUNDO estágio,
+        # alcançado quando a autonomia se esgota. Declarar o orçamento gasto é o
+        # que põe cada teste na situação que ele sempre existiu para cobrir.
+        # Que a ordem automática vem ANTES está pinado em
+        # test_auto_reauthor_before_parking.py.
+        auto_reauthor_rounds=_AUTO_REAUTHOR_CAP,
     )
     handle = await env.client.start_workflow(
         WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue)

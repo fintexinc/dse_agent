@@ -25,7 +25,10 @@ from temporalio.worker import Worker
 
 from dse_orchestrator.local_activities import LOCAL_ACTIVITIES
 from dse_orchestrator.models import WorkItemLifecycleInput
-from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
+from dse_orchestrator.workflows import (
+    _AUTO_REAUTHOR_CAP,
+    WorkItemLifecycleWorkflow,
+)
 
 from conftest import insert_work_item, new_work_item_id, wait_for_status
 from fakes import FakeControlPlane, build_fake_activities
@@ -59,6 +62,10 @@ async def test_a_parked_item_reaches_review_ready_after_the_human_verdict(time_s
     wf_input = WorkItemLifecycleInput(
         work_item_id=work_item_id, tenant_id="test-tenant", requester="usr_test",
         repo="acme/fe", base_branch="main", acceptance_criteria="crit",
+        # F3 (2026-08-10): as duas primeiras ordens de reescrita são
+        # automáticas. Este teste cobre o ciclo COM humano, que é o segundo
+        # estágio — declarar o orçamento gasto o põe onde ele sempre esteve.
+        auto_reauthor_rounds=_AUTO_REAUTHOR_CAP,
     )
     handle = await time_skipping_env.client.start_workflow(
         WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue)

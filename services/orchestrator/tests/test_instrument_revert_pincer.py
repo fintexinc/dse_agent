@@ -26,7 +26,10 @@ from temporalio.worker import Worker
 
 from dse_orchestrator.local_activities import LOCAL_ACTIVITIES
 from dse_orchestrator.models import WorkItemLifecycleInput
-from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
+from dse_orchestrator.workflows import (
+    _AUTO_REAUTHOR_CAP,
+    WorkItemLifecycleWorkflow,
+)
 
 from conftest import insert_work_item, new_work_item_id, wait_for_status
 from fakes import FakeControlPlane, build_fake_activities
@@ -56,6 +59,10 @@ async def test_noops_caused_by_instrument_reverts_park_with_the_dossier(time_ski
     wf_input = WorkItemLifecycleInput(
         work_item_id=work_item_id, tenant_id="test-tenant", requester="usr_test",
         repo="acme/be", base_branch="main", acceptance_criteria="crit",
+        # F3 (2026-08-10): a pinça agora emite a ordem sozinha nas duas
+        # primeiras vezes; o parque com dossiê que este teste pina é o segundo
+        # estágio.
+        auto_reauthor_rounds=_AUTO_REAUTHOR_CAP,
     )
     handle = await time_skipping_env.client.start_workflow(
         WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue)

@@ -369,6 +369,12 @@ def preexisting_spec_conflicts(
 #: "Expected:"/"Received:" do jest — o par que resolve o dossiê do beco 1 em
 #: trinta segundos humanos. Ausente em falhas sem esse formato (TypeError):
 #: o excerto de asserções cobre.
+#: Quantas ordens de reescrita o sistema emite SOZINHO antes de devolver o
+#: impasse ao humano. Dois: a primeira cobre o caso comum (a spec do Tester
+#: envelheceu em relação ao código); a segunda cobre o Tester ter errado a
+#: reescrita. A terceira seria fé, não engenharia.
+_AUTO_REAUTHOR_CAP = 2
+
 _EXPECTED_RECEIVED_LINE = re.compile(r"^\s*((?:Expected|Received)[:\s][^\n]*)$", re.MULTILINE)
 
 #: Suite que morreu na CARGA (jest) ou compilação (maven) — sem veredito.
@@ -1344,6 +1350,38 @@ class WorkItemLifecycleWorkflow:
         durante a espera (o chamador finaliza cancelado)."""
         assertions = (detail or "")[:2000]
         diff_files = list(diff_files or [])
+        # AUTONOMIA ANTES DA ESPERA (decisão de operador, 2026-08-10).
+        #
+        # No impasse de spec PRÓPRIA do Tester, o veredito que o humano dava era
+        # sempre o mesmo — `reauthor` — e a ordem já é inteiramente executável
+        # sem ele (as guardas de posse vivem no Pod, em
+        # `_pod_reauthor_partition`, e valem contra ordem também). Chamar alguém
+        # para dizer o óbvio custava uma espera SEM PRAZO.
+        #
+        # Aqui a primitiva resolve sozinha e devolve o MESMO veredito que o
+        # humano devolveria, então os três call sites herdam o comportamento sem
+        # duplicar lógica. O orçamento existe para que a autonomia termine: sem
+        # ele, Tester reescreve → falha → reescreve seria um ciclo pago. Esgotado,
+        # o item parqueia como sempre, e aí a decisão é mesmo humana.
+        if (
+            reason == "tester_spec_exhaustion"
+            and workflow.patched("auto-reauthor-before-park-v1")
+            and self._input.auto_reauthor_rounds < _AUTO_REAUTHOR_CAP
+        ):
+            self._input.auto_reauthor_rounds += 1
+            await self._audit(
+                "tester_reauthor_ordered_automatically",
+                {"specs": specs, "round": self._input.auto_reauthor_rounds,
+                 "cap": _AUTO_REAUTHOR_CAP,
+                 "expected_vs_received": _EXPECTED_RECEIVED_LINE.findall(detail or "")[:12]},
+            )
+            self._last_verdict_comment = (
+                "Automatic order (no human in the loop): the spec you authored for "
+                "this task keeps failing and the Coder may not edit it. Rewrite it "
+                "against the code as it is now — or, if the code is genuinely wrong, "
+                "write the assertion that proves it."
+            )
+            return "reauthor"
         # O par Expected/Received quando o runner o imprime — é o que resolve o
         # dossiê em trinta segundos humanos (medido nos dois casos do beco 1).
         expected_vs_received = _EXPECTED_RECEIVED_LINE.findall(detail or "")[:12]
