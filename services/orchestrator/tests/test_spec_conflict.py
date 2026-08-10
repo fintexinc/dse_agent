@@ -116,12 +116,17 @@ async def _start(state: FakeControlPlane, work_item_id: str, env):
 
 
 @pytest.mark.asyncio
-async def test_preexisting_spec_failure_parks_in_spec_conflict_not_retry(time_skipping_env):
-    """DoD 1+3 (v3: o parque vem na REINCIDÊNCIA): a primeira reprovação em
-    spec pré-existente verde no base dá ao Coder UMA rodada com as asserções;
-    a mesma spec falhando de novo PARA o item em spec_conflict e o humano
-    recebe qual spec, quais asserções e o diff que a invalidou. Com o verdict
-    "retry" o laço volta e completa."""
+async def test_preexisting_spec_failure_is_worked_not_parked(time_skipping_env):
+    """EVOLUIU em 2026-08-10 (F2). Nasceu como DoD 1+3 da porta 1: a
+    reincidência PARAVA o item e entregava ao humano qual spec, quais asserções
+    e o diff que a invalidou.
+
+    A decisão de operador removeu a parada — o Coder já podia corrigir spec de
+    cliente desde 10/08 e a supervisão é o diff da PR. O que este teste
+    continua defendendo, e é o que importava: a primeira falha dá ao Coder UMA
+    rodada com as asserções, e a reincidência entrega EXATAMENTE a mesma
+    evidência (qual spec, quais asserções, qual diff) — agora no ledger, para
+    quem revisa a PR, em vez de numa espera sem prazo."""
     work_item_id = new_work_item_id("specconf")
     insert_work_item(work_item_id)
     state = FakeControlPlane(
@@ -133,26 +138,17 @@ async def test_preexisting_spec_failure_parks_in_spec_conflict_not_retry(time_sk
     )
     worker, handle = await _start(state, work_item_id, time_skipping_env)
     async with worker:
-        await wait_for_status(handle, {"spec_conflict"})
-        assert state.coder_turn_calls == 2, (
-            "uma chance dada (v3); a reincidência não compra terceiro turno"
-        )
+        await wait_for_status(handle, {"review_ready"})
 
         actions = read_audit_actions(work_item_id)
-        assert "spec_conflict_detected" in actions
         assert "spec_conflict_deferred_to_coder" in actions, "a chance é auditável"
+        assert "spec_conflict_detected" not in actions, "spec de cliente não parqueia"
 
-        detected = _audit_details(work_item_id, "spec_conflict_detected")[0]
+        detected = _audit_details(work_item_id, "client_spec_conflict_autofixing")[0]
         assert detected["specs"] == [_PREEXISTING_SPEC], "qual spec"
-        assert "toBe(0)" in detected["assertions"], "quais asserções"
         assert _SUBJECT_TS in detected["diff_files"], "o diff que a invalidou"
+        assert detected["expected_vs_received"], "as asserções que reprovaram"
 
-        await handle.signal(
-            "spec_conflict_resolution",
-            {"verdict": "retry", "actor": "usr_test", "comment": "spec ajustada por mim"},
-        )
-        await wait_for_status(handle, {"review_ready"})
-        assert state.coder_turn_calls == 3, "o retry autorizado volta ao laço"
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
         result = await handle.result()
@@ -185,33 +181,32 @@ async def test_conflict_reflags_after_a_retry_that_touches_another_file(time_ski
     )
     worker, handle = await _start(state, work_item_id, time_skipping_env)
     async with worker:
-        await wait_for_status(handle, {"spec_conflict"})
-        await handle.signal(
-            "spec_conflict_resolution", {"verdict": "retry", "actor": "usr_test"}
-        )
-        # segundo parque: a spec pré-existente segue FAIL e o sujeito está no
-        # diff acumulado, ainda que fora do diff do turno corrente. A espera é
-        # pela LINHA DE AUDITORIA, não pelo status: logo após o signal o status
-        # ainda é o do parque #1 e um poll rápido relia o estado velho como se
-        # fosse o novo (corrida medida sob contenção do time-skipping).
+        # EVOLUIU em 2026-08-10 (F2): sem parque, o re-flag não é mais um
+        # segundo `spec_conflict_detected` e sim a segunda linha de
+        # `client_spec_conflict_autofixing`. O INVARIANTE do wi_8edaef39 é o
+        # mesmo e é o que este teste existe para defender: a detecção compara
+        # contra o diff ACUMULADO, então o sujeito continua sendo visto depois
+        # de um turno que tocou só o badge.
+        # A espera é pela LINHA DE AUDITORIA, não pelo status — a lição que este
+        # teste já carregava: sem parque o item roda várias rodadas completas e
+        # o status só assenta no fim.
         import asyncio as _asyncio
-        for _ in range(120):
-            if len(_audit_details(work_item_id, "spec_conflict_detected")) >= 2:
+        for _ in range(240):
+            if len(_audit_details(work_item_id, "client_spec_conflict_autofixing")) >= 2:
                 break
             await _asyncio.sleep(0.25)
-        await wait_for_status(handle, {"spec_conflict"})
-        detected = _audit_details(work_item_id, "spec_conflict_detected")
-        assert len(detected) == 2, "o conflito tem que re-flagar após o retry"
-        assert _SUBJECT_TS in detected[1]["diff_files"], "diff acumulado, não o do turno"
-
-        await handle.signal(
-            "spec_conflict_resolution", {"verdict": "retry", "actor": "usr_test"}
+        detected = _audit_details(work_item_id, "client_spec_conflict_autofixing")
+        assert len(detected) >= 2, (
+            "o conflito tem que re-flagar enquanto a spec segue FAIL"
         )
-        await wait_for_status(handle, {"review_ready"})
-        await handle.signal("review_comment", {"verdict": "approved"})
-        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        assert _SUBJECT_TS in detected[1]["diff_files"], "diff acumulado, não o do turno"
         result = await handle.result()
-    assert result.status == WorkItemStatus.done.value
+    # Sem parque, uma spec que nunca é consertada encerra pelo breaker de
+    # não-convergência — a mesma queixa duas vezes depois de edições reais.
+    # É o freio que substitui a espera humana, e ele existia antes desta
+    # mudança: o item não fica girando nem espera para sempre.
+    assert result.status == WorkItemStatus.escalated.value
+    assert "coder_not_converging" in (result.detail or ""), result.detail
 
 
 @pytest.mark.asyncio

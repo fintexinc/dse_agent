@@ -2852,6 +2852,28 @@ class WorkItemLifecycleWorkflow:
                                         {"specs": conflicts},
                                     )
                                     conflicts = []
+                        if conflicts and workflow.patched("client-spec-never-parks-v1"):
+                            # A TRAVA QUE SAIU (decisão de operador, 2026-08-10 e
+                            # reafirmada): spec PRÉ-EXISTENTE quebrada pelo diff não
+                            # para mais o item para pedir licença. O Coder pode
+                            # corrigi-la (política de 10/08) e a instrução passou a
+                            # autorizá-lo explicitamente (F1) — parar aqui era pedir
+                            # permissão para um trabalho já permitido, e custava uma
+                            # espera SEM PRAZO por 3 testes de 4.980.
+                            #
+                            # A supervisão não sumiu, mudou de lugar: a edição aparece
+                            # no diff da PR, e o conflito fica no ledger para quem
+                            # revisa. Os freios que encerram o item continuam todos:
+                            # coder_not_converging (mesma queixa 2x), o teto de
+                            # tentativas, a pinça de no-op e o gate de diff vazio.
+                            await self._audit(
+                                "client_spec_conflict_autofixing",
+                                {"specs": conflicts,
+                                 "diff_files": list(input.cumulative_files_changed),
+                                 "expected_vs_received": _EXPECTED_RECEIVED_LINE.findall(
+                                     test_bad.detail or "")[:12]},
+                            )
+                            conflicts = []
                         if conflicts:
                             resumed = await self._park_spec_conflict(
                                 conflicts, test_bad.detail or "",

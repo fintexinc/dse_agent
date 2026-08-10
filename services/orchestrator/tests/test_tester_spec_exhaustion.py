@@ -623,41 +623,33 @@ async def test_reauthor_order_reaches_the_tester_and_the_warning_converges(time_
     assert "coder_retry_cap_exhausted" not in actions
 
 
-@pytest.mark.asyncio
-async def test_reauthor_is_refused_on_a_client_spec_park(time_skipping_env):
-    """`reauthor` só existe para o parque de exaustão de spec PRÓPRIA. Num
-    parque da porta 1 (spec do CLIENTE quebrada pelo diff), a ordem não
-    autoriza ninguém — o DSE nunca reescreve spec de cliente, nem por ordem —
-    e o item escala para humano em vez de resumir."""
-    client_subject = "src/app/components/homepage/homepage.component.ts"
-    detail = (
-        "summary: 5 errors\n"
-        "--- the 1 line(s) this gate counted ---\n"
-        f"FAIL {_CLIENT_SPEC}\n"
-        "--- raw output (tail) ---\n"
-        "expect(received).toBe(expected)\n"
+def test_reauthor_is_only_honoured_for_the_testers_own_park():
+    """`reauthor` só vale no parque de exaustão de spec PRÓPRIA — o DSE nunca
+    reescreve spec de cliente, nem por ordem humana.
+
+    EVOLUIU em 2026-08-10 (F2): este pin era um cenário ponta a ponta que
+    parqueava a porta 1 e mandava `reauthor` para vê-lo recusado. Com a decisão
+    de operador, spec de cliente NÃO PARQUEIA MAIS — o cenário ficou
+    inalcançável, mas o invariante não morreu: ele vive na guarda de
+    `_park_spec_conflict`, que só honra o veredito quando
+    `reason == "tester_spec_exhaustion"`. É o que este teste passa a pinar, na
+    unidade, onde a regra de fato está.
+
+    A segunda camada continua onde sempre esteve: `_pod_reauthor_partition`
+    recusa no git do Pod qualquer caminho que não seja autoria da plataforma
+    (`test_tester_reauthor_order.py::test_order_is_executed_only_on_dse_authored_files`)."""
+    import inspect
+
+    from dse_orchestrator import workflows as _wf
+
+    src = inspect.getsource(_wf.WorkItemLifecycleWorkflow._park_spec_conflict)
+    assert 'reason == "tester_spec_exhaustion"' in src, (
+        "a guarda que restringe o reauthor ao parque de spec própria sumiu — "
+        "sem ela, uma ordem humana passaria a reescrever spec de cliente"
     )
-    work_item_id = new_work_item_id("exh-guard")
-    insert_work_item(work_item_id)
-    state = FakeControlPlane(
-        plan_risk_class="low",
-        # v3 da porta 1: a 1ª falha é a chance do Coder; o parque (onde este
-        # guard vive) vem na reincidência.
-        l1_fail_times=2,
-        l1_fail_detail=detail,
-        coder_files_changed=[client_subject],
-        tester_test_files=[_DSE_SPEC],
+    assert "_EscalateNow" in src, (
+        "veredito não aplicável ao parque continua escalando, nunca resumindo"
     )
-    worker, handle = await _start(state, work_item_id, time_skipping_env)
-    async with worker:
-        await wait_for_status(handle, {"spec_conflict"})
-        await handle.signal(
-            "spec_conflict_resolution", {"verdict": "reauthor", "actor": "usr_test"},
-        )
-        await wait_for_status(handle, {"escalated"})
-        result = await handle.result()
-    assert result.status == WorkItemStatus.escalated.value
-    assert "tester_reauthor_ordered" not in read_audit_actions(work_item_id)
 
 
 @pytest.mark.asyncio

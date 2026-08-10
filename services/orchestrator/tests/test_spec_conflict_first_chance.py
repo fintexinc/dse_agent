@@ -119,9 +119,15 @@ async def test_first_conflict_green_at_base_goes_to_the_coder_with_the_assertion
 
 
 @pytest.mark.asyncio
-async def test_the_same_spec_failing_again_parks_as_today(time_skipping_env):
-    """DoD 1b: a mesma spec reprovando após a chance do Coder → parque, com o
-    dossiê de hoje. O retry humano segue funcionando."""
+async def test_the_same_spec_failing_again_keeps_working_instead_of_parking(time_skipping_env):
+    """EVOLUIU em 2026-08-10 (F2). Este teste nasceu afirmando "a reincidência
+    parqueia, com o dossiê de hoje" — a porta 1 v3.
+
+    A decisão de operador removeu essa parada: spec de CLIENTE quebrada pelo
+    diff é trabalho que o Coder já tem permissão de fazer, e a supervisão é o
+    diff da PR. O invariante que este teste continua defendendo é o que
+    importava: a reincidência é DETECTADA (a chance do Coder foi consumida uma
+    vez, e a segunda falha deixa rastro auditável) — só não vira espera humana."""
     work_item_id = new_work_item_id("v3-repeat")
     insert_work_item(work_item_id)
     state = FakeControlPlane(
@@ -133,19 +139,18 @@ async def test_the_same_spec_failing_again_parks_as_today(time_skipping_env):
     )
     worker, handle = await _start(state, work_item_id, time_skipping_env)
     async with worker:
-        await wait_for_status(handle, {"spec_conflict"})
-        assert state.coder_turn_calls == 2, (
-            "parqueia na REINCIDÊNCIA: uma chance dada, a segunda falha para o humano"
-        )
-        detected = _audit_details(work_item_id, "spec_conflict_detected")
-        assert detected and detected[0].get("reason") == "preexisting_spec_broken_by_diff"
-        assert detected[0]["specs"] == [_CLIENT_SPEC]
-        assert len(_audit_details(work_item_id, "spec_conflict_deferred_to_coder")) == 1
-
-        await handle.signal(
-            "spec_conflict_resolution", {"verdict": "retry", "actor": "usr_test"},
-        )
+        # sem parque: o item segue sozinho até a revisão
         await wait_for_status(handle, {"review_ready"})
+        assert len(_audit_details(work_item_id, "spec_conflict_deferred_to_coder")) == 1, (
+            "a PRIMEIRA falha continua sendo a chance do Coder, consumida uma vez"
+        )
+        autofixing = _audit_details(work_item_id, "client_spec_conflict_autofixing")
+        assert autofixing and autofixing[0]["specs"] == [_CLIENT_SPEC], (
+            "a REINCIDÊNCIA continua detectada e auditável — só não para o item"
+        )
+        assert not _audit_details(work_item_id, "spec_conflict_detected"), (
+            "spec de cliente não parqueia mais"
+        )
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
         result = await handle.result()
@@ -158,13 +163,20 @@ async def test_the_retry_comment_reaches_the_coder_context(time_skipping_env):
     sintoma (modal) sem tocar a causa (comparador de mudanças) — e o humano no
     parque SABIA a causa, mas o retry não tinha canal: o comment morria no
     audit (rc.51 plumbou comment→reauthor; retry ficou de fora). O comment do
-    veredito retry viaja na frente do fix_context, como no reauthor."""
+    veredito retry viaja na frente do fix_context, como no reauthor.
+
+    EVOLUIU em 2026-08-10 (F2): o canal continua exatamente igual, mas o
+    cenário mudou de parque. Spec de CLIENTE não parqueia mais, então o teste
+    exercita o parque que RESTA — a spec do próprio Tester —, que é onde o
+    humano ainda decide e onde o direcionamento dele ainda precisa chegar."""
     work_item_id = new_work_item_id("v3-guide")
     insert_work_item(work_item_id)
+    # a spec que falha é a do PRÓPRIO Tester: parque de exaustão, o que sobrou
+    tester_detail = _MAXW_DETAIL.replace(_CLIENT_SPEC, _DSE_SPEC)
     state = FakeControlPlane(
         plan_risk_class="low",
         l1_fail_times=2,
-        l1_fail_detail=_MAXW_DETAIL,
+        l1_fail_detail=tester_detail,
         coder_files_changed=[_SUBJECT_HTML],
         tester_test_files=[_DSE_SPEC],
     )
