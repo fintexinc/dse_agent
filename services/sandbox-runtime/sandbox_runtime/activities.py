@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 from temporalio import activity
 
 from dse_audit import emit as audit_emit
-from dse_contracts.paths import DSE_COMMIT_SUBJECT_PREFIXES
+from dse_contracts.paths import DSE_COMMIT_SUBJECT_PREFIXES, is_test_path
 from dse_contracts import (
     ACTIVITY_CHECKPOINT_SANDBOX,
     ACTIVITY_PROVISION_SANDBOX,
@@ -775,16 +775,9 @@ async def _run_coder_turn_impl(
     # instruction; layer 2 (deterministic): a post-turn prune of disposable
     # artifacts ONLY (report/log/scratch), never of legitimate new source — see
     # _prune_disposable_artifacts.
-    if inp.expected_files:
-        inp.instruction += (
-            "\n\n## Plan constraints (mandatory)\n"
-            f"- Modify ONLY production code in these files: {', '.join(inp.expected_files)}.\n"
-            "- Do NOT create or edit TEST files (tests/, *.test.js, test_*.py…). "
-            "Writing tests is a SEPARATE stage (the Tester) — any test change you "
-            "make is reverted before the commit.\n"
-            "- Do NOT create documentation/report files (README, *_REPORT.md, "
-            "CHANGELOG…) — the change and the tests speak for themselves."
-        )
+    note = plan_constraints_note(list(inp.expected_files or []))
+    if note:
+        inp.instruction += note
 
     pod_git = isinstance(agent, RemoteSubstrate) and not getattr(
         agent.driver, "workspace_is_host_visible", True
@@ -2534,6 +2527,43 @@ def _zero_verdict_specs(output: str, owned: list[str]) -> list[str]:
         if re.search(rf"\[ERROR\]\s+/workspace/{esc}[:\[]", output):
             broken.append(path)
     return broken
+
+
+def plan_constraints_note(expected_files: list[str]) -> str:
+    """As regras do plano que entram na instrução do Coder.
+
+    Duas coisas que esta função existe para NÃO fazer, ambas medidas em
+    2026-08-10 (wi_049e6fb8, 5ª ocorrência do primeiro turno vazio — US$ 0,12 e
+    zero arquivos):
+
+    1. **Contradição.** O `expected_files` do Planner inclui os testes que a
+       mudança precisa. Listá-los sob "modifique SOMENTE estes" logo antes de
+       proibir tocar em teste entrega ao ator uma ordem impossível — a
+       explicação mais simples para um turno que devolve nada. Os testes saem
+       da lista; a lista some se não sobrar produção (afirmar "somente estes"
+       com lista vazia proibiria tudo).
+
+    2. **Mentira sobre a política.** "any test change you make is reverted"
+       valeu até a decisão de operador de 2026-08-10. Hoje o Coder PODE editar
+       spec de cliente — a edição entra no diff da PR, onde o revisor a vê — e
+       o pós-turno reverte apenas o INSTRUMENTO do Tester. Dizer ao ator que
+       seu trabalho será desfeito é pedir que ele não o faça."""
+    production = [p for p in (expected_files or []) if not is_test_path(p)]
+    lines = ["\n\n## Plan constraints (mandatory)"]
+    if production:
+        lines.append(
+            f"- Focus your production changes on these files: {', '.join(production)}."
+        )
+    lines.append(
+        "- Authoring the task's tests is the Tester's stage, not yours: changes "
+        "you make to specs the TESTER authored are reverted before the commit. "
+        "Fixing production code that a spec exposes is your job."
+    )
+    lines.append(
+        "- Do NOT create documentation/report files (README, *_REPORT.md, "
+        "CHANGELOG…) — the change and the tests speak for themselves."
+    )
+    return "\n".join(lines)
 
 
 def _write_paths_for_authoring(
