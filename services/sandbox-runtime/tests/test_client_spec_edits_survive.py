@@ -91,3 +91,30 @@ def test_a_new_coder_authored_test_is_kept_but_a_forged_dse_file_is_removed(tmp_
     assert not (ws / "test" / "forged-dse.spec.ts").exists()
     assert "test/extra.spec.ts" not in reverted
     assert (ws / "test" / "extra.spec.ts").exists()
+
+
+def test_the_coders_own_test_file_from_a_previous_turn_stays_editable(tmp_path):
+    """MEDIDO no wi_fadd43185 (2026-08-10, 1ª rodada pós-política): o Coder
+    CRIOU src/test/resources/application-test.yml no turno 2 (novo → mantido,
+    commit `coder(...)`); no turno 3 a edição dele foi REVERTIDA — a história
+    só-de-plataforma foi lida como "instrumento do Tester", o teste Spring
+    seguiu com Errors: 1 (config ausente) e o item morreu no cap de retries.
+
+    `coder(` também é plataforma, mas não é o Tester: instrumento é o que tem
+    commit `tester(` na história. Arquivo com história só-`coder(` é trabalho
+    do próprio Coder entre turnos — editável."""
+    ws = _workspace(tmp_path)
+    (ws / "src" / "test").mkdir(parents=True)
+    (ws / "src" / "test" / "application-test.yml").write_text("datasource: h2\n")
+    _git(ws, "add", "-A")
+    _git(ws, "commit", "-q", "-m", "coder(wi_x): add test datasource config")
+    base_sha = _git(ws, "rev-parse", "HEAD")
+    (ws / "src" / "test" / "application-test.yml").write_text("datasource: h2\nflyway: on\n")
+
+    reverted = revert_test_edits(str(ws), base_sha)
+
+    assert "src/test/application-test.yml" not in reverted, (
+        "arquivo com história só-coder( é do PRÓPRIO Coder — revertê-lo mata "
+        "o trabalho dele entre turnos (foi o cap exhausted do wi_fadd43185)"
+    )
+    assert "flyway: on" in (ws / "src" / "test" / "application-test.yml").read_text()
