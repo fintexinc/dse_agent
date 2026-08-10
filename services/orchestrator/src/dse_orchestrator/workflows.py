@@ -2341,8 +2341,15 @@ class WorkItemLifecycleWorkflow:
                                         + pincer_detail[-1500:]
                                     )
                                     # o humano deu nova direção; o contador de
-                                    # no-ops recomeça com ela
+                                    # no-ops recomeça com ela — e o ORÇAMENTO
+                                    # de tentativas também. Sem isto o parque
+                                    # é teatro: medido no wi_82254f59, o
+                                    # veredito chegou com o teto quase gasto,
+                                    # o Tester consertou, e o item morreu no
+                                    # L1 seguinte. Quem decide compra uma
+                                    # chance nova, não um suspiro.
                                     self._noop_coder_turns = 0
+                                    input.coder_retry_count = 0
                                     await self._set_status(
                                         WorkItemStatus.implementing,
                                         audit_action="tester_reauthor_ordered",
@@ -2352,6 +2359,7 @@ class WorkItemLifecycleWorkflow:
                                     continue
                                 if resumed:
                                     self._noop_coder_turns = 0
+                                    input.coder_retry_count = 0
                                     await self._set_status(
                                         WorkItemStatus.implementing,
                                         audit_action="spec_conflict_retry",

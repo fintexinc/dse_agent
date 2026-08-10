@@ -2427,6 +2427,9 @@ def _model_authored_test_script(
         return None, cost_usd
 
     script: list[dict[str, Any]] = []
+    # A ordem humana de reescrita autoriza o caminho EXATO (por caminho, não
+    # como interruptor do turno) — ver _write_paths_for_authoring.
+    ordered_now = list(getattr(inp, "reauthor_specs", None) or [])
     for f in files[:3]:
         path, content = str(f.get("path") or ""), str(f.get("content") or "")
         if not (path and content and is_test_path(path)):
@@ -2443,14 +2446,12 @@ def _model_authored_test_script(
         # burning its whole retry budget getting worse.
         #
         # `_dse` in the stem is the platform's own marker (see below), so a
-        # path carrying it is ours by construction and safe to replace.
-        if path in ctx.existing_tests and not _is_dse_authored(path, ctx.workspace_dir):
-            # Instead of discarding it (which left the script empty whenever the
-            # model insisted on the existing test), RENAME deterministically to a
-            # new file in the SAME directory — relative imports stay intact.
-            renamed = _dedupe_test_path(path, ctx.existing_tests, ctx.workspace_dir)
-            logger.warning("test path ALREADY EXISTS — renamed %r → %r", path, renamed)
-            path = renamed
+        # path carrying it is ours by construction and safe to replace. E um
+        # caminho ORDENADO por humano é escrito onde foi ordenado — a decisão
+        # de renomear é toda de `_write_paths_for_authoring`.
+        path = _write_paths_for_authoring(
+            [path], ctx, reauthor_ordered=ordered_now
+        )[0]
         script.append({"tool": "write_file", "path": path, "content": content})
     if not script:
         return None, cost_usd
@@ -2533,6 +2534,37 @@ def _zero_verdict_specs(output: str, owned: list[str]) -> list[str]:
         if re.search(rf"\[ERROR\]\s+/workspace/{esc}[:\[]", output):
             broken.append(path)
     return broken
+
+
+def _write_paths_for_authoring(
+    paths: list[str], ctx: "_TesterContext", *, reauthor_ordered: list[str],
+) -> list[str]:
+    """Onde cada arquivo de autoria REALMENTE vai ser escrito.
+
+    O guard de renomeação existe para o Tester nunca destruir teste do CLIENTE
+    (issue #1) e segue valendo. A exceção é por CAMINHO: quando o humano
+    ORDENOU a reescrita daquele arquivo (veredito `reauthor` no parque), a
+    ordem vale mais que a heurística de autoria — `ordem >= autoria`, a
+    invariante que o repositório já declara, mais a decisão de operador de
+    2026-08-10 que tornou spec de cliente editável.
+
+    Sem esta exceção, cada clique de Reauthor criava uma CÓPIA `-dse` e
+    deixava o arquivo quebrado no lugar: decisão humana sem efeito, medida
+    duas vezes seguidas no wi_8b083140."""
+    ordered = set(reauthor_ordered or [])
+    out: list[str] = []
+    for path in paths:
+        if (
+            path not in ordered
+            and path in ctx.existing_tests
+            and not _is_dse_authored(path, ctx.workspace_dir)
+        ):
+            renamed = _dedupe_test_path(path, ctx.existing_tests, ctx.workspace_dir)
+            logger.warning("test path ALREADY EXISTS — renamed %r → %r", path, renamed)
+            out.append(renamed)
+        else:
+            out.append(path)
+    return out
 
 
 def _dedupe_test_path(path: str, existing: set[str], workspace_dir: str | None = None) -> str:
