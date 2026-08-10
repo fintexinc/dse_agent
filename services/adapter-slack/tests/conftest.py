@@ -31,6 +31,13 @@ def _cleanup():
                 "DELETE FROM comment_state WHERE work_item_id IN "
                 "(SELECT id FROM work_items WHERE tenant_id LIKE 'test_tenant_%')"
             )
+            # Item 3 (0040): sem esta limpeza, o consumo one-shot da rodada
+            # ANTERIOR sobrevive ao renascimento do item de ts fixo — e o
+            # primeiro clique da rodada seguinte vira "already_resolved".
+            cur.execute(
+                "DELETE FROM verdict_consumptions WHERE work_item_id IN "
+                "(SELECT id FROM work_items WHERE tenant_id LIKE 'test_tenant_%')"
+            )
             cur.execute("DELETE FROM work_items WHERE tenant_id LIKE 'test_tenant_%'")
             cur.execute("DELETE FROM channel_kill_switches WHERE tenant_id LIKE 'test_tenant_%'")
             cur.execute("DELETE FROM tenant_steering_allowlist WHERE tenant_id LIKE 'test_tenant_%'")
