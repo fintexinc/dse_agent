@@ -216,3 +216,79 @@ def test_the_approve_click_reaches_the_items_plan_gate_not_a_new_task(fake_slack
             assert cur.fetchone()[0] == 0, "nada vaza para o irmão"
     finally:
         conn.close()
+
+
+def test_the_fanout_sibling_does_not_inherit_the_primaries_bot_ts(fake_slack):
+    """A1, o cenário medido DUAS vezes (wi_8db808f8/wi_53c820f1 na rodada 1;
+    wi_bff43dc9/wi_d41d893b na cena do caso 3): a PRIMEIRA mensagem de status
+    do primário nasce ANTES do fan-out — o INSERT do irmão copia o source_ref
+    inteiro e herda o bot_ts alheio. O prompt de Approve é a MESMA mensagem
+    (upsert edita in-place, ts eterno), então o clique correlaciona com os
+    DOIS itens e `ORDER BY created_at DESC` entrega o veredito ao irmão — que
+    não está em awaiting_plan_approval e o recusa (`declined_unexpected_status`
+    no ledger de produção, 2x).
+
+    Aqui a ordem é a REAL: admissão → status message do primário (bot_ts
+    registrado) → `fan_out_sibling_work_items` DE VERDADE (o SQL de produção,
+    não um INSERT de teste) → clique no prompt. O dono do clique é o primário."""
+    import asyncio
+
+    from dse_orchestrator.local_activities import fan_out_sibling_work_items
+
+    created = _post_event({
+        "type": "app_mention", "channel": _CH, "ts": "8850.000100",
+        "user": "U_FANOUT_REQ", "text": "cross repo change with fanout",
+    })
+    primary = created["work_item_id"]
+
+    resp = client.post("/internal/status-comment", json={
+        "work_item_id": primary, "channel": _CH,
+        "body": "Queued.", "actor": "system:orchestrator",
+    })
+    assert resp.status_code == 200
+    bot_post = fake_slack.post_calls[-1]
+
+    fanned = asyncio.run(fan_out_sibling_work_items({
+        "work_item_id": primary,
+        "repos": ["fintexinc/fanout-sibling-repo"],
+        "base_branch": "main",
+    }))
+    assert fanned["created"], "o fan-out real criou o irmão"
+    sibling = fanned["created"][0]
+
+    conn = psycopg2.connect(DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT source_ref FROM work_items WHERE id=%s", (sibling,))
+            sib_ref = cur.fetchone()[0]
+        assert "bot_ts" not in sib_ref, (
+            "o irmão herdou o bot_ts do primário — é ESTA herança que faz o "
+            "clique no prompt do primário correlacionar com o irmão mais novo"
+        )
+
+        # O prompt de Approve é a MESMA mensagem, editada (upsert) — o clique
+        # carrega o ts dela. Tem que chegar ao PRIMÁRIO.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
+                (primary,),
+            )
+        conn.commit()
+        click_message = {"ts": bot_post["ts"]}
+        if bot_post.get("thread_ts"):
+            click_message["thread_ts"] = bot_post["thread_ts"]
+        result = _post_interaction({
+            "type": "block_actions",
+            "channel": {"id": _CH},
+            "message": click_message,
+            "user": {"id": "U_FANOUT_REQ"},
+            "action_ts": "8850.000900",
+            "actions": [{"action_id": "dse_plan_approve", "value": "approve"}],
+        })
+        assert result["path"] == "signal"
+        assert result["work_item_id"] == primary, (
+            "o clique no prompt do primário foi parar no irmão do fan-out — "
+            "o Approve humano desviado para um item que vai recusá-lo"
+        )
+    finally:
+        conn.close()
