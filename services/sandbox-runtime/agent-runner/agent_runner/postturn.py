@@ -48,7 +48,9 @@ def run_post_turn(req: PostTurnRequest) -> PostTurnResult:
         session.ensure_identity()
 
         restored = restore_lockfile_churn(req.workspace_dir)
-        reverted = revert_test_edits(req.workspace_dir, req.turn_start_sha)
+        reverted = revert_test_edits(
+            req.workspace_dir, req.turn_start_sha, req.work_item_id
+        )
         if session.has_changes():
             session.commit(req.commit_message)
         session.push()

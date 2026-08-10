@@ -28,7 +28,6 @@ import os
 import subprocess
 
 from dse_contracts.paths import (
-    DSE_COMMIT_SUBJECT_PREFIXES,
     is_disposable_artifact,
     is_test_path,
     lockfile_manifest_for,
@@ -116,40 +115,54 @@ def restore_lockfile_churn(workspace_dir: str) -> list[str]:
 
 def _has_tester_marker(rel: str) -> bool:
     """O marcador de nome do Tester (`-dse`/`_dse`) — o fallback de autoria
-    quando não há histórico git (arquivo novo, git indisponível). Mesma regra
-    do `_is_dse_authored` de activities."""
+    quando não há histórico git (arquivo novo, git indisponível).
+
+    É uma CONVENÇÃO DE SUFIXO do stem, não uma substring: a regra antiga casava
+    `-dse` em qualquer posição do nome, então uma spec de cliente chamada
+    `parse-dserializer.spec.ts` era tratada como instrumento e revertida."""
     name = rel.rsplit("/", 1)[-1]
     stem = name.split(".", 1)[0]
-    return stem.endswith("-dse") or stem.endswith("_dse") or "-dse" in name or "_dse" in name
+    return stem.endswith("-dse") or stem.endswith("_dse")
 
 
-def _is_tester_instrument(workspace_dir: str, rel: str) -> bool:
-    """O arquivo é o INSTRUMENTO do laço — algo que o TESTER escreveu?
+def _is_tester_instrument(
+    workspace_dir: str, rel: str, work_item_id: str | None = None
+) -> bool:
+    """O arquivo é o INSTRUMENTO DESTE laço — algo que o Tester escreveu AQUI?
 
-    Polaridade importa (medido no wi_fadd43185, 2026-08-10): `coder(` também é
-    subject de plataforma, mas um arquivo com história só-de-`coder(` é
-    trabalho do PRÓPRIO Coder entre turnos — revertê-lo mata o trabalho dele
-    (o application-test.yml criado no turno 2 e revertido no turno 3 custou o
-    cap inteiro de retries). Instrumento é o que tem commit `tester(` na
-    história — E nenhum commit humano (commit humano em qualquer ponto torna o
-    arquivo do CLIENTE, editável pela decisão de 2026-08-10). Sem histórico ou
-    sem git: o marcador de nome decide."""
-    try:
-        out = subprocess.run(
-            ["git", "log", "--format=%s", "--", rel],
-            cwd=workspace_dir, capture_output=True, text=True, timeout=15,
-        )
-        subjects = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    A pergunta certa é sobre ESTE item, não sobre a plataforma em geral, e o
+    repositório já carrega a resposta: todo commit da plataforma é
+    `<stage>(<work_item_id>): …` (`scoped_git.commit`). Perguntar pelo id deste
+    item é preciso e — o que importa — **imune à profundidade do clone**.
+
+    O que a regra anterior ("todos os commits são de plataforma E algum é
+    `tester(`") errava: o clone do sandbox é `--depth 50`, então numa spec de
+    CLIENTE cujos commits humanos ficaram fora da janela o `git log` mostra
+    apenas o `tester(` recém-criado — e a edição do Coder era revertida em
+    silêncio, contra a política de 2026-08-10. Defeito latente que a autonomia
+    de edição desta sessão só faria disparar com mais frequência.
+
+    Polaridade preservada (wi_fadd43185): `coder(` também é subject de
+    plataforma, mas arquivo escrito pelo próprio Coder entre turnos NÃO é
+    instrumento — revertê-lo mata o trabalho dele. Sem histórico, sem git, ou
+    sem saber o id: o marcador de nome decide."""
+    if work_item_id:
+        try:
+            out = subprocess.run(
+                ["git", "log", "--format=%s", "--", rel],
+                cwd=workspace_dir, capture_output=True, text=True, timeout=15,
+            )
+            subjects = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+        except Exception:  # noqa: BLE001 — git indisponível: o marcador decide
+            subjects = []
         if subjects:
-            all_platform = all(s.startswith(DSE_COMMIT_SUBJECT_PREFIXES) for s in subjects)
-            touched_by_tester = any(s.startswith("tester(") for s in subjects)
-            return all_platform and touched_by_tester
-    except Exception:  # noqa: BLE001 — git indisponível: o marcador decide
-        pass
+            return any(s.startswith(f"tester({work_item_id})") for s in subjects)
     return _has_tester_marker(rel)
 
 
-def revert_test_edits(workspace_dir: str, turn_start_sha: str) -> list[str]:
+def revert_test_edits(
+    workspace_dir: str, turn_start_sha: str, work_item_id: str | None = None
+) -> list[str]:
     """Revert Coder changes to the tests the LOOP ITSELF authored — and only
     those. Best-effort. Returns the reverted paths.
 
@@ -188,7 +201,7 @@ def revert_test_edits(workspace_dir: str, turn_start_sha: str) -> list[str]:
                 os.remove(os.path.join(workspace_dir, rel))
                 reverted.append(rel)
             else:
-                if not _is_tester_instrument(workspace_dir, rel):
+                if not _is_tester_instrument(workspace_dir, rel, work_item_id):
                     continue  # do cliente OU do próprio Coder: a edição sobrevive
                 proc = subprocess.run(
                     ["git", *NO_CUSTOMER_HOOKS, "checkout", turn_start_sha, "--", rel], cwd=workspace_dir,

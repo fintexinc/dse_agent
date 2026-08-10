@@ -904,7 +904,9 @@ async def _run_coder_turn_impl(
         # Desde 2026-08-10 o revert protege só o INSTRUMENTO do Tester
         # (autoria via histórico git; ver workspace_hygiene.revert_test_edits);
         # edição de spec de cliente e arquivos do próprio Coder sobrevivem.
-        reverted_tests = _revert_coder_test_edits(workspace_dir, base_sha)
+        reverted_tests = _revert_coder_test_edits(
+            workspace_dir, base_sha, inp.work_item_id
+        )
         if reverted_tests:
             audit_emit(
                 actor="system:sandbox-runtime",
