@@ -144,10 +144,110 @@ def _base_branch_for_repo(conn, tenant_id: str, repo: str) -> str:
     return row[0] if row and row[0] else "main"
 
 
+def _stage_for_action(action_id: str) -> str | None:
+    """O stage da decisão one-shot, derivado do PRÓPRIO botão (determinístico).
+    A mensagem de status é UMA por item (ts eterno), então a chave do consumo
+    é (work_item_id, stage) — nunca o ts."""
+    if action_id.startswith("dse_plan_"):
+        return "awaiting_plan_approval"
+    if action_id.startswith("dse_park_"):
+        return "spec_conflict"
+    return None
+
+
+def _consume_verdict(conn, work_item_id: str, stage: str,
+                     principal: str) -> tuple[bool, str | None, str | None]:
+    """Consumo one-shot ATÔMICO da decisão (item 3). True = este clique é o
+    primeiro e a decisão é dele. False = já consumida — devolve (por_quem,
+    às_que_horas) para o ephemeral do clicador atrasado. O INSERT vive na
+    MESMA transação do record_signal_event: ou o veredito entra com o consumo,
+    ou nada entra."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO verdict_consumptions (work_item_id, stage, consumed_by) "
+            "VALUES (%s,%s,%s) ON CONFLICT (work_item_id, stage) DO NOTHING "
+            "RETURNING consumed_by",
+            (work_item_id, stage, principal),
+        )
+        if cur.fetchone():
+            return True, None, None
+        cur.execute(
+            "SELECT consumed_by, to_char(consumed_at AT TIME ZONE 'UTC', 'HH24:MI') "
+            "FROM verdict_consumptions WHERE work_item_id=%s AND stage=%s",
+            (work_item_id, stage),
+        )
+        prev = cur.fetchone()
+    return False, (prev[0] if prev else None), (prev[1] if prev else None)
+
+
+def _rearm_verdict(work_item_id: str, stage: str) -> None:
+    """Re-arma a decisão quando os botões daquele stage são RENDERIZADOS de
+    novo — um re-parque do mesmo item é uma decisão nova (pin do re-arm)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM verdict_consumptions WHERE work_item_id=%s AND stage=%s",
+                (work_item_id, stage),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ack_text_for(action_id: str, user_id: str, *, direction: str = "") -> str:
+    hhmm = time.strftime("%H:%M", time.gmtime())
+    who = f"<@{user_id}>"
+    if action_id == "dse_plan_approve":
+        return f"✅ Aprovado por {who} às {hhmm} (UTC)"
+    if action_id == "dse_plan_reject":
+        return f"🚫 Rejeitado por {who} às {hhmm} (UTC) — replanejando"
+    if action_id == "dse_park_escalate":
+        return f"⛔ Escalado por {who} às {hhmm} (UTC)"
+    if action_id == "dse_park_reauthor":
+        return f"🔁 Reauthor autorizado por {who} às {hhmm} (UTC)"
+    if action_id == "dse_park_retry":
+        base = f"🔁 Retry enviado por {who} às {hhmm} (UTC)"
+        return f"{base} — direcionamento: {direction}" if direction else base
+    return f"✔️ Registrado por {who} às {hhmm} (UTC)"
+
+
+def _ack_update(channel: str, message_ts: str, text: str) -> None:
+    """Item 3(a): a decisão fica VISÍVEL na própria mensagem — botões fora,
+    decisor e hora dentro. Best-effort e sem espera de throttle (mesma regra
+    do _notify_ephemeral: isto roda na coroutine de /slack/interactions). A
+    próxima transição do workflow reescreve a mensagem por cima — o ack é a
+    ponte honesta até lá."""
+    try:
+        build_real_slack_client(
+            get_slack_bot_token(), deadline=time.monotonic()
+        ).chat_update(
+            channel=channel, ts=message_ts, text=text,
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+        )
+    except Exception:  # noqa: BLE001 — o signal já está gravado; o ack nunca o desfaz
+        logger.warning("ack chat_update failed", exc_info=True)
+
+
+def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
+                          message_ts: str | None, ack_text: str) -> None:
+    """O fecho de todo clique de veredito: ack in-place no sucesso, ephemeral
+    'já resolvido' no duplicado. Nada aqui altera o resultado — só o torna
+    visível."""
+    if result.get("path") == "already_resolved":
+        by, at = result.get("by") or "?", result.get("at") or "?"
+        _notify_ephemeral(
+            channel, user_id, f"⏳ Já resolvido por {by} às {at} (UTC)."
+        )
+    elif result.get("path") == "signal" and message_ts:
+        _ack_update(channel, message_ts, ack_text)
+
+
 def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
                                extra_payload: dict | None = None,
                                signal_only: bool = False,
-                               bot_message_ts: str | None = None) -> dict:
+                               bot_message_ts: str | None = None,
+                               consume_stage: str | None = None) -> dict:
     """`bot_message_ts`: para cliques de botão — o ts da mensagem do bot onde
     o botão vive. Correlaciona PRIMEIRO por `{channel, bot_ts}` (F1(b): o
     prompt pertence a UM item, registrado no source_ref na hora do post);
@@ -197,6 +297,19 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
             return {"ok": True, "path": "not_correlated"}
 
         if result.kind == "signal":
+            # Item 3(b): consumo one-shot NA BORDA. O workflow consome a flag
+            # do lado dele, mas um segundo signal re-arma a flag DEPOIS do
+            # consumo — e o próximo parque do mesmo item se auto-resolveria
+            # com o veredito velho (classe wi_8edaef39). Mesma transação do
+            # record: ou os dois entram, ou nenhum.
+            if consume_stage:
+                fresh, by, at = _consume_verdict(
+                    conn, result.work_item_id, consume_stage, principal
+                )
+                if not fresh:
+                    conn.commit()
+                    return {"ok": True, "path": "already_resolved",
+                            "work_item_id": result.work_item_id, "by": by, "at": at}
             # `recorded` is False when the event_id already existed (dedup). The
             # reconciler needs the distinction to count/audit only what it truly
             # recovered — re-reading a thread every cycle must not inflate the
@@ -543,11 +656,18 @@ async def slack_interactions(request: Request) -> dict:
                                 "value": action.get("value", "")})
             return {"ok": True, "path": "park_verdict_unknown"}
         conv_event = build_event_from_block_action(payload, resolved_principal=principal)
-        return _handle_conversation_event(
+        result = _handle_conversation_event(
             conv_event, principal=principal, tenant_id=tenant_id,
             extra_payload={"park_verdict": verdict},
             bot_message_ts=message.get("ts"),
+            consume_stage=_stage_for_action(action["action_id"]),
         )
+        _finish_verdict_click(
+            result, channel=channel, user_id=user_id,
+            message_ts=message.get("ts"),
+            ack_text=_ack_text_for(action["action_id"], user_id),
+        )
+        return result
 
     conv_event = build_event_from_block_action(payload, resolved_principal=principal)
 
@@ -559,10 +679,17 @@ async def slack_interactions(request: Request) -> dict:
     if route:
         extra_payload["approval_route"] = route
 
-    return _handle_conversation_event(
+    result = _handle_conversation_event(
         conv_event, principal=principal, tenant_id=tenant_id, extra_payload=extra_payload,
         bot_message_ts=(payload.get("message") or {}).get("ts"),
+        consume_stage=_stage_for_action(action.get("action_id", "")),
     )
+    _finish_verdict_click(
+        result, channel=payload["channel"]["id"], user_id=user_id,
+        message_ts=(payload.get("message") or {}).get("ts"),
+        ack_text=_ack_text_for(action.get("action_id", ""), user_id),
+    )
+    return result
 
 
 def _handle_view_submission(payload: dict) -> dict:
@@ -604,9 +731,14 @@ def _handle_view_submission(payload: dict) -> dict:
     extra_payload: dict = {"park_verdict": "retry"}
     if direction:
         extra_payload["fix_context"] = direction
-    _handle_conversation_event(
+    result = _handle_conversation_event(
         conv_event, principal=principal, tenant_id=tenant_id,
         extra_payload=extra_payload, bot_message_ts=message_ts,
+        consume_stage="spec_conflict",
+    )
+    _finish_verdict_click(
+        result, channel=channel, user_id=user_id, message_ts=message_ts,
+        ack_text=_ack_text_for("dse_park_retry", user_id, direction=direction),
     )
     return {}
 
@@ -659,6 +791,9 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
         surface_ref["thread_ts"] = item_source_ref["thread_ts"]
     if req.status == "awaiting_plan_approval":
         surface_ref["blocks"] = approval_blocks(req.body)
+        # Item 3: renderizar os botões RE-ARMA a decisão deste stage — um
+        # re-render legítimo (novo gate no mesmo item) é uma decisão nova.
+        _rearm_verdict(req.work_item_id, "awaiting_plan_approval")
     elif req.status == "spec_conflict":
         # A6: os vereditos do parque como botões — a decisão humana entra pelo
         # canal. O corpo JÁ é o dossiê (specs, Expected/Received, asserções) —
@@ -666,6 +801,7 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
         surface_ref["blocks"] = park_blocks(
             req.body, include_reauthor=(req.park_reason == "tester_spec_exhaustion")
         )
+        _rearm_verdict(req.work_item_id, "spec_conflict")
     elif req.status == "awaiting_repo_selection":
         # Ambiguous repo: offer a static_select with the tenant's repos. With < 2
         # repos it degrades to plain text (nothing to pick -> just the text

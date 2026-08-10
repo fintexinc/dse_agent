@@ -139,7 +139,7 @@ def test_a_duplicate_click_emits_exactly_one_signal_and_tells_the_late_clicker(f
     )
     assert _event_count(work_item_id) == 1, "um clique humano = um signal"
     assert fake_slack.ephemeral_calls, "quem clicou tarde precisa saber"
-    assert "já resolvido" in fake_slack.ephemeral_calls[-1]["text"]
+    assert "já resolvido" in fake_slack.ephemeral_calls[-1]["text"].lower()
 
 
 def test_the_click_acks_in_place_and_the_buttons_disappear(fake_slack):

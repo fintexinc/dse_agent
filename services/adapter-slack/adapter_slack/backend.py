@@ -179,11 +179,14 @@ class SlackCommentBackend:
 
     def edit(self, surface_ref: dict, comment_ref: str, body: str) -> None:
         ref = json.loads(comment_ref)
-        blocks = surface_ref.get("blocks")
-        kwargs = {"channel": ref["channel"], "ts": ref["ts"], "text": body}
-        if blocks:
-            kwargs["blocks"] = blocks
-        self._client.chat_update(**kwargs)
+        # `blocks` SEMPRE presente (vazio quando o status não tem): o
+        # chat.update do Slack PRESERVA os blocos antigos quando o argumento é
+        # omitido — sem isto, os botões de um prompt decidido sobreviviam a
+        # todas as transições seguintes, clicáveis para sempre.
+        self._client.chat_update(
+            channel=ref["channel"], ts=ref["ts"], text=body,
+            blocks=surface_ref.get("blocks") or [],
+        )
 
 
 @dataclass
