@@ -427,23 +427,33 @@ def test_a_cursor_ahead_of_a_reset_source_rebuilds_the_read_model():
     cursor when it is not the same source anymore, and the only correct cursor
     for a reset source is 0 — full replay, the documented DR path, idempotent
     by design. This pins that deterministically in EVERY environment by moving
-    the cursor beyond anything the visible sources will ever show this run."""
+    the cursor beyond anything the visible sources will ever show this run.
+
+    Asserts only work_item-scoped surfaces plus the cursor position. runs_view
+    is keyed by the GLOBAL run_key `<source>:<serial id>`, so in a shared
+    console_rm a leftover row from another incarnation of the sources can squat
+    the key and ON CONFLICT DO NOTHING swallows the insert — counting it here
+    would be nondeterministic exactly in the environments this test exists for.
+    Run content stays pinned (exact counts and cost) by the tests above, which
+    run against same-incarnation ids."""
     conn = psycopg2.connect(DSN)
     wi_id = f"wi-crm-{uuid.uuid4().hex[:10]}"
     try:
         _seed(conn, wi_id)
+        floors: dict[str, int] = {}
         with conn.cursor() as cur:
             for source in ("audit_log", "model_call_ledger"):
+                cur.execute(f"SELECT COALESCE(max(id), 0) FROM {source}")
+                floors[source] = cur.fetchone()[0]
                 cur.execute(
                     "INSERT INTO console_rm.projection_cursor (source) VALUES (%s) "
                     "ON CONFLICT (source) DO NOTHING",
                     (source,),
                 )
                 cur.execute(
-                    f"UPDATE console_rm.projection_cursor SET last_id = "
-                    f"(SELECT COALESCE(max(id), 0) + 1000000 FROM {source}) "
-                    f"WHERE source = %s",
-                    (source,),
+                    "UPDATE console_rm.projection_cursor SET last_id = %s + 1000000 "
+                    "WHERE source = %s",
+                    (floors[source], source),
                 )
         conn.commit()
         drain(conn)
@@ -460,14 +470,19 @@ def test_a_cursor_ahead_of_a_reset_source_rebuilds_the_read_model():
                 (wi_id,),
             )
             assert cur.fetchone()["n"] == 2
-            cur.execute(
-                "SELECT count(*) AS n, sum(cost_usd) AS cost FROM console_rm.runs_view "
-                "WHERE work_item_id = %s",
-                (wi_id,),
-            )
-            runs = cur.fetchone()
-            assert runs["n"] == 2
-            assert float(runs["cost"]) == pytest.approx(2.46)
+            # the cursor landed ON the source it can see, not beyond it — a fix
+            # that clamped to max(id) instead of replaying from 0 would keep the
+            # timeline assertion above red; one that replayed without advancing
+            # goes red here (>= not ==: a live projector may advance it further).
+            for source, floor in floors.items():
+                cur.execute(
+                    "SELECT last_id FROM console_rm.projection_cursor WHERE source = %s",
+                    (source,),
+                )
+                last_id = cur.fetchone()["last_id"]
+                assert floor <= last_id < floors[source] + 1000000, (
+                    f"{source} cursor still points at the previous incarnation: {last_id}"
+                )
     finally:
         conn.rollback()
         conn.close()
