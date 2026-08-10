@@ -235,7 +235,13 @@ preview:
   # certificate down with them. A wildcard cert via the DNS-01 challenge is the
   # fix when previews need HTTPS; it is one certificate for every preview.
   externalHostTemplate: "http://{namespace}.preview.notas.api.br"
-  ttlSeconds: 3600
+  # CURATIVO DATADO (2026-08-09, G-4 interino): 6h em vez de 1h só para a
+  # janela da demo do caso 3. O reaper de 1h derrubou o par FE+BE DUAS vezes
+  # durante a aceitação — a cena (FE-preview servido pelo BE-preview do mesmo
+  # grupo) não pode morrer de relógio no meio. O G-4 ESTRUTURAL (TTL/GC com
+  # pausa por label, e o disco que ele protege) segue no backlog; isto não é a
+  # solução, é o curativo. Reverter para 3600 quando a demo passar.
+  ttlSeconds: 21600
   maxConcurrent: 3
 
 # validation does NOT come up: the dse/validation image is not in the release (→
