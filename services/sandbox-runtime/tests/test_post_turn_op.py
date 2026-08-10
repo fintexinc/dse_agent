@@ -53,13 +53,17 @@ def test_post_turn_full_hygiene_and_scoped_push(tmp_path):
     req, boot = _bootstrap(tmp_path, wi)
     ws = tmp_path / "workspace"
 
-    # simulates the agent turn: legitimate source + junk + churn + test edit
+    # simulates the agent turn: legitimate source + junk + churn + a NEW
+    # customer-convention test + a FORGED tester-marker file. Desde 2026-08-10
+    # (decisão de operador) o teste novo em convenção de cliente FICA — o que
+    # o revert remove é só a forja do marcador do Tester.
     (ws / "src").mkdir()
     (ws / "src" / "app.py").write_text("X = 1\n")
     (ws / "BUG_FIX_REPORT.md").write_text("spontaneous report\n")
     (ws / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
     (ws / "tests").mkdir()
     (ws / "tests" / "test_smuggled.py").write_text("def test_x(): pass\n")
+    (ws / "tests" / "test_forged-dse.py").write_text("def test_f(): pass\n")
 
     post = run_post_turn(
         PostTurnRequest(
@@ -73,12 +77,13 @@ def test_post_turn_full_hygiene_and_scoped_push(tmp_path):
     )
     assert not post.failed
     assert post.sha != boot.sha
-    assert post.files_changed == ["src/app.py"]
+    assert post.files_changed == ["src/app.py", "tests/test_smuggled.py"]
     assert post.pruned == ["BUG_FIX_REPORT.md"]
     assert post.restored_lockfiles == ["package-lock.json"]
-    assert post.reverted_tests == ["tests/test_smuggled.py"]
+    assert post.reverted_tests == ["tests/test_forged-dse.py"]
     assert not (ws / "BUG_FIX_REPORT.md").exists()
-    assert not (ws / "tests" / "test_smuggled.py").exists()
+    assert (ws / "tests" / "test_smuggled.py").exists(), "convenção de cliente fica"
+    assert not (ws / "tests" / "test_forged-dse.py").exists(), "forja -dse sai"
 
     # the push reached the checkpoint (fixed refspec)
     ck = checkpoint_workspace(

@@ -172,13 +172,17 @@ def repo_with_test(tmp_path):
     return ws
 
 
-def test_a_coder_edit_to_an_existing_test_is_reverted(repo_with_test):
-    """The issue #1 bug: the Coder changed the shared seed in test/api.test.js
-    and broke a sibling test. The Coder's edit to a test is reverted back to the
-    start of the turn (the Tester owns the tests)."""
+def test_a_coder_edit_to_a_customer_test_now_survives(repo_with_test):
+    """FLIP da política (decisão de operador, 2026-08-10). Este teste nasceu
+    pinando o revert total do issue #1 (o Coder mudou o seed compartilhado de
+    test/api.test.js e quebrou um teste irmão). Hoje a edição de teste de
+    CLIENTE sobrevive e entra no diff da PR; a proteção contra o cenário do
+    issue #1 mudou de lugar — o teste irmão quebrado reprova o L1 no mesmo
+    turno (o Coder vê e conserta), e o diff da PR mostra a edição ao revisor.
+    O revert continua existindo SÓ para o instrumento do Tester
+    (test_client_spec_edits_survive.py cobre a fronteira)."""
     ws = repo_with_test
     start = _git(ws, "rev-parse", "HEAD").strip()
-    # the Coder edits the test (changes the seed) + edits the source
     with open(os.path.join(ws, "test", "api.test.js"), "w") as fh:
         fh.write("// seed CHANGED: Market 2026-06-10\nassert(first === 'Market');\n")
     with open(os.path.join(ws, "src.js"), "w") as fh:
@@ -186,20 +190,21 @@ def test_a_coder_edit_to_an_existing_test_is_reverted(repo_with_test):
 
     reverted = _revert_coder_test_edits(ws, start)
 
-    assert reverted == ["test/api.test.js"]
-    # the test is back to the original (July seed)
-    assert "2026-07-10" in open(os.path.join(ws, "test", "api.test.js")).read()
-    # the source was NOT touched by the revert (tests only)
+    assert reverted == []
+    assert "2026-06-10" in open(os.path.join(ws, "test", "api.test.js")).read()
     assert "fix real" in open(os.path.join(ws, "src.js")).read()
 
 
-def test_a_new_test_created_by_the_coder_is_removed(repo_with_test):
+def test_a_new_customer_convention_test_by_the_coder_is_kept(repo_with_test):
+    """FLIP (2026-08-10): teste novo do Coder em convenção de cliente é
+    engenharia legítima e visível no diff. Forja do marcador -dse continua
+    removida (test_client_spec_edits_survive.py)."""
     ws = repo_with_test
     start = _git(ws, "rev-parse", "HEAD").strip()
     _write(ws, "test/coder-invented.test.js", "// a test the Coder invented\n")
     reverted = _revert_coder_test_edits(ws, start)
-    assert reverted == ["test/coder-invented.test.js"]
-    assert not os.path.exists(os.path.join(ws, "test", "coder-invented.test.js"))
+    assert reverted == []
+    assert os.path.exists(os.path.join(ws, "test", "coder-invented.test.js"))
 
 
 def test_revert_does_not_touch_source(repo_with_test):
