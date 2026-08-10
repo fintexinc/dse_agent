@@ -438,7 +438,12 @@ def _test_counts(text: str) -> TestCounts | None:
 #: Lines a runner uses to head a broken suite. These carry file paths, which is
 #: why they are only ever used for `detail` (which lives in `validation_runs`
 #: and is subject to retention) and never for `summary`.
-_FAILING_SUITE_RE = re.compile(r"^\s*(?:FAIL|FAILED|ERROR)\b.*$")
+#: Os dois dialetos: nus (jest/pytest — `FAIL src/x.spec.ts`) e ENTRE
+#: COLCHETES (surefire — `[ERROR] contextLoads ... <<< ERROR!`). Sem o segundo,
+#: o detail de um vermelho Maven colapsava para a linha-resumo: a evidência
+#: real vive acima do rodapé longo do mvn, fora do alcance do tail — e o Coder
+#: consertou cego por três rodadas pagas (wi_893de651, defeito 4 da série).
+_FAILING_SUITE_RE = re.compile(r"^\s*(?:\[(?:ERROR|FAIL(?:ED)?)\]|(?:FAIL|FAILED|ERROR)\b).*$")
 
 
 #: Identificadores de suite que os runners imprimem ao reprovar: o caminho, no

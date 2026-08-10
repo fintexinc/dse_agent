@@ -294,7 +294,37 @@ class _PlanRejected(Exception):
 
 #: As linhas "FAIL <suite>" que o quality_checks conta no detail do gate `test`.
 _FAILING_SUITE_LINE = re.compile(r"^FAIL\s+(\S+)", re.MULTILINE)
+#: O dialeto surefire: a suite que falhou é nomeada pela CLASSE, não pelo
+#: caminho — `... <<< FAILURE! -- in com.x.ClasseTest`. Sem esta extração o
+#: Java nunca era reconhecido pela maquinaria de exaustão e queimava o cap em
+#: rodadas cegas (wi_893de651, 3×).
+_SUREFIRE_FAILING_CLASS = re.compile(
+    r"<<<\s*(?:FAILURE|ERROR)!\s*--\s*in\s+(\S+)\s*$", re.MULTILINE
+)
 _TS_SPEC_SUFFIX = re.compile(r"\.(?:spec|test)\.(?:ts|tsx|js|jsx)$")
+
+
+def _failing_spec_ids(test_detail: str) -> list[str]:
+    """Ids das suites que falharam, nos dois dialetos: caminho (jest) e classe
+    (surefire). Ordem de aparição, sem duplicatas."""
+    ids: list[str] = []
+    for rx in (_FAILING_SUITE_LINE, _SUREFIRE_FAILING_CLASS):
+        for m in rx.finditer(test_detail or ""):
+            if m.group(1) not in ids:
+                ids.append(m.group(1))
+    return ids
+
+
+def _spec_id_is_owned(spec_id: str, owned: set[str]) -> bool:
+    """Posse nos dois dialetos: caminho idêntico (jest), ou classe cujo nome
+    simples casa com o STEM de um arquivo do Tester
+    (com.x.ClasseTest ↔ src/test/java/.../ClasseTest.java)."""
+    if spec_id in owned:
+        return True
+    simple = spec_id.rsplit(".", 1)[-1]
+    return any(
+        p.rsplit("/", 1)[-1].rsplit(".", 1)[0] == simple for p in owned
+    )
 
 
 def _spec_subject_prefixes(spec_path: str) -> list[str]:
@@ -364,15 +394,11 @@ def exclusively_tester_spec_failures(
     detail = test_detail or ""
     if _LOAD_FAILURE_MARK.search(detail):
         return []
-    specs: list[str] = []
-    for m in _FAILING_SUITE_LINE.finditer(detail):
-        s = m.group(1)
-        if s not in specs:
-            specs.append(s)
+    specs = _failing_spec_ids(detail)
     if not specs:
         return []
     owned = set(tester_owned or [])
-    if any(s not in owned for s in specs):
+    if any(not _spec_id_is_owned(s, owned) for s in specs):
         return []
     return specs
 
