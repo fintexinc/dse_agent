@@ -221,3 +221,75 @@ def test_a_surefire_failure_reaches_the_detail_with_its_error_lines():
     assert "contextLoads" in finding.detail, (
         "a linha que NOMEIA o teste quebrado é a evidência mínima"
     )
+
+
+# ---------------------------------------------------------------------------
+# Defeito 5 (medido 2026-08-10, e o mais caro do dia): `_test_counts` retorna na
+# PRIMEIRA linha com falha em vez de ler o RODAPÉ. Duas consequências opostas,
+# ambas com saída real capturada da produção:
+#
+#   BE (wi_82254f59, surefire): o surefire imprime uma linha por CLASSE antes do
+#   total. O gate publicou "Tests run: 1, Failures: 0, Errors: 1" — a primeira
+#   classe — quando o total era "Tests run: 2, ... Errors: 2".
+#
+#   FE (wi_176dfa72, jest): o repo roda com `verbose`, então o NOME de cada
+#   teste é impresso. Um teste chamado "...for 403 errors..." casou o contador e
+#   o gate publicou "403 errors" sobre uma suíte cujo rodapé real dizia
+#   "Tests: 3 failed, 4972 passed, 4975 total".
+#
+# O operador leu "403 erros" e concluiu que o FE estava longe do verde. Estava a
+# TRÊS asserções. Toda instrução entregue ao Coder e todo last_error do dia
+# passaram por este parser.
+# ---------------------------------------------------------------------------
+_SUREFIRE_REAL_OUTPUT = (
+    "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 19.361 s "
+    "<<< FAILURE! - in com.fintex.bmofeecalculatorbe.controller.rest.ReportOptionsControllerTest\n"
+    "[ERROR] com.fintex...ReportOptionsControllerTest  Time elapsed: 19.361 s  <<< ERROR!\n"
+    "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 4.973 s "
+    "<<< FAILURE! - in com.fintex.bmofeecalculatorbe.service.AdvisorFeeCalculationServiceTest\n"
+    "[ERROR] Errors: \n"
+    "[ERROR]   ReportOptionsControllerTest » IllegalState Failed to load ApplicationContext f...\n"
+    "[ERROR] Tests run: 2, Failures: 0, Errors: 2, Skipped: 0\n"
+    "[ERROR] Failed to execute goal ... surefire ...: There are test failures.\n"
+)
+
+_JEST_REAL_VERBOSE_OUTPUT = (
+    "  ● GridPayoutComponent › should return false for 403 errors when retrying\n"
+    "    expect(received).toBe(expected)\n"
+    "  ✓ should map 401 errors to a friendly message (4 ms)\n"
+    "FAIL src/app/admin/grid-payout/grid-payout.component.spec.ts (7.877 s)\n"
+    "Test Suites: 1 failed, 274 passed, 275 total\n"
+    "Tests:       3 failed, 4972 passed, 4975 total\n"
+    "Snapshots:   0 total\n"
+)
+
+
+def test_the_surefire_total_wins_over_the_first_class_line():
+    finding = run_test_check(
+        _Stub(1, _SUREFIRE_REAL_OUTPUT, ""), L1Config(test_cmd=["mvn", "test"]),
+    )
+    assert finding.status is GateStatus.FAIL
+    assert "Tests run: 2" in finding.summary, (
+        f"o gate tem que publicar o TOTAL do surefire, nao a primeira classe: {finding.summary!r}"
+    )
+    assert "Errors: 2" in finding.summary
+
+
+def test_a_test_name_mentioning_403_errors_is_not_a_count():
+    finding = run_test_check(
+        _Stub(1, "", _JEST_REAL_VERBOSE_OUTPUT), _test_cfg(),
+    )
+    assert finding.status is GateStatus.FAIL
+    assert "403" not in finding.summary, (
+        f"o NOME de um teste virou contagem de falhas: {finding.summary!r} — foi "
+        "isto que fez '3 falhas de 4975' ser reportado ao operador como '403 erros'"
+    )
+    assert "3 failed" in finding.summary and "4972 passed" in finding.summary
+
+
+def test_the_two_dialects_already_covered_keep_working():
+    """PIN: os rodapés que já liam certo continuam lendo certo."""
+    jest = run_test_check(_Stub(1, _COVERAGE_TABLE, _JEST_FAIL_STDERR), _test_cfg())
+    assert "7 failed" in jest.summary or "2 failed" in jest.summary
+    pytest_run = run_test_check(_Stub(1, "", "== 272 passed, 3 failed in 12.4s =="), _test_cfg())
+    assert "3 failed" in pytest_run.summary
