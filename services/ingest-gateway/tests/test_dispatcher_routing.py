@@ -234,3 +234,110 @@ def test_a_plain_approval_on_spec_conflict_still_declines_never_guesses():
     route = _route_signal("spec_conflict", "approval", _payload("button:dse_plan_approve=approve"))
     assert route.signal_name is None
     assert route.reason == "unexpected_status"
+
+
+# --------------------------------------------------------------------------
+# Item 4 (rc do canal mínimo) — falha de entrega NUNCA silenciosa. As duas
+# formas medidas: (a) o decline P6 era um beco mudo — o clique parecia ter
+# funcionado e o humano nunca soube (o caso A1 produziu exatamente isso, 2x);
+# (b) signal para workflow morto era retry INFINITO (`will be retried`, sem
+# dead-letter) — o "workflow not found for ID" de hoje (wi_8a7036e7) ficaria
+# eterno na fila.
+# --------------------------------------------------------------------------
+def test_a_declined_verdict_notifies_the_channel_instead_of_dying_mute(
+    tenant_id, temporal_client, loop, monkeypatch
+):
+    from ingest_gateway import dispatcher as dispatcher_module
+
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dispatcher_module, "_notify_undeliverable",
+        lambda work_item_id, reason: notified.append((work_item_id, reason)),
+    )
+    wi = _create_work_item_and_workflow(temporal_client, tenant_id, "implementing", start=False)
+    outcome, _ = loop.run_until_complete(
+        _dispatch_row(
+            temporal_client, work_item_id=wi, event_id="evt_mute_1",
+            kind="approval", status="implementing",
+            payload={"content_snapshot": "approved?", "actor": {"resolved_principal": "usr_alice"}},
+        )
+    )
+    assert outcome == DispatchOutcome.DECLINED_UNEXPECTED_STATUS
+    assert notified and notified[0][0] == wi, (
+        "o decline tem que virar mensagem no canal — o clique que parece ter "
+        "funcionado e não funcionou é a falha silenciosa em pessoa"
+    )
+    assert "implementing" in notified[0][1], "o motivo nomeia o estado real"
+
+
+def test_a_signal_to_a_dead_workflow_is_permanent_not_retried_forever(
+    tenant_id, temporal_client, loop, monkeypatch
+):
+    from ingest_gateway import dispatcher as dispatcher_module
+
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dispatcher_module, "_notify_undeliverable",
+        lambda work_item_id, reason: notified.append((work_item_id, reason)),
+    )
+    # status diz "esperando aprovação", mas NENHUM workflow existe (a classe
+    # B8: linha viva, workflow morto — wi_8a7036e7 hoje).
+    wi = _create_work_item_and_workflow(
+        temporal_client, tenant_id, "awaiting_plan_approval", start=False
+    )
+    outcome, _ = loop.run_until_complete(
+        _dispatch_row(
+            temporal_client, work_item_id=wi, event_id="evt_dead_1",
+            kind="approval", status="awaiting_plan_approval",
+            payload={"content_snapshot": "approved", "actor": {"resolved_principal": "usr_alice"}},
+        )
+    )
+    assert outcome == "signal_permanently_undeliverable", (
+        "signal para workflow morto não pode ser retry infinito — é falha "
+        "PERMANENTE, consumida com auditoria e aviso no canal"
+    )
+    assert notified and notified[0][0] == wi
+
+
+def test_notify_undeliverable_posts_to_the_slack_adapter(tenant_id, monkeypatch):
+    """A função de aviso: item slack → POST /internal/status-comment no
+    adapter (o writer edita a MESMA mensagem mutável que o humano clicou);
+    item de outra fonte → não posta (GitHub/Jira herdam depois)."""
+    from ingest_gateway import dispatcher as dispatcher_module
+
+    posts: list[tuple[str, dict]] = []
+
+    class _FakeResp:
+        def raise_for_status(self):
+            return None
+
+    class _FakeClient:
+        def __init__(self, *a, **k): ...
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json=None):
+            posts.append((url, json))
+            return _FakeResp()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+
+    wi = f"wi_notif_{uuid.uuid4().hex[:12]}"
+    conn = psycopg2.connect(DSN)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO work_items (id, tenant_id, source, source_ref, requester, idempotency_key, status) "
+            "VALUES (%s,%s,'slack',%s::jsonb,'usr_alice',%s,'implementing')",
+            (wi, tenant_id, json.dumps({"channel": "C_NOTIF", "thread_ts": "1.2"}),
+             f"idem_{wi}"),
+        )
+    conn.commit()
+    conn.close()
+
+    dispatcher_module._notify_undeliverable(wi, "o item está em 'implementing'")
+    assert posts, "item slack recebe o aviso no canal"
+    url, body = posts[0]
+    assert url.endswith("/internal/status-comment")
+    assert body["work_item_id"] == wi and body["channel"] == "C_NOTIF"
+    assert "Não consegui aplicar" in body["body"]
+    assert "implementing" in body["body"]
