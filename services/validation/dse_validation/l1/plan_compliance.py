@@ -13,7 +13,6 @@ import re
 from dse_contracts import GateStatus, L1Finding, PlanArtifact
 from dse_contracts.paths import is_test_path
 
-from dse_validation.config import _env_int  # config.py owns every env read in this service
 from dse_validation.sandbox_exec import SandboxExecutor
 
 
@@ -144,31 +143,6 @@ def _is_forbidden(path: str, forbidden_paths: list[str]) -> str | None:
     return None
 
 
-_DIFF_BUDGET_ENV = "DSE_L1_DIFF_BUDGET_LINES"
-
-
-def _effective_diff_budget(plan: PlanArtifact) -> tuple[int, str]:
-    """The line budget in force, and where it came from.
-
-    `PlanArtifact.diff_budget_lines` is a compile-time constant in practice:
-    the workflow never sends the field, so every plan ever produced carries the
-    contract's 400 and a large repository has no way to say its PRs are
-    legitimately bigger. A line budget is an operational THRESHOLD — it does not
-    choose which code runs — so the platform may set it from the environment,
-    the same line `config.py` draws for the stage timeouts, and `_env_int` is
-    what keeps a typo in the deployment from taking the whole activity down.
-
-    The repo-scoped home for this number is `.dse/validation.json`, which is
-    already loaded immutably from the base SHA; putting it there needs
-    `config.py` to accept the field and the pipeline to hand it over, and both
-    are outside this change.
-    """
-    budget = _env_int(_DIFF_BUDGET_ENV, plan.diff_budget_lines)
-    if budget != plan.diff_budget_lines:
-        return budget, _DIFF_BUDGET_ENV
-    return budget, "PlanArtifact.diff_budget_lines"
-
-
 def diff_budget_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
     # no_code_change: the plan declares there is NO code change, but the
     # immutable diff changed files — a real inconsistency, so it fails. (This
@@ -214,32 +188,39 @@ def diff_budget_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
     # que o Tester escreveu) — não porque "as edições dele seriam desfeitas de
     # qualquer jeito". Este comentário já afirmou as duas políticas anteriores;
     # quem mudar a terceira atualiza aqui.
-    budget, budget_source = _effective_diff_budget(plan)
+    # OPERATOR DECISION (2026-08-11): o TAMANHO do diff deixou de reprovar.
+    #
+    # O teto vinha de `PlanArtifact.diff_budget_lines`, default 400 no contrato,
+    # e o Planner não é instruído sobre esse campo em lugar nenhum — então todo
+    # plano de todo item saía com 400, independentemente do trabalho pedido.
+    # Medido no wi_4f680518 (US$ 5,41, sem PR): um bootstrap de app Angular
+    # passou em lint, typecheck, test, build, sast e secret_scan, e reprovou com
+    # 19.605 linhas contra 400, só o `package-lock.json` valendo mais de 15 mil.
+    # O laço não tinha saída: encolher o diff seria não fazer o que foi pedido,
+    # então cada rodada repetia a anterior até um humano parar o item.
+    #
+    # Um anti-sprawl precisa que o número venha do TRABALHO. Vindo de constante,
+    # ele não mede sprawl — mede se a tarefa é grande, e tarefa grande não é
+    # defeito. O override por ambiente saiu junto: enquanto existisse, um
+    # values.yaml poderia reintroduzir o teto sem passar por decisão nenhuma.
+    #
+    # A MEDIDA fica, e é isso que separa isto de apagar o gate: quem revisa a PR
+    # continua lendo quantas linhas vieram, e `forbidden_paths` (gate separado)
+    # continua duro sobre QUAIS caminhos foram tocados — que é a pergunta que
+    # de fato protege alguma coisa.
     charged = diff.non_test_lines_changed
-    over_budget = charged > budget
-    if not over_budget:
-        return L1Finding(
-            check="diff_budget",
-            passed=True,
-            detail=(
-                f"diff within budget: {charged}/{budget} lines outside test paths "
-                f"(budget from {budget_source}), {diff.total_lines_changed} lines "
-                f"total across {len(diff.files_changed)} file(s) "
-                "(expected_files is advisory; forbidden_paths validates the paths)"
-            ),
-            summary=f"diff within budget: {charged}/{budget} lines outside test paths",
-        )
     return L1Finding(
         check="diff_budget",
-        passed=False,
+        passed=True,
         detail=(
-            f"diff of {charged} lines outside test paths "
-            f"({diff.total_lines_changed} total across {len(diff.files_changed)} file(s)) "
-            f"exceeds diff_budget_lines={budget}, from {budget_source}"
+            f"diff size is informational: {charged} lines outside test paths, "
+            f"{diff.total_lines_changed} lines total across "
+            f"{len(diff.files_changed)} file(s) "
+            "(size stopped being a verdict on 2026-08-11; expected_files is "
+            "advisory; forbidden_paths validates the paths)"
         ),
         summary=(
-            f"diff of {charged} lines outside test paths exceeds "
-            f"diff_budget_lines={budget}"
+            f"diff size {charged} lines outside test paths (informational)"
         ),
     )
 

@@ -29,16 +29,6 @@ def test_diff_within_budget_and_expected_files_passes(sandbox, feature_branch, g
     assert finding.passed is True
 
 
-def test_diff_over_budget_fails_and_cites_plan(sandbox, feature_branch, git_repo, git_sha):
-    big_content = "\n".join(f"line_{i} = {i}" for i in range(500))
-    feature_branch("app.py", big_content)
-    plan = PlanArtifact(
-        work_item_id="wi2", expected_files=["app.py"], diff_budget_lines=10, forbidden_paths=[]
-    )
-    diff = compute_diff_summary(sandbox, git_sha("main"), git_sha())
-    finding = diff_budget_finding(diff, plan)
-    assert finding.passed is False
-    assert "diff_budget_lines=10" in finding.detail
 
 
 def test_diff_touching_unexpected_file_now_passes(sandbox, feature_branch, git_sha):
@@ -121,37 +111,8 @@ def test_tests_written_by_the_tester_do_not_spend_the_coder_s_budget(
     assert f"{diff.total_lines_changed} lines total" in finding.detail  # still reported
 
 
-def test_production_sprawl_still_fails_when_test_paths_are_exempt(
-    sandbox, feature_branch, git_sha
-):
-    """The exemption must not become a hole: what the Coder writes outside test
-    paths is charged exactly as before."""
-    feature_branch("app.py", _lines("prod", 120))
-    feature_branch("tests/test_generated.py", "def test_ok():\n    assert True\n")
-    plan = PlanArtifact(work_item_id="wi-sprawl", diff_budget_lines=50, forbidden_paths=[])
-    diff = compute_diff_summary(sandbox, git_sha("main"), git_sha())
-    finding = diff_budget_finding(diff, plan)
-
-    assert finding.passed is False
-    assert "diff_budget_lines=50" in finding.detail
 
 
-def test_diff_budget_comes_from_the_platform_configuration(
-    sandbox, feature_branch, git_sha, monkeypatch
-):
-    """A big repository has PRs that are legitimately bigger, and nothing ever
-    sets `PlanArtifact.diff_budget_lines` — it is the contract's constant on
-    every plan the cluster has produced."""
-    feature_branch("app.py", _lines("prod", 300))
-    plan = PlanArtifact(work_item_id="wi-cfg", diff_budget_lines=50, forbidden_paths=[])
-    diff = compute_diff_summary(sandbox, git_sha("main"), git_sha())
-    assert diff_budget_finding(diff, plan).passed is False
-
-    monkeypatch.setenv("DSE_L1_DIFF_BUDGET_LINES", "1000")
-    finding = diff_budget_finding(diff, plan)
-
-    assert finding.passed is True, finding.detail
-    assert "DSE_L1_DIFF_BUDGET_LINES" in finding.detail
 
 
 def test_plan_compliance_findings_returns_exactly_two_findings(
@@ -236,16 +197,6 @@ def test_unexpected_source_file_passes_under_new_policy():
     assert diff_budget_finding(diff, plan).passed is True
 
 
-def test_over_budget_still_fails_regardless_of_files():
-    """The line budget is still a HARD gate (the real anti-sprawl control)."""
-    plan = PlanArtifact(
-        work_item_id="wi_big", expected_files=["src/store.js"],
-        diff_budget_lines=100, forbidden_paths=[],
-    )
-    diff = _mk_diff(["src/store.js"], lines=500)
-    finding = diff_budget_finding(diff, plan)
-    assert finding.passed is False
-    assert "diff_budget_lines=100" in finding.detail
 
 
 def test_root_anchored_pattern_matches_only_at_the_root():
@@ -266,3 +217,10 @@ def test_lockfile_churn_passes_like_any_other_file():
     )
     diff = _mk_diff(["src/store.js", "package-lock.json", "test/delete.test.js"])
     assert diff_budget_finding(diff, plan).passed is True
+
+
+# Os quatro testes de TETO DE LINHAS que viviam aqui saíram em 2026-08-11:
+# o tamanho do diff deixou de ser veredito (decisão de operador). O que
+# sobrou daquele gate — a consistência `no_code_change` e o tamanho como
+# INFORMAÇÃO — está pinado em test_diff_size_is_not_a_verdict.py, com o
+# incidente que motivou a mudança escrito por extenso.
