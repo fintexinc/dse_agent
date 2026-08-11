@@ -565,6 +565,39 @@ def _baseline_failing_suites(
     return suites
 
 
+#: Como cada ecossistema diz "não rode este teste". Maven aceita a negação
+#: dentro do `-Dtest=` (`-Dtest='!Foo'`), jest/vitest usam
+#: `--testPathIgnorePatterns`, pytest tem `--ignore=`/`--deselect`.
+_EXCLUSION_PATTERNS = (
+    re.compile(r"-Dtest=['\"]?!([^'\"\s]+)"),
+    re.compile(r"--testPathIgnorePatterns[=\s]+['\"]?([^'\"\s]+)"),
+    re.compile(r"--ignore[=\s]+['\"]?([^'\"\s]+)"),
+    re.compile(r"--deselect[=\s]+['\"]?([^'\"\s]+)"),
+)
+
+
+def _test_exclusions(test_cmd: list[str] | None) -> list[str]:
+    """Os testes que o COMANDO DO CLIENTE manda pular, pelo nome.
+
+    Achado em 2026-08-10 no testbed Java: `.dse/validation.json` roda
+    `-Dtest='!BmoFeeCalculatorBeApplicationTests'`, e essa é a ÚNICA classe de
+    teste do repositório — o `@SpringBootTest contextLoads()`. Ou seja, o
+    comando exclui exatamente a prova de que o contexto Spring não sobe naquele
+    ambiente. O DSE não sabia, o Tester escreveu testes de contexto (que não
+    estão na exclusão) e o item queimou o cap em `Failed to load
+    ApplicationContext`.
+
+    Isto só REPORTA. Excluir teste é escolha legítima do dono do repositório, e
+    consertar o repositório do cliente não é trabalho nosso (decisão do
+    operador). O que deixa de ser aceitável é o operador ter que deduzir isso
+    de novo a cada rodada."""
+    joined = " ".join(test_cmd or [])
+    found: list[str] = []
+    for pattern in _EXCLUSION_PATTERNS:
+        found.extend(m.group(1) for m in pattern.finditer(joined))
+    return found
+
+
 def test_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None,
     base_sha: str | None = None,
@@ -677,6 +710,22 @@ def test_check(
         f"INHERITED (already red at base {base_sha[:8]}): {', '.join(inherited)}\n"
         if inherited else ""
     )
+    # ADVISORY de configuração: reporta, nunca reprova (`passed` já está
+    # decidido acima). O NOME do teste excluído é conteúdo do repositório do
+    # cliente e por isso vai só no `detail` — `summary` é o único campo que
+    # entra no audit_log, que é append-only e copiado verbatim para o console.
+    excluded = _test_exclusions(cfg.test_cmd)
+    if excluded:
+        summary += (
+            f" — heads-up: this repository's own test command excludes "
+            f"{len(excluded)} test(s) by name (see detail); tests the DSE adds "
+            "are NOT covered by that exclusion"
+        )
+        inherited_note += (
+            "CONFIG ADVISORY: the test command in this repository excludes "
+            f"{', '.join(excluded)}. A test the DSE writes is not excluded by "
+            "it, so it can hit a wall the existing suite never reports.\n"
+        )
     detail = inherited_note + _detail_with(summary, [] if passed else failing, result)
     return L1Finding(
         check="test", passed=passed, status=status, detail=detail, summary=summary,
