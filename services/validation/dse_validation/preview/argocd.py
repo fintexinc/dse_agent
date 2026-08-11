@@ -75,6 +75,39 @@ def _kubectl(cfg: PreviewConfig, args: list[str], *, input_text: str | None = No
     return proc
 
 
+#: Quanto do log do pod entra no detail. As ÚLTIMAS linhas, porque é onde o erro
+#: mora — `npm install` sozinho passa de mil linhas de ruído antes dele.
+_POD_LOG_CHARS = 1200
+
+
+def pod_failure_detail(cfg: PreviewConfig, namespace: str, reason: str) -> str:
+    """O motivo de o preview não ter subido, com as palavras do POD.
+
+    `kubectl wait` só sabe dizer que o relógio estourou. Isso descreve QUANDO
+    desistimos, não o que quebrou — e nas PRs #2 e #3 o que quebrou estava
+    inteiro no log do pod (`must have required property 'buildTarget'`), a um
+    `kubectl logs` de distância que nenhum revisor de PR vai dar.
+
+    O motivo original SEMPRE sobrevive: a captura é um bônus, e um log ilegível
+    (pod já apagado, RBAC, cluster fora do ar) não pode transformar um erro ruim
+    em nenhum erro.
+    """
+    try:
+        proc = _kubectl(
+            cfg,
+            ["logs", "-n", namespace, "-l", "app=preview", "--tail=40",
+             "--all-containers=true"],
+            timeout=25,
+        )
+        log = (getattr(proc, "stdout", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001 — bônus, nunca piora
+        logger.warning("preview: could not read pod logs in %s: %s", namespace, exc)
+        return reason
+    if not log:
+        return f"{reason} (o pod não escreveu log nenhum — morreu antes de arrancar)"
+    return f"{reason} — o pod disse: {log[-_POD_LOG_CHARS:]}"
+
+
 def namespace_exists(cfg: PreviewConfig, namespace: str) -> bool:
     """O namespace ainda está lá? Levanta se o cluster não responder.
 
@@ -1165,7 +1198,12 @@ def _trigger_preview(
             ensure_applicationset(cfg)
         _wait_deployment_available(cfg, namespace, ready_timeout)
     except Exception as exc:  # degraded, never blocks (failure mode 9)
-        detail = f"preview degraded: {type(exc).__name__}: {exc}"
+        # As palavras do POD, não as do relógio. `kubectl wait` só sabe dizer
+        # que desistiu; nas PRs #2 e #3 o defeito estava inteiro no log do
+        # container, a um `kubectl logs` que nenhum revisor de PR vai dar.
+        detail = pod_failure_detail(
+            cfg, namespace, f"preview degraded: {type(exc).__name__}: {exc}"
+        )
         logger.warning("trigger_preview %s: %s", inp.work_item_id, detail)
         db.upsert_preview(
             work_item_id=inp.work_item_id, tenant_id=inp.tenant_id,
