@@ -79,6 +79,7 @@ from dse_contracts.activities import (
     CiStatusResult,
     ConsumeCiStatusInput,
     CoderTurnResult,
+    GateStatus,
     DemoEvidenceResult,
     FinalizePrInput,
     L1Finding,
@@ -122,6 +123,10 @@ class FakeControlPlane:
     #: detail of the failing `test` finding (spec-conflict tests put real
     #: "FAIL <path>" lines here, the shape quality_checks emits)
     l1_fail_detail: str = "simulated failure"
+    #: Gates que voltam com `status=ERROR` (a ferramenta NÃO rodou) em vez de
+    #: FAIL (rodou e reprovou). Existe porque a diferença entre os dois decide
+    #: se o Coder é chamado — e ela não tinha como ser exercitada aqui.
+    l1_error_checks: list[str] = field(default_factory=list)
     ci_sequence: list[str] = field(default_factory=lambda: ["green"])
     checkpoint_fail_times: int = 0
     provision_calls: int = 0
@@ -393,6 +398,16 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             )
         if state.l1_fail_times > 0:
             state.l1_fail_times -= 1
+            if state.l1_error_checks:
+                return L1Result(
+                    work_item_id=wi,
+                    passed=False,
+                    findings=[
+                        L1Finding(check=c, passed=False, status=GateStatus.ERROR,
+                                  detail=state.l1_fail_detail, summary=state.l1_fail_detail)
+                        for c in state.l1_error_checks
+                    ],
+                )
             return L1Result(
                 work_item_id=wi,
                 passed=False,
