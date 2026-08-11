@@ -2961,8 +2961,14 @@ class WorkItemLifecycleWorkflow:
         try:
             await workflow.execute_activity(
                 ACTIVITY_POST_TRACKING_COMMENT,
+                # `detail` preenche o `{detail}` do template de status, que
+                # neste caso é literalmente "(risk: {detail})". Sem ele a
+                # mensagem do gate dizia "(risk: —)": prometia o risco e
+                # mostrava um travessão, justo no texto que decide QUEM pode
+                # aprovar.
                 {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
-                 "pr_number": None, "status": "awaiting_plan_approval"},
+                 "pr_number": None, "status": "awaiting_plan_approval",
+                 "detail": input.risk_class},
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )

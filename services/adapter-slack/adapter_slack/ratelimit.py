@@ -220,3 +220,16 @@ class RateLimitedSlackClient:
     def conversations_replies(self, **kwargs) -> Any:
         # Read-only: repeatable by definition.
         return self._call("conversations.replies", lambda: self._inner.conversations_replies(**kwargs))
+
+    def views_open(self, **kwargs) -> Any:
+        """Abre um modal. Um throttle aqui é inofensivo: o modal ou abre dentro
+        dos ~3s de validade do `trigger_id` ou não abre, e o humano clica de
+        novo — nada foi gravado, porque abrir um modal não é um veredito.
+
+        Este método já existiu (para o modal do parque) e saiu junto com ele em
+        2026-08-10. Voltou para o botão Details do plano, e volta com a lição
+        colada: o `FakeSlackClient` tinha `views_open` e ESTE wrapper não, então
+        a suíte ficava verde enquanto o primeiro clique real do canal morria em
+        `AttributeError`. Por isso existe um teste que monta o wrapper de
+        PRODUÇÃO em volta do fake, e não só o fake."""
+        return self._call("views.open", lambda: self._inner.views_open(**kwargs))

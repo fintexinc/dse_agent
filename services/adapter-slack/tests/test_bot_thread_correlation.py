@@ -113,7 +113,7 @@ def test_a_reply_in_an_orphan_thread_is_refused_with_guidance_not_admitted(fake_
         )
         assert _work_items_count(conn) == before, "zero fantasmas"
         assert fake_slack.ephemeral_calls, "a orientação chega na hora, no canal"
-        assert "conversa da tarefa" in fake_slack.ephemeral_calls[-1]["text"]
+        assert "original task's thread" in fake_slack.ephemeral_calls[-1]["text"]
     finally:
         conn.close()
 

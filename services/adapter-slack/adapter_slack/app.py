@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from .backend import (
     SlackCommentBackend,
     approval_blocks,
+    plan_details_view,
     build_real_slack_client,
     repo_select_blocks,
 )
@@ -172,6 +173,47 @@ def _consume_verdict(conn, work_item_id: str, stage: str,
         )
         prev = cur.fetchone()
     return False, (prev[0] if prev else None), (prev[1] if prev else None)
+
+
+def _plan_for_message(channel: str, message: dict) -> tuple[str | None, dict | None]:
+    """O item e o plano da mensagem clicada — leitura pura.
+
+    Usa a MESMA chave do clique de veredito: `{channel, bot_ts}`. O prompt
+    pertence a UM item (F1(b): o ts é registrado no `source_ref` na hora do
+    post), e a thread não desambigua quando irmãos de um fan-out a compartilham
+    — pelo ts, o Details de um item nunca mostra o plano do outro.
+
+    Fallback por `thread_ts` para prompts anteriores ao registro do `bot_ts`,
+    e nesse caso o mais RECENTE vence: é o mesmo desempate que o resto do
+    adapter usa quando só há a thread."""
+    ts = message.get("ts")
+    thread_ts = message.get("thread_ts") or ts
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if ts:
+                cur.execute(
+                    "SELECT id, plan FROM work_items "
+                    "WHERE source_ref->>'channel' = %s "
+                    "AND jsonb_exists(source_ref->'bot_ts', %s) LIMIT 1",
+                    (channel, ts),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1]
+            if thread_ts:
+                cur.execute(
+                    "SELECT id, plan FROM work_items "
+                    "WHERE source_ref->>'channel' = %s AND source_ref->>'thread_ts' = %s "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (channel, thread_ts),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1]
+    finally:
+        conn.close()
+    return None, None
 
 
 def _rearm_verdict(work_item_id: str, stage: str) -> None:
@@ -527,6 +569,47 @@ async def slack_interactions(request: Request) -> dict:
     # first click irreversible — getting the repo wrong would fire an agent turn
     # against the wrong repo. So the select merely stages (the choice sits in
     # the message `state`) and only the button promotes it to a signal.
+    # DETAILS do plano — leitura pura, e por isso ANTES do fallthrough.
+    #
+    # O desvio explícito não é preferência de estilo: sem ele, o clique passa
+    # por três máquinas que transformariam "quero ler" em "aprovei".
+    #   1. `parse_slack_approval` devolve ("approved", None) para QUALQUER
+    #      action_id que não case token de rejeição — inclusive "details";
+    #   2. `_stage_for_action` casa o prefixo `dse_plan_` e o veredito é
+    #      CONSUMIDO, então o Approve real depois vira "já resolvido";
+    #   3. `_finish_verdict_click` → `_ack_update` reescreve a mensagem só com
+    #      uma section, e os botões somem.
+    # Escolher um action_id fora do prefixo `dse_plan_` resolveria (2) e (3),
+    # mas não (1) — por isso o `return` daqui, e não um nome diferente.
+    #
+    # Sem gate de steering, também de propósito: ler o plano não injeta direção
+    # em tarefa nenhuma, e exigir allowlist para LER esconderia do time exatamente
+    # o que ele precisa para revisar.
+    if action.get("action_id") == "dse_plan_details":
+        channel = payload["channel"]["id"]
+        message = payload.get("message") or {}
+        work_item_id, plan = _plan_for_message(channel, message)
+        if not work_item_id:
+            _notify_ephemeral(channel, user_id,
+                              "I could not find the task for this message.")
+            return {"ok": True, "path": "plan_details_no_item"}
+        try:
+            # +2.5s: o `trigger_id` do Slack vale ~3s. Um budget maior que isso
+            # gastaria a janela dormindo em backoff para abrir um modal que já
+            # teria expirado.
+            build_real_slack_client(
+                get_slack_bot_token(), deadline=time.monotonic() + 2.5
+            ).views_open(
+                trigger_id=payload.get("trigger_id", ""),
+                view=plan_details_view(work_item_id, plan),
+            )
+        except Exception:  # noqa: BLE001 — sem modal, o gate continua clicável
+            logger.warning("views_open failed (plan details)", exc_info=True)
+            _notify_ephemeral(channel, user_id,
+                              "I could not open the plan — please try again.")
+            return {"ok": True, "path": "plan_details_failed"}
+        return {"ok": True, "path": "plan_details_opened"}
+
     if action.get("action_id") == "dse_repo_select":
         # No-op ack: an empty 200 keeps the Slack client from flagging the
         # interaction as failed, and nothing is recorded until the Confirm.

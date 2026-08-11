@@ -25,6 +25,7 @@ class _SlackClientLike(Protocol):
     def chat_update(self, *, channel: str, ts: str, text: str, blocks: list | None = ...) -> dict: ...
     def chat_postEphemeral(self, *, channel: str, user: str, text: str) -> dict: ...
     def conversations_replies(self, *, channel: str, ts: str) -> dict: ...
+    def views_open(self, *, trigger_id: str, view: dict) -> dict: ...
 
 
 def approval_blocks(body: str) -> list[dict]:
@@ -42,9 +43,83 @@ def approval_blocks(body: str) -> list[dict]:
                  "text": {"type": "plain_text", "text": "Approve"}, "value": "approve"},
                 {"type": "button", "action_id": "dse_plan_reject", "style": "danger",
                  "text": {"type": "plain_text", "text": "Reject"}, "value": "reject:re_plan"},
+                # Sem estilo, de propósito: os dois primeiros DECIDEM, este só
+                # mostra. Cor igual convidaria o clique errado.
+                {"type": "button", "action_id": "dse_plan_details",
+                 "text": {"type": "plain_text", "text": "Details"}, "value": "details"},
             ],
         },
     ]
+
+
+#: Limites do Slack: 3.000 chars por bloco `section`, 100 blocos por view. Os
+#: cortes abaixo ficam MUITO abaixo disso de propósito — um modal que rola sem
+#: fim não é mais legível que a mensagem que ele veio substituir.
+_MAX_STEPS = 20
+_MAX_FILES = 30
+_SECTION_CHARS = 2900
+
+
+def _bullets(items: list, limit: int) -> str:
+    shown = [str(i) for i in items[:limit]]
+    text = "\n".join(f"• {i}" for i in shown)
+    if len(items) > limit:
+        text += f"\n• _…and {len(items) - limit} more_"
+    return text[:_SECTION_CHARS]
+
+
+def plan_details_view(work_item_id: str, plan: dict | None) -> dict:
+    """O plano, legível, num modal.
+
+    Existe porque a mensagem do gate é uma frase e dois botões: o humano
+    aprovava um plano que não podia ler. O conteúdo vem do `work_items.plan`
+    (JSONB), que já está gravado quando a mensagem é postada.
+
+    É SÓ LEITURA — sem `submit`, sem `callback_id` de veredito. O botão Close do
+    Slack fecha a view no cliente e nada chega ao servidor; não há submissão a
+    rotear, e é essa ausência que impede o modal de virar mais um caminho para
+    aprovar por acidente.
+
+    `plan=None` é estado possível de verdade: o gate pode ser re-renderizado por
+    um lembrete depois de um `continue_as_new`, e nada garante que a linha tenha
+    plano. O modal diz o que sabe em vez de estourar — derrubar a única via de
+    aprovação para mostrar um detalhe seria a pior troca possível."""
+    blocks: list[dict] = []
+    if not plan:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                       "text": "_The plan is not available for this item._"}})
+    else:
+        risk = str(plan.get("risk_class") or "unknown")
+        budget = plan.get("diff_budget_lines")
+        header = f"*Risk:* `{risk}`"
+        if budget:
+            header += f"    *Diff budget:* `{budget}` lines"
+        if plan.get("no_code_change"):
+            header += "\n_This plan declares NO code change._"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
+        for title, key, limit in (
+            ("Steps", "steps", _MAX_STEPS),
+            ("Files it expects to touch", "expected_files", _MAX_FILES),
+            ("Paths it must not touch", "forbidden_paths", _MAX_FILES),
+        ):
+            items = plan.get(key) or []
+            if items:
+                blocks.append({"type": "divider"})
+                blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                               "text": f"*{title}*\n{_bullets(items, limit)}"}})
+        if plan.get("test_plan"):
+            blocks.append({"type": "divider"})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                           "text": f"*Test plan*\n{str(plan['test_plan'])[:_SECTION_CHARS]}"}})
+    blocks.append({"type": "context", "elements": [
+        {"type": "mrkdwn", "text": f"Work item `{work_item_id}`"}]})
+    return {
+        "type": "modal",
+        "callback_id": "dse_plan_details",
+        "title": {"type": "plain_text", "text": "Plan"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks,
+    }
 
 
 def repo_select_blocks(work_item_id: str, repos: list[str], body: str) -> list[dict]:
@@ -153,6 +228,7 @@ class FakeSlackClient:
     ephemeral_calls: list[dict] = field(default_factory=list)
     threads: dict[str, list[dict]] = field(default_factory=dict)  # "channel:ts" -> replies
     replies_calls: list[dict] = field(default_factory=list)
+    views_open_calls: list[dict] = field(default_factory=list)
 
     def chat_postMessage(
         self, *, channel: str, text: str, blocks: list | None = None,
@@ -179,6 +255,12 @@ class FakeSlackClient:
         status message, so it must not count towards the 'exactly 1 post'
         invariant."""
         self.ephemeral_calls.append({"channel": channel, "user": user, "text": text})
+        return {"ok": True}
+
+    def views_open(self, *, trigger_id: str, view: dict) -> dict:
+        """Modal. O fake só REGISTRA — o que os testes pinam é O QUE foi aberto
+        (o conteúdo da view), nunca a renderização do Slack."""
+        self.views_open_calls.append({"trigger_id": trigger_id, "view": view})
         return {"ok": True}
 
     def conversations_replies(self, *, channel: str, ts: str) -> dict:

@@ -137,7 +137,10 @@ def test_awaiting_plan_approval_posts_block_kit_buttons(tenant_id, monkeypatch):
     assert blocks is not None
     action_block = next(b for b in blocks if b["type"] == "actions")
     action_ids = {e["action_id"] for e in action_block["elements"]}
-    assert action_ids == {"dse_plan_approve", "dse_plan_reject"}
+    # Três desde 2026-08-11: os dois que DECIDEM e o Details, que só mostra o
+    # plano. O Details não tem `style` de propósito — cor de decisão convidaria
+    # o clique errado — e é desviado ANTES do fallthrough de veredito.
+    assert action_ids == {"dse_plan_approve", "dse_plan_reject", "dse_plan_details"}
     values = {e["value"] for e in action_block["elements"]}
     assert "reject:re_plan" in values  # the rejection marker that C1 parses
 
