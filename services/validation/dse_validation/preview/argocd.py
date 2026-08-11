@@ -572,14 +572,31 @@ metadata:
 
     hostname = cfg.external_hostname_for(namespace)
     if hostname:
+        # TLS não é higiene, é REQUISITO FUNCIONAL do preview. Medido na PR #19:
+        # sobre `http://` o app subiu inteiro e ficou em branco, com
+        # `auth0-spa-js must run on a secure origin` no console. Origem insegura
+        # desliga `crypto.subtle`, service workers e todo SDK de auth — e o
+        # defeito é silencioso, porque o `curl` e a sonda continuam vendo 200.
+        #
+        # As duas anotações são as MESMAS que os ingresses do próprio DSE já
+        # usam (resolver ACME `le` do Traefik, HTTP-01). Sem `certresolver` o
+        # bloco `tls` é inerte; sem `entrypoints=websecure` o router não atende
+        # na 443. `tls` sem `secretName` de propósito: quem materializa o
+        # certificado é o resolver, não um Secret que alguém teria de criar.
         manifests["ingress.yaml"] = f"""apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: preview
   namespace: {namespace}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: {cfg.tls_cert_resolver}
   labels:
 {labels}spec:
   ingressClassName: {cfg.ingress_class}
+  tls:
+    - hosts:
+        - {hostname}
   rules:
     - host: {hostname}
       http:

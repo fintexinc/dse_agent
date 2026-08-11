@@ -859,6 +859,11 @@ class PreviewConfig:
         # `fee.tabela` contra um banco que não existe.
         self.preview_db_name = os.environ.get("DSE_PREVIEW_DB_NAME", "fee")
         self.ingress_class = os.environ.get("DSE_PREVIEW_INGRESS_CLASS", "traefik")
+        #: O resolver ACME que emite o certificado do preview. Default `le`
+        #: porque é o que os ingresses do próprio DSE já usam neste cluster —
+        #: um preview sem TLS entrega página em branco em qualquer app que
+        #: autentique (medido na PR #19).
+        self.tls_cert_resolver = os.environ.get("DSE_PREVIEW_TLS_RESOLVER", "le")
         # plan 08 §D (D4): port the PR's APP listens on inside the container
         # (Service/Ingress always publish 80 → targetPort=app_port).
         self.app_port = int(os.environ.get("DSE_PREVIEW_APP_PORT", "80"))
