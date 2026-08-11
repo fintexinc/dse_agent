@@ -59,6 +59,12 @@ SUITE_GROUPS: dict[str, tuple[str, ...]] = {
 # files below, and the parent group runs the suite with exactly those files
 # ignored. A test file added tomorrow therefore lands in the parent group
 # automatically and cannot fall through the gap between the two.
+#
+# "Os dois grupos juntos rodam cada arquivo exatamente uma vez" só valia para
+# DUAS INVOCAÇÕES separadas — que é como o CI roda (um job por grupo). Numa
+# invocação só, pedir os dois lados (ou `--group all`, o `make test`) caía no
+# ramo do pai COM os --ignore, e os três arquivos não rodavam em lugar nenhum.
+# É o que `covered_groups` em `pytest_targets` corrige.
 SUITE_SHARDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "control-plane-slow": (
         "services/orchestrator",
@@ -155,7 +161,9 @@ def _validate_manifest() -> None:
         raise SystemExit("invalid test matrix: " + "; ".join(details))
 
 
-def pytest_targets(shard, suite: str) -> tuple[list[str], list[str]]:
+def pytest_targets(
+    shard, suite: str, covered_groups: tuple[str, ...] = ()
+) -> tuple[list[str], list[str]]:
     """What this invocation runs for `suite`, and what it must leave out.
 
     A pure function so the partition can be TESTED. Returning the pair from the
@@ -163,10 +171,17 @@ def pytest_targets(shard, suite: str) -> tuple[list[str], list[str]]:
     would have stayed green with the exclusions deleted."""
     if shard is not None and shard[0] == suite:
         return [f"{suite}/{rel}" for rel in shard[1]], []
+    # `covered_groups`: os grupos de shard que ESTA MESMA invocação já cobre.
+    # Sem isto, pedir os dois lados de uma vez (`--group control-plane --group
+    # control-plane-slow`, ou `--group all`, que é o `make test`) rodava a
+    # suite uma vez só, pelo ramo do pai, COM os --ignore — e os três arquivos
+    # não rodavam em lugar nenhum. O comentário em SUITE_SHARDS prometia o
+    # oposto, e era nele que a Definição de pronto se apoiava: o CI só escapou
+    # porque cada grupo é um job com um `--group` só.
     return [suite], [
         f"--ignore={suite}/{rel}"
-        for shard_suite, files in SUITE_SHARDS.values()
-        if shard_suite == suite
+        for group, (shard_suite, files) in SUITE_SHARDS.items()
+        if shard_suite == suite and group not in covered_groups
         for rel in files
     ]
 
@@ -241,6 +256,11 @@ def main() -> int:
         (SUITE_SHARDS[g] for g in selected_groups if g in SUITE_SHARDS),
         None,
     ) if len(selected_groups) == 1 else None
+    # Mais de um grupo pedido: não há carve nenhum a fazer para os grupos de
+    # shard que ESTA invocação já inclui — a suite roda inteira, uma vez.
+    covered_groups = tuple(
+        g for g in selected_groups if g in SUITE_SHARDS
+    ) if shard is None else ()
 
     if args.list:
         for suite in suites:
@@ -257,7 +277,7 @@ def main() -> int:
         # The shard runs its files; the parent runs the suite minus them. The
         # parent's exclusion is by --ignore so it never has to know what else
         # exists.
-        targets, carved = pytest_targets(shard, suite)
+        targets, carved = pytest_targets(shard, suite, covered_groups)
         command = [
             sys.executable,
             "-m",
