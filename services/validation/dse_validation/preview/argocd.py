@@ -320,7 +320,7 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
 """
         resources_yaml = """          resources:
             requests: { cpu: "100m", memory: "512Mi" }
-            limits: { cpu: "1", memory: "1536Mi" }
+            limits: { cpu: "2", memory: "3Gi" }
 """
     else:
         image = cfg.source_image
@@ -351,9 +351,17 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             periodSeconds: {period}
             failureThreshold: {failure_threshold}
 """
+        # 6Gi/3 desde 2026-08-11. Com 768Mi o container era OOMKilled (exit
+        # 137) ANTES de terminar o `npm install`+compilação: medido no preview
+        # da PR #19, `Reason: OOMKilled` com `Restart Count: 1`. Este teto foi
+        # escrito quando o nó tinha 2 cores e 8 GiB; hoje são 8 e 31, e o teto
+        # é TETO — o request continua baixo, então isto não reserva nada.
+        #
+        # Note que o `--max-old-space-size` que o sandbox deriva NÃO alcança
+        # aqui: o preview é outro Pod, com outro limite, e o V8 dele mira este.
         resources_yaml = """          resources:
-            requests: { cpu: "50m", memory: "192Mi" }
-            limits: { cpu: "500m", memory: "768Mi" }
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits: { cpu: "3", memory: "6Gi" }
 """
     return f"""apiVersion: apps/v1
 kind: Deployment

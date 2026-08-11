@@ -885,7 +885,15 @@ class PreviewConfig:
         # Cloning and installing dependencies takes far longer than starting a
         # prebuilt image, so readiness has to be patient or the Deployment is
         # declared failed while npm is still resolving.
-        self.source_ready_timeout_s = int(os.environ.get("DSE_PREVIEW_SOURCE_READY_TIMEOUT", "300"))
+        #
+        # 900 desde 2026-08-11 (era 300). Medido no preview da PR #19: o
+        # container ainda estava em `Cloning into '/srv/app'` aos 3m37s, e o
+        # `npm install` de um Angular real mais a primeira compilação do
+        # `ng serve` não cabem em 5 minutos NENHUMA vez. O prazo antigo
+        # garantia `degraded` mesmo quando tudo estava indo bem — declarava
+        # fracasso enquanto o npm ainda resolvia, que é literalmente o que o
+        # comentário acima manda evitar.
+        self.source_ready_timeout_s = int(os.environ.get("DSE_PREVIEW_SOURCE_READY_TIMEOUT", "900"))
         # D4 — build of the REAL PR image: when true and the task workspace has
         # a Dockerfile, the preview builds/pushes the image of the PR head
         # instead of the placeholder. push_ref = as seen by the local daemon
