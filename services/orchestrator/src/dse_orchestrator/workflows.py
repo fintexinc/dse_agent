@@ -2755,6 +2755,10 @@ class WorkItemLifecycleWorkflow:
             "issue_ref": ({"issue_number": input.issue_number}
                           if input.issue_number else None),
             "evidence_url": self._l1_evidence(l1_result),
+            # O diff ACUMULADO do item: é dele que sai o aviso de edição de
+            # teste no corpo da PR. Sem posse de teste, esse aviso é a única
+            # coisa que aponta o revisor para o que ele tem que julgar.
+            "files_changed": list(input.cumulative_files_changed or []),
         }
         if workflow.patched("sha-bound-finalize-input-v1"):
             finalize_payload.update({
@@ -3931,6 +3935,10 @@ class WorkItemLifecycleWorkflow:
             "issue_ref": ({"issue_number": input.issue_number}
                           if input.issue_number else None),
             "evidence_url": self._l1_evidence(l1_result),
+            # O diff ACUMULADO do item: é dele que sai o aviso de edição de
+            # teste no corpo da PR. Sem posse de teste, esse aviso é a única
+            # coisa que aponta o revisor para o que ele tem que julgar.
+            "files_changed": list(input.cumulative_files_changed or []),
         }
         if workflow.patched("sha-bound-refinalize-input-v1"):
             finalize_payload.update({

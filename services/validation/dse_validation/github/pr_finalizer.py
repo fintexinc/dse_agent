@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 from dse_contracts import PrRef
+from dse_contracts.paths import is_test_path
 
 from dse_validation import db
 from dse_validation.github.client import GitHubClient
@@ -87,7 +88,7 @@ PR_BODY_TEMPLATE = """### Fintex DSE — automatically generated PR
 - **Risk class**: `{risk_class}`
 - **Summary**: {summary}
 - **Test evidence (L1)**: {evidence_url}
-
+{touched_tests_notice}
 {issue_link}
 
 ---
@@ -95,6 +96,45 @@ This PR was opened by an autonomous agent (Fintex DSE). No agent session
 approves or merges its own work (P3) — human review is mandatory before
 merge.
 """
+
+
+#: Quantos caminhos de teste o aviso lista antes de resumir. Curto de
+#: propósito: o aviso aponta para onde olhar, não substitui o diff.
+_MAX_LISTED_TEST_EDITS = 10
+
+
+def touched_tests_notice(files_changed: list[str] | None) -> str:
+    """Uma linha no corpo da PR quando o item alterou arquivo de teste.
+
+    Desde 2026-08-10 o DSE altera qualquer teste — inclusive as specs que o
+    próprio laço escreveu para julgar o Coder — e nada mais o contém: o revert
+    pós-turno, o oráculo de autoria e o parque saíram juntos. A decisão de
+    operador disse que a supervisão "muda de lugar: passa a ser o diff da PR".
+
+    Uma linha de teste alterada no meio de um diff de 300 não é supervisão, é
+    sorte. E o que está em jogo é o invariante que o repositório declara — *o
+    DSE nunca aprova o próprio trabalho*: se o Coder pode afrouxar a asserção
+    que o julga e ninguém aponta para isso, o gate humano existe no papel e não
+    na prática. O L2 é vácuo e não há detector de spec enfraquecida, então este
+    aviso é hoje a única coisa que dá lugar à supervisão que migrou.
+
+    NÃO bloqueia nada: editar teste é trabalho legítimo, e o sistema pede isso
+    ao Coder explicitamente. O aviso só faz o revisor começar sabendo onde
+    olhar."""
+    tests = [p for p in (files_changed or []) if is_test_path(p)]
+    if not tests:
+        return ""
+    shown = sorted(tests)[:_MAX_LISTED_TEST_EDITS]
+    listed = ", ".join(f"`{p}`" for p in shown)
+    if len(tests) > len(shown):
+        listed += f" (+{len(tests) - len(shown)} more)"
+    return (
+        f"- **⚠️ Test files changed by this item ({len(tests)})**: {listed}\n"
+        "  Please review these first: does any assertion end up WEAKER than it "
+        "was? Updating a test whose assertion this task deliberately changed is "
+        "legitimate work; weakening one to make the suite pass is not, and "
+        "nothing in the pipeline blocks it."
+    )
 
 
 #: Every git command this module runs, with the repository's own hooks turned
@@ -251,6 +291,7 @@ def finalize_pr_core(
     strict_mode: bool = False,
     comment_writer=None,
     surface_ref: dict | None = None,
+    files_changed: list[str] | None = None,
 ) -> PrRef:
     # 1) idempotency — our table is the fast source of truth.
     tracked = db.get_tracked_pr(work_item_id)
@@ -327,6 +368,7 @@ def finalize_pr_core(
         summary=clean_summary(summary),
         evidence_url=evidence_url or "(no evidence link)",
         issue_link=issue_link or "(no linked source issue)",
+        touched_tests_notice=touched_tests_notice(files_changed),
     )
     pr = github_client.create_pr(repo, head=branch, base=base_branch, title=title, body=body)
 

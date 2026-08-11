@@ -353,6 +353,7 @@ def _finalize_pr(inp: FinalizePrInput) -> PrRef:
         strict_mode=strict,
         comment_writer=comment_writer,
         surface_ref=inp.surface_ref,
+        files_changed=list(inp.files_changed or []),
     )
 
 

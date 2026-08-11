@@ -228,6 +228,11 @@ class FinalizePrInput(BaseModel):
     repo_dir: str = "/workspace/repo"
     strict_mode: bool | None = None
     surface_ref: dict[str, Any] | None = None
+    #: Tudo que o item mudou, para o corpo da PR apontar as edições de TESTE.
+    #: Desde 2026-08-10 o DSE altera qualquer teste e nada mais o contém —
+    #: a supervisão é o diff da PR, e um aviso nomeando os arquivos é o que
+    #: dá lugar a ela. Aditivo: histórias antigas decodificam com [].
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class ConsumeCiStatusInput(BaseModel):
