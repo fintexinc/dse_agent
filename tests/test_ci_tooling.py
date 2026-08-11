@@ -151,3 +151,49 @@ def test_the_shard_and_its_complement_partition_the_suite():
         f"the split changes what runs: {shard} + {rest} != {whole}"
     )
     assert shard > 0 and rest > 0, "one side of the split is empty"
+
+
+def test_selecting_both_groups_at_once_actually_runs_every_file():
+    """O comando que o CLAUDE.md manda rodar não pode pular arquivo.
+
+    Achado em 2026-08-10, e o vão é meu: escrevi no CLAUDE.md "ao tocar no
+    orchestrator, rode os DOIS grupos" — e `--group control-plane --group
+    control-plane-slow` numa invocação só roda a suite UMA vez, pelo ramo do
+    PAI, que carrega os `--ignore` dos três arquivos do shard. `shard` só é
+    calculado quando `len(selected_groups) == 1`.
+
+    O mesmo vale para `--group all`, isto é, para `make test`: a "suite
+    completa" da Definição de pronto nunca executou esses três arquivos. O CI
+    escapa por acidente de topologia — cada grupo é um job com um `--group` só.
+
+    O comentário em SUITE_SHARDS afirma o contrário ("os dois grupos juntos
+    rodam cada arquivo exatamente uma vez"), e era nele que eu confiava ao
+    declarar verde.
+    """
+    from scripts.test_matrix import SUITE_GROUPS, SUITE_SHARDS, pytest_targets
+
+    suite, sharded_files = SUITE_SHARDS["control-plane-slow"]
+
+    for selected in (
+        ["control-plane", "control-plane-slow"],
+        list(SUITE_GROUPS),  # `--group all` == `make test`
+    ):
+        covered = tuple(g for g in selected if g in SUITE_SHARDS)
+        _, carved = pytest_targets(None, suite, covered)
+        for rel in sharded_files:
+            assert f"--ignore={suite}/{rel}" not in carved, (
+                f"com {selected} selecionado, {rel} é ignorado — o verde não "
+                "cobre esse arquivo, que foi exatamente como o CI de afb9616 "
+                "quebrou num teste que meu run local nem executou"
+            )
+
+
+def test_a_group_that_does_not_include_the_shard_still_carves_it_out():
+    """PIN de polaridade: `--group control-plane` sozinho continua ignorando os
+    três arquivos — senão os dois jobs do CI passam a rodar tudo em duplicata."""
+    from scripts.test_matrix import SUITE_SHARDS, pytest_targets
+
+    suite, sharded_files = SUITE_SHARDS["control-plane-slow"]
+    _, carved = pytest_targets(None, suite, ("control-plane",))
+    for rel in sharded_files:
+        assert f"--ignore={suite}/{rel}" in carved
