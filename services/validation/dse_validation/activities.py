@@ -32,7 +32,6 @@ from dse_contracts import (
     MergeVerification,
     PlanArtifact,
     PrRef,
-    SandboxHandle,
     VerifyMergeInput,
 )
 from dse_contracts.activities import (
@@ -103,26 +102,17 @@ except ImportError:  # pragma: no cover
 # — AttributeError in production while the contract tests passed against the
 # canonical model). Never redefine contract models locally.
 # ---------------------------------------------------------------------------
-from dse_contracts.activities import RunL1PipelineInput  # noqa: E402
-
-
-class FinalizePrInput(BaseModel):
-    work_item_id: str
-    tenant_id: str
-    repo: str
-    branch: str
-    base_branch: str
-    summary: str
-    risk_class: str = "low"
-    evidence_url: str = ""
-    issue_ref: dict | None = None
-    sandbox: SandboxHandle | None = None
-    repo_dir: str = "/workspace/repo"
-    # Phase 2 (WSE-E3-T8): strict mode. If None, it is resolved per repo/tenant via
-    # StrictModeConfig; if explicitly set, that wins. `surface_ref` is the surface
-    # of the tracking comment where the compare link is posted.
-    strict_mode: bool | None = None
-    surface_ref: dict | None = None
+# As entradas que a Activity decodifica vêm do CONTRATO, nunca de cópia local.
+# Cada cópia que existiu aqui ficou para trás e matou um item em produção com
+# AttributeError e a suíte verde: RunL1PipelineInput em 2026-07-22
+# (work_item_id/base_sha) e FinalizePrInput em 2026-08-11 (files_changed, uma
+# PR perdida depois de passar L1 e L2). `test_activity_inputs_are_the_contract`
+# é o que impede a terceira.
+from dse_contracts.activities import (  # noqa: E402
+    ConsumeCiStatusInput,
+    FinalizePrInput,
+    RunL1PipelineInput,
+)
 
 
 class RunL2ReviewInput(BaseModel):
@@ -159,27 +149,6 @@ class AdoptPrInput(BaseModel):
     branch: str
     pr_number: int | None = None
     pr_url: str | None = None
-
-
-class ConsumeCiStatusInput(BaseModel):
-    """Robustness lesson (post-S7 audit, observed LIVE): activity payloads are
-    RECORDED in Temporal's history — an old call site that scheduled this activity
-    with {work_item_id, pr_number} retries with that payload FOREVER; fixing the
-    call site does not heal in-flight workflows. That is why tenant_id/repo/ref
-    default to empty and are RESOLVED from the database by the activity when
-    missing (work_items + wse_pr_tracking) — an old payload still decodes and the
-    workflow self-heals on the next retry."""
-
-    work_item_id: str
-    tenant_id: str = ""
-    repo: str = ""
-    pr_number: int
-    ref: str = Field(default="", description="commit sha (or branch name) to query check-runs for")
-    # Phase 3 (WSE-E4-T9b) — additive: when `surface_ref` comes populated, the L3
-    # consumption reflects the status in the PR's single tracking comment and
-    # enables targeted re-runs/repair episodes. Phase 1/2 payloads (without the
-    # field) keep decoding the same way.
-    surface_ref: dict | None = None
 
 
 class QuarantineArtifactsInput(BaseModel):
