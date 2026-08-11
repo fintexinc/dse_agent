@@ -193,10 +193,10 @@ def _ack_text_for(action_id: str, user_id: str) -> str:
     hhmm = time.strftime("%H:%M", time.gmtime())
     who = f"<@{user_id}>"
     if action_id == "dse_plan_approve":
-        return f"✅ Aprovado por {who} às {hhmm} (UTC)"
+        return f"✅ Approved by {who} at {hhmm} (UTC)"
     if action_id == "dse_plan_reject":
-        return f"🚫 Rejeitado por {who} às {hhmm} (UTC) — replanejando"
-    return f"✔️ Registrado por {who} às {hhmm} (UTC)"
+        return f"🚫 Rejected by {who} at {hhmm} (UTC) — replanning"
+    return f"✔️ Recorded by {who} at {hhmm} (UTC)"
 
 
 def _ack_update(channel: str, message_ts: str, text: str) -> None:
@@ -224,7 +224,7 @@ def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
     if result.get("path") == "already_resolved":
         by, at = result.get("by") or "?", result.get("at") or "?"
         _notify_ephemeral(
-            channel, user_id, f"⏳ Já resolvido por {by} às {at} (UTC)."
+            channel, user_id, f"⏳ Already resolved by {by} at {at} (UTC)."
         )
     elif result.get("path") == "signal" and message_ts:
         _ack_update(channel, message_ts, ack_text)
@@ -235,8 +235,8 @@ def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
         # signal nasceu (o caminho de refusal não grava nada).
         _ack_update(
             channel, message_ts,
-            "⚠️ Não consegui aplicar: a tarefa desta conversa não está mais "
-            "ativa (encerrada ou cancelada).",
+            "⚠️ Could not apply: the task in this conversation is no longer "
+            "active (it finished or was cancelled).",
         )
 
 
@@ -362,7 +362,7 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
                 )
                 cand = cur.fetchone()
             if cand:
-                hint = f" A tarefa mais recente aqui é `{cand[0][:15]}…` (thread {cand[1]})."
+                hint = f" The most recent task here is `{cand[0][:15]}…` (thread {cand[1]})."
             audit_emit(
                 actor=principal,
                 action="non_task_admission_refused",
@@ -374,8 +374,8 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
             conn.commit()
             _notify_ephemeral(
                 channel, conv_event.actor.platform_user_id,
-                "Não encontrei a tarefa desta conversa — responda na conversa "
-                "da tarefa original (a thread onde ela foi criada)." + hint,
+                "I could not find the task for this conversation — reply in "
+                "the original task's thread (where it was created)." + hint,
             )
             return {"ok": True, "path": "refused_non_task"}
 

@@ -247,7 +247,7 @@ def _notify_undeliverable(work_item_id: str, reason: str) -> None:
                 json={
                     "work_item_id": work_item_id,
                     "channel": channel,
-                    "body": f"⚠️ Não consegui aplicar: {reason}",
+                    "body": f"⚠️ Could not apply: {reason}",
                     "actor": "system:ingest-gateway-dispatcher",
                 },
             ).raise_for_status()
@@ -285,7 +285,7 @@ async def _dispatch_row(
             # nada aconteceu, ninguém soube).
             _notify_undeliverable(
                 work_item_id,
-                f"o item está em '{status}' e não espera esse veredito",
+                f"the item is in '{status}' and is not waiting for that verdict",
             )
             return DispatchOutcome.DECLINED_UNEXPECTED_STATUS, {"status": status, "reason": route.reason}
         return DispatchOutcome.IGNORED_NOT_A_DECISION, {"reason": route.reason}
@@ -305,7 +305,7 @@ async def _dispatch_row(
             )
             _notify_undeliverable(
                 work_item_id,
-                "a tarefa já foi encerrada — o veredito não pode mais ser aplicado",
+                "the task has already finished — the verdict can no longer be applied",
             )
             return DispatchOutcome.SIGNAL_PERMANENTLY_UNDELIVERABLE, {
                 "signal": route.signal_name, "error": str(exc)[:200],

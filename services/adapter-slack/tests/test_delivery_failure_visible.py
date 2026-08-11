@@ -1,7 +1,7 @@
 """Item 4 (rc do canal mínimo), a metade SÍNCRONA — clique em item já
-encerrado. Hoje o clique recebe um ephemeral genérico ("Não encontrei a
+encerrado. Hoje o clique recebe um ephemeral genérico ("I could not find the
 tarefa...") que aponta para o lado errado: a tarefa EXISTE, ela terminou. A
-mensagem clicada tem que dizer isso — "⚠️ Não consegui aplicar: ..." — e
+mensagem clicada tem que dizer isso — "⚠️ Could not apply: ..." — e
 nenhum signal fantasma pode nascer.
 """
 from __future__ import annotations
@@ -115,7 +115,7 @@ def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake
         "a falha tem que aparecer NA MENSAGEM clicada — o ephemeral genérico "
         "'não encontrei a tarefa' aponta para o lado errado (ela existe, terminou)"
     )
-    assert "Não consegui aplicar" in updates[-1]["text"]
+    assert "Could not apply" in updates[-1]["text"]
     conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
