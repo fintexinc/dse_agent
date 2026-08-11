@@ -667,11 +667,16 @@ _PREVIEW_LINE_RE = re.compile(r"^- \*\*Preview\*\*:.*" + re.escape(_PREVIEW_BODY
 _EVIDENCE_BULLET_PREFIX = "- **Test evidence (L1)**:"
 
 
-def _preview_body_with_link(body: str, url: str) -> str:
-    """The PR body with the `- **Preview**: <url>` line inserted/updated
-    (idempotent via the marker). Inserts after the L1 evidence bullet; if the
-    template changes, appends at the end."""
-    line = f"- **Preview**: {url} {_PREVIEW_BODY_MARKER}"
+def _preview_body_with_line(body: str, sentence: str) -> str:
+    """The PR body with the `- **Preview**: …` line inserted/updated (idempotent
+    via the marker). Inserts after the L1 evidence bullet; if the template
+    changes, appends at the end.
+
+    Takes a SENTENCE, not a URL: the same line carries the link when the preview
+    is up and the reason when it is not, so both go through one writer and one
+    marker instead of the success path having a home and every failure having
+    none."""
+    line = f"{sentence} {_PREVIEW_BODY_MARKER}"
     if _PREVIEW_LINE_RE.search(body):
         return _PREVIEW_LINE_RE.sub(line, body)
     lines = body.splitlines()
@@ -687,14 +692,75 @@ def _preview_body_with_link(body: str, url: str) -> str:
     return "\n".join(out)
 
 
-def _put_preview_link_in_pr_body(
-    inp: TriggerPreviewInput, url: str | None, kind: str, *, actor: str
+#: Quanto do `detail` do runtime cabe na frase. O detail pode ser um dump de
+#: log inteiro; o corpo da PR não é lugar para ele, mas as primeiras linhas são
+#: exatamente o que identifica a causa (foi assim que `buildTarget` apareceu).
+_PREVIEW_DETAIL_CHARS = 300
+
+
+def preview_body_line(
+    status: str,
+    *,
+    url: str | None = None,
+    namespace: str | None = None,
+    expires_at: object | None = None,
+    detail: str | None = None,
+) -> str | None:
+    """A ÚNICA frase que descreve um preview para um humano. `None` = não falar.
+
+    Exaustiva sobre os status de propósito. O modo de falha de 2026-08-11 não
+    foi erro, foi SILÊNCIO: seis causas diferentes, seis PRs sem uma palavra
+    sobre o preview, com a informação viva em três tabelas que ninguém abre. Por
+    isso um status desconhecido produz uma frase feia com o status cru, em vez
+    de `None` — feio é recuperável, mudo não é.
+
+    Uma linha só, e isso é requisito e não estilo: o marker de idempotência
+    (`_PREVIEW_LINE_RE`, `re.M`) casa UMA linha. Uma seção multi-linha faria o
+    re-trigger do fix cycle empilhar frases contraditórias em vez de substituir.
+    """
+    def _frase(texto: str) -> str:
+        return f"- **Preview**: {' '.join(texto.split())}"
+
+    if status in ("skipped_disabled", "skipped_backend_only"):
+        # Decisão de operador (2026-08-11): pulo legítimo não gera seção. Uma
+        # linha "não se aplica" em toda PR de backend é ruído, não informação.
+        return None
+
+    if status == "created":
+        alvo = url or "(sem URL)"
+        extra = f" (namespace `{namespace}`)" if namespace else ""
+        return _frase(f"{alvo}{extra}")
+
+    if status == "reaped":
+        return _frase("expirado (TTL) — o ambiente foi recolhido e o link não responde mais")
+
+    causa = (detail or "").strip()
+    if status == "degraded":
+        if causa:
+            return _frase(f"não subiu — {causa[:_PREVIEW_DETAIL_CHARS]}")
+        return _frase("não subiu, e o runtime não disse por quê (veja o ledger do item)")
+
+    # Desconhecido: fala mesmo assim, com o status cru.
+    resto = f" — {causa[:_PREVIEW_DETAIL_CHARS]}" if causa else ""
+    return _frase(f"estado `{status}`{resto}")
+
+
+def _put_preview_in_pr_body(
+    inp: TriggerPreviewInput, line: str | None, *, actor: str
 ) -> None:
-    """Writes the preview link into the PR DESCRIPTION (not as a comment) —
-    `- **Preview**: <url>`. Idempotent: a re-trigger (fix cycle) rewrites the
-    same line. Best-effort — any failure only becomes a warning; the preview is
-    already 'created'."""
-    if not url or not inp.pr_number or not inp.repo:
+    """Escreve a frase do preview na DESCRIÇÃO da PR. Idempotente: um re-trigger
+    reescreve a mesma linha.
+
+    `line=None` significa "não há o que dizer" (pulo legítimo) — e é a única
+    razão aceitável para não escrever nada. Qualquer OUTRA saída sem escrita
+    emite evento: o `except` mudo que existia aqui engolia 401, PR inexistente e
+    cliente falso com um `logger.warning`, então quando a escrita falhava nem o
+    ledger sabia — e o sintoma era indistinguível de "o preview nunca rodou".
+    """
+    if line is None:
+        return
+    if not inp.pr_number or not inp.repo:
+        _preview_body_failed(inp, actor, "sem pr_number/repo — não há PR onde escrever")
         return
     try:
         from dse_validation.github.client import GitHubConfig, build_github_client
@@ -702,19 +768,34 @@ def _put_preview_link_in_pr_body(
         client = build_github_client(GitHubConfig())
         pr = client.get_pull_request(inp.repo, int(inp.pr_number))
         if pr is None:
+            _preview_body_failed(inp, actor, f"PR #{inp.pr_number} não encontrada em {inp.repo}")
             return
-        new_body = _preview_body_with_link(pr.get("body") or "", url)
-        if new_body == (pr.get("body") or ""):
-            return  # nothing changed (it already carried the same URL)
+        body = pr.get("body") or ""
+        new_body = _preview_body_with_line(body, line)
+        if new_body == body:
+            return  # já dizia exatamente isto
         client.update_pull_request(inp.repo, int(inp.pr_number), body=new_body)
         if audit_emit is not None:
             audit_emit(
-                actor=actor, action="preview_link_in_pr_body", tenant_id=inp.tenant_id,
+                actor=actor, action="preview_line_in_pr_body", tenant_id=inp.tenant_id,
                 work_item_id=inp.work_item_id,
-                details={"pr_number": inp.pr_number, "url": url},
+                details={"pr_number": inp.pr_number, "line": line[:300]},
             )
-    except Exception as exc:  # noqa: BLE001 — best-effort; the preview already exists
-        logger.warning("writing the preview into the PR body failed (%s): %.200s", inp.work_item_id, exc)
+    except Exception as exc:  # noqa: BLE001 — nunca bloqueia o item, mas nunca some
+        _preview_body_failed(inp, actor, f"{type(exc).__name__}: {exc}")
+
+
+def _preview_body_failed(inp: TriggerPreviewInput, actor: str, why: str) -> None:
+    """Todo caminho que NÃO escreveu deixa rastro. Sem isto, a ausência da linha
+    na PR tem duas explicações indistinguíveis: o preview não rodou, ou rodou e
+    a escrita falhou."""
+    logger.warning("preview line not written (%s): %.200s", inp.work_item_id, why)
+    if audit_emit is not None:
+        audit_emit(
+            actor=actor, action="preview_line_in_pr_body_failed", tenant_id=inp.tenant_id,
+            work_item_id=inp.work_item_id,
+            details={"pr_number": inp.pr_number, "reason": why[:300]},
+        )
 
 
 def _apply_manifests(cfg: PreviewConfig, manifests: dict[str, str],
@@ -773,6 +854,44 @@ def _wait_deployment_available(cfg: PreviewConfig, namespace: str, timeout_s: in
 # trigger_preview — core of the contract's Activity
 # ---------------------------------------------------------------------------
 def trigger_preview_core(
+    inp: TriggerPreviewInput,
+    *,
+    cfg: PreviewConfig | None = None,
+    ttl_seconds: int | None = None,
+    actor: str = "system:validation",
+) -> PreviewRef:
+    """A ÚNICA saída do preview, e é por isso que ela existe.
+
+    `_trigger_preview` tem cinco `return` e pode ganhar um sexto amanhã. Enquanto
+    a escrita na PR morava DENTRO dele, depois do último `return`, só o caminho
+    de sucesso falava com o humano — e as cinco falhas de 2026-08-11 saíram
+    caladas, cada uma por um `return` diferente.
+
+    Aqui a frase é escrita FORA, sobre o `PreviewRef` que voltou, qualquer que
+    seja ele. Um `return` novo não tem como escapar, e uma exceção também não:
+    ela vira frase antes de subir, porque para quem revisa a PR "estourou" e
+    "nunca rodou" são o mesmo silêncio.
+    """
+    try:
+        ref = _trigger_preview(inp, cfg=cfg, ttl_seconds=ttl_seconds, actor=actor)
+    except Exception as exc:  # noqa: BLE001 — fala e depois deixa subir
+        _put_preview_in_pr_body(
+            inp,
+            preview_body_line("degraded", detail=f"{type(exc).__name__}: {exc}"),
+            actor=actor,
+        )
+        raise
+    _put_preview_in_pr_body(
+        inp,
+        preview_body_line(
+            ref.status, url=ref.url, namespace=ref.namespace, detail=ref.detail,
+        ),
+        actor=actor,
+    )
+    return ref
+
+
+def _trigger_preview(
     inp: TriggerPreviewInput,
     *,
     cfg: PreviewConfig | None = None,
@@ -983,11 +1102,6 @@ def trigger_preview_core(
         namespace=namespace, url=url, ttl_seconds=ttl, expires_at=expires_at,
         detail=f"{kind} files: {', '.join(ui_files[:10])} | image={image_reason}",
     )
-    # D1 (finding from the real run: the link only went to the status comment on
-    # the originating ISSUE; the human reviewer opens the PR and did not see it).
-    # Writes the link into the PR DESCRIPTION (`- **Preview**: <url>`).
-    # Best-effort: never takes down the preview (the audit/ledger is the truth).
-    _put_preview_link_in_pr_body(inp, url, kind, actor=actor)
     if audit_emit is not None:
         audit_emit(
             actor=actor, action="preview_created", tenant_id=inp.tenant_id,

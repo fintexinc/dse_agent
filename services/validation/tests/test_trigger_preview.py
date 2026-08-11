@@ -292,7 +292,8 @@ def test_preview_link_written_into_pr_body_after_evidence(monkeypatch):
         files_changed=["src/store.js"],
     )
     url = "http://preview-x.preview.localhost:8081"
-    arg._put_preview_link_in_pr_body(inp, url, "deployable", actor="system:test")
+    arg._put_preview_in_pr_body(
+        inp, arg.preview_body_line("created", url=url), actor="system:test")
     body = fake.body
     assert f"- **Preview**: {url}" in body
     # positioned right after the L1 evidence
@@ -312,23 +313,32 @@ def test_preview_link_in_body_is_idempotent(monkeypatch):
         work_item_id="wi_x", tenant_id="t", repo="a/b", pr_number=11,
         files_changed=["src/store.js"],
     )
-    arg._put_preview_link_in_pr_body(inp, "http://old.localhost", "deployable", actor="t")
-    arg._put_preview_link_in_pr_body(inp, "http://new.localhost", "deployable", actor="t")
+    arg._put_preview_in_pr_body(
+        inp, arg.preview_body_line("created", url="http://old.localhost"), actor="t")
+    arg._put_preview_in_pr_body(
+        inp, arg.preview_body_line("created", url="http://new.localhost"), actor="t")
     assert fake.body.count("- **Preview**:") == 1  # a single line
     assert "http://new.localhost" in fake.body and "http://old.localhost" not in fake.body
 
 
 def test_preview_link_body_noop_without_pr_number(monkeypatch):
+    """Sem PR não há onde escrever — mas desde 2026-08-11 isso DEIXA RASTRO.
+    Silêncio era o modo de falha: sem o evento, "a PR não recebeu o preview" e
+    "o preview nunca rodou" ficam indistinguíveis no ledger."""
     import dse_validation.preview.argocd as arg
     import dse_validation.github.client as gc
     fake = _FakePrBodyClient(_PR_BODY_BASE)
     monkeypatch.setattr(gc, "build_github_client", lambda cfg=None: fake)
+    emitidos: list[str] = []
+    monkeypatch.setattr(arg, "audit_emit", lambda **kw: emitidos.append(kw.get("action", "")))
     inp = TriggerPreviewInput(
         work_item_id="wi_x", tenant_id="t", repo="a/b", pr_number=0,
         files_changed=["src/store.js"],
     )
-    arg._put_preview_link_in_pr_body(inp, "http://x", "deployable", actor="t")
-    assert fake.body == _PR_BODY_BASE  # pr_number=0 → does not touch the body
+    arg._put_preview_in_pr_body(
+        inp, arg.preview_body_line("created", url="http://x"), actor="t")
+    assert fake.body == _PR_BODY_BASE  # pr_number=0 → não toca o corpo
+    assert "preview_line_in_pr_body_failed" in emitidos
 
 
 # ---------------------------------------------------------------------------
