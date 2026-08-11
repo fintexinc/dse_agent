@@ -625,9 +625,22 @@ def list_oldest_active_previews(tenant_id: str, limit: int = 1) -> list[dict[str
     """The eviction queue for the cap (operator decision 2026-07-23): cap full =>
     the oldest yields its slot to the new PR.
 
-    Expired rows come first. They cost nothing to evict — the reaper has already
-    deleted the namespace they name — so taking one of those never interrupts a
-    preview somebody is looking at, while taking the oldest live one does.
+    Filters TTL exactly like `count_active_previews`, and that is the whole
+    point: while it did not, the two disagreed. This one used to return expired
+    rows FIRST — on the reasoning that they cost nothing to evict — but the cap
+    is counted with `expires_at > now()`, so evicting an expired row frees
+    nothing the counter was measuring. With the eviction limit at
+    `active - cap + 1` (one row when the cap is exactly full), that single
+    eviction was spent on a row that never counted, the recount did not drop,
+    and the flow degraded anyway.
+
+    Measured on PR #4 (2026-08-11 19:30:32): `preview_evicted_lru` fired and
+    `preview_degraded` followed one millisecond later with `active` unchanged
+    at 3.
+
+    Expired rows are still cheap to collect — they are just not EVICTION. The
+    caller harvests them first, as garbage, and only then evicts among rows that
+    the counter can actually see.
     """
     conn = get_connection()
     try:
@@ -636,8 +649,8 @@ def list_oldest_active_previews(tenant_id: str, limit: int = 1) -> list[dict[str
                 """
                 SELECT work_item_id, tenant_id, namespace FROM wse_previews
                  WHERE tenant_id = %s AND status = 'created' AND reaped_at IS NULL
-                 ORDER BY (expires_at IS NOT NULL AND expires_at <= now()) DESC,
-                          created_at ASC
+                   AND (expires_at IS NULL OR expires_at > now())
+                 ORDER BY created_at ASC
                  LIMIT %s
                 """,
                 (tenant_id, limit),

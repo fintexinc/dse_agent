@@ -75,6 +75,19 @@ def _kubectl(cfg: PreviewConfig, args: list[str], *, input_text: str | None = No
     return proc
 
 
+def namespace_exists(cfg: PreviewConfig, namespace: str) -> bool:
+    """O namespace ainda está lá? Levanta se o cluster não responder.
+
+    Deliberadamente SEM `except`: quem chama tem de decidir o que fazer com
+    "não sei", e a resposta certa é diferente de "não existe". Engolir o erro
+    aqui devolveria `False` para um `kubectl` fora do ar e liberaria vaga de
+    preview vivo — trocaria um bloqueio visível por dois previews disputando o
+    mesmo recurso, que é bem mais difícil de enxergar.
+    """
+    proc = _kubectl(cfg, ["get", "namespace", namespace, "-o", "name"], timeout=20)
+    return bool((getattr(proc, "stdout", "") or "").strip())
+
+
 def namespace_for(work_item_id: str) -> str:
     slug = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in work_item_id.lower())
     return f"preview-{slug}"[:63].rstrip("-")
@@ -850,6 +863,67 @@ def _wait_deployment_available(cfg: PreviewConfig, namespace: str, timeout_s: in
     )
 
 
+def _harvest_expired_previews(tenant_id: str, *, actor: str) -> int:
+    """Marca `reaped` as linhas já expiradas do tenant. Devolve quantas.
+
+    Não é evicção: expirada não conta para o teto, então isto não libera vaga.
+    É COLETA DE LIXO, e existe porque `reap_expired_previews` — o único código
+    que fazia isso — nunca teve call site (admitido no README e no BACKLOG do
+    repositório). O resultado prático estava no banco de produção: quatro linhas
+    de 29 a 31 de julho ainda `created` em 11 de agosto.
+    """
+    colhidas = 0
+    for row in db.list_expired_previews():
+        if row.get("tenant_id") != tenant_id:
+            continue
+        db.mark_preview_reaped(row["work_item_id"])
+        colhidas += 1
+        if audit_emit is not None:
+            audit_emit(
+                actor=actor, action="preview_harvested_expired", tenant_id=tenant_id,
+                work_item_id=row["work_item_id"],
+                details={"namespace": row.get("namespace")},
+            )
+    return colhidas
+
+
+def _reconcile_previews_with_cluster(
+    cfg: PreviewConfig, tenant_id: str, *, actor: str
+) -> int:
+    """Linhas que CONTAM mas cujo namespace não existe mais viram `reaped`.
+
+    O teto tem de medir recurso, não memória. O CronJob que apaga namespaces
+    nunca escreve nesta tabela (decisão declarada no manifesto dele), então sem
+    esta reconciliação um namespace apagado — à mão, por GC, por reboot do nó —
+    fica ocupando vaga até o TTL, que na VPS é de 6 horas.
+
+    FAIL-CLOSED por construção: se o `kubectl` não responde, a linha continua
+    contando. "Não sei" é tratado como "está vivo", porque liberar vaga por erro
+    de leitura poria dois previews no mesmo recurso — um modo de falha bem mais
+    difícil de enxergar que um bloqueio.
+    """
+    liberadas = 0
+    for row in db.list_oldest_active_previews(tenant_id, limit=100):
+        ns = row.get("namespace") or namespace_for(row["work_item_id"])
+        try:
+            existe = namespace_exists(cfg, ns)
+        except Exception as exc:  # noqa: BLE001 — "não sei" ≠ "não existe"
+            logger.warning("preview: could not check namespace %s (%s); "
+                           "keeping the slot taken", ns, exc)
+            continue
+        if existe:
+            continue
+        db.mark_preview_reaped(row["work_item_id"])
+        liberadas += 1
+        if audit_emit is not None:
+            audit_emit(
+                actor=actor, action="preview_slot_reconciled", tenant_id=tenant_id,
+                work_item_id=row["work_item_id"],
+                details={"namespace": ns, "reason": "namespace no longer exists"},
+            )
+    return liberadas
+
+
 # ---------------------------------------------------------------------------
 # trigger_preview — core of the contract's Activity
 # ---------------------------------------------------------------------------
@@ -952,8 +1026,25 @@ def _trigger_preview(
     if cap is None:
         cap = cfg.default_max_concurrent
     existing = db.get_preview(inp.work_item_id)
-    active = db.count_active_previews(inp.tenant_id)
     already_active = existing is not None and existing["status"] == "created" and existing["reaped_at"] is None
+
+    # ANTES de contar: colher o lixo e reconciliar com o cluster. Ordem
+    # deliberada — a evicção interrompe o preview de alguém e por isso é o
+    # ÚLTIMO recurso, não o primeiro.
+    #
+    # (a) LIXO: linhas expiradas. Não contam para o teto, então colhê-las não
+    #     libera vaga nenhuma — mas enquanto ninguém as colhia elas se
+    #     acumulavam (havia quatro de julho, penduradas duas semanas) e
+    #     envenenavam a fila de evicção, que as ordenava primeiro. Custa uma
+    #     linha e é de graça.
+    _harvest_expired_previews(inp.tenant_id, actor=actor)
+    # (b) FANTASMAS: linhas que contam mas cujo namespace não existe mais —
+    #     apagado à mão, por GC, ou por reboot do nó. Sem esta reconciliação o
+    #     teto mede memória em vez de recurso, e a vaga só voltaria depois do
+    #     TTL (6h na VPS). Foi o que degradou a PR #4 com o cluster vazio.
+    _reconcile_previews_with_cluster(cfg, inp.tenant_id, actor=actor)
+
+    active = db.count_active_previews(inp.tenant_id)
     if not already_active and active >= cap and cap > 0:
         # LRU eviction (operator decision 2026-07-23): cap full => the OLDEST
         # preview yields its slot to the new PR (recency wins; the cap remains

@@ -40,9 +40,15 @@ from dse_validation.preview.argocd import trigger_preview_core
 
 
 def _linha(work_item_id: str, tenant_id: str, ns: str, *, ttl: int) -> None:
+    """`expires_at` EXPLÍCITO: `ttl_seconds` é só o valor guardado na coluna — o
+    que decide se a linha conta é `expires_at`, e passar só o ttl faria a linha
+    "expirada" contar como viva, escondendo justamente o caso sob teste."""
+    from datetime import datetime, timedelta, timezone
+
     db.upsert_preview(
         work_item_id=work_item_id, tenant_id=tenant_id, pr_number=1,
         repo="acme/app", status="created", namespace=ns, ttl_seconds=ttl,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl),
     )
 
 

@@ -441,10 +441,28 @@ def test_an_expired_preview_does_not_hold_a_slot(work_item_id, tenant_id):
     )
     assert db.count_active_previews(tenant_id) == 1
 
-    # Eviction takes the dead one first: evicting a preview somebody is looking
-    # at, while a corpse sits next to it, would be gratuitous.
-    oldest = db.list_oldest_active_previews(tenant_id, limit=1)
-    assert oldest[0]["work_item_id"] == f"{work_item_id}-dead"
+    # A INTENÇÃO original desta asserção continua valendo — não matar um preview
+    # que alguém está olhando tendo um cadáver ao lado — mas o lugar estava
+    # errado, e isso custou a PR #4 (2026-08-11).
+    #
+    # Evictar o cadáver não libera nada: ele não conta para o teto. Como o
+    # limite de evicção é `active - cap + 1` (uma linha com o teto exatamente
+    # cheio), a única evicção era gasta no morto, o recount não caía, e o item
+    # degradava assim mesmo. O `preview_evicted_lru` e o `preview_degraded`
+    # saíram no mesmo milissegundo, com `active` intacto em 3.
+    #
+    # Hoje o cadáver é COLHIDO antes, como lixo, e a fila de evicção só enxerga
+    # o que o contador enxerga.
+    from dse_validation.preview.argocd import _harvest_expired_previews
+
+    oldest = db.list_oldest_active_previews(tenant_id, limit=5)
+    assert [o["work_item_id"] for o in oldest] == [f"{work_item_id}-live"], (
+        "a fila de evicção ainda oferece a linha expirada — é a divergência de "
+        "filtro entre contagem e evicção que degradou a PR #4"
+    )
+    assert _harvest_expired_previews(tenant_id, actor="test") == 1
+    assert db.get_preview(f"{work_item_id}-dead")["status"] == "reaped"
+    assert db.get_preview(f"{work_item_id}-live")["status"] == "created"
 
 
 def test_cap_zero_blocks_immediately_without_touching_cluster(work_item_id, tenant_id):
