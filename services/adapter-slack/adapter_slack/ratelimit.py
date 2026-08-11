@@ -220,11 +220,3 @@ class RateLimitedSlackClient:
     def conversations_replies(self, **kwargs) -> Any:
         # Read-only: repeatable by definition.
         return self._call("conversations.replies", lambda: self._inner.conversations_replies(**kwargs))
-
-    def views_open(self, **kwargs) -> Any:
-        # A6 (modal do Retry). Um throttle aqui é inofensivo: o modal ou abre
-        # dentro dos ~3s do trigger_id ou não abre — o clicador tenta de novo
-        # e nada foi gravado (o veredito só nasce na SUBMISSÃO). Medido em
-        # produção (2026-08-10): a ausência deste método matou o primeiro
-        # clique real do canal em AttributeError.
-        return self._call("views.open", lambda: self._inner.views_open(**kwargs))

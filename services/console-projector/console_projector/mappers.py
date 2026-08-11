@@ -23,7 +23,6 @@ STATUS_MAP: dict[str, tuple[str, str | None]] = {
     # o KeyError deixou o control-plane vermelho DETERMINÍSTICO por dias,
     # mascarado pela fama de flaky do grupo — e o console congelado na última
     # projeção para todo item parqueado.
-    "spec_conflict": ("blocked", "spec conflict"),
     "implementing": ("running", "coding"),
     "validating": ("running", "validating"),
     "pr_open": ("pr_ready", "pr open"),

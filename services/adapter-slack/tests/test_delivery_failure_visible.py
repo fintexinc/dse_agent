@@ -69,7 +69,7 @@ def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake
     conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE work_items SET status='spec_conflict' WHERE id=%s",
+            cur.execute("UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
                         (work_item_id,))
             cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
             tenant_id = cur.fetchone()[0]
@@ -84,7 +84,7 @@ def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake
     resp = client.post("/internal/status-comment", json={
         "work_item_id": work_item_id, "channel": _CH,
         "body": "Parqueado.", "actor": "system:orchestrator",
-        "status": "spec_conflict",
+        "status": "awaiting_plan_approval",
     })
     assert resp.status_code == 200
     post = fake_slack.post_calls[-1]
@@ -107,7 +107,7 @@ def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake
         "message": {"ts": post["ts"], "thread_ts": post.get("thread_ts")},
         "user": {"id": "U_DF_REQ"},
         "action_ts": "9201.000900",
-        "actions": [{"action_id": "dse_park_escalate", "value": "escalate"}],
+        "actions": [{"action_id": "dse_plan_reject", "value": "reject"}],
     })
 
     updates = [u for u in fake_slack.update_calls if u["ts"] == post["ts"]]

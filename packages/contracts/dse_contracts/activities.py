@@ -496,13 +496,6 @@ class RunTesterTurnInput(BaseModel):
     run_paths: list[str] = Field(default_factory=list)
     model_override: str | None = None
     runtime_override: str | None = None
-    #: Beco 1, veredito `reauthor`: caminhos de spec PRÓPRIA que um humano
-    #: ordenou re-autorar in-place após o parque de exaustão. Vazio = turno
-    #: normal. A posse é re-verificada no git do Pod antes de qualquer escrita.
-    reauthor_specs: list[str] = Field(default_factory=list)
-    #: Evidência que acompanha a ordem (asserções reprovando, esperado vs
-    #: recebido) — vira contexto do prompt de re-autoria.
-    reauthor_context: str | None = None
 
     @model_validator(mode="after")
     def _reconcile(self) -> "RunTesterTurnInput":

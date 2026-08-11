@@ -197,9 +197,6 @@ _HUMAN_PARKS = {
     "needs_clarification": "the intake gate asked a question and waits for the answer",
     "awaiting_repo_selection": "the requester still has to pick a repository",
     "awaiting_plan_approval": "a named approver has to approve the plan",
-    "spec_conflict": "porta 1 (rc.41): espera durável pelo veredito humano "
-                     "(retry/reauthor) — mesma semântica de awaiting_plan_approval; "
-                     "faltou dos dois lados deste mapa desde que o status nasceu",
     "review_ready": "_set_status(review_ready, 'awaiting_human_review') then an "
                     "untimed wait_condition on the reviewer's verdict",
     "merge_pending": "_set_status(merge_pending, 'approved_awaiting_merge') then "

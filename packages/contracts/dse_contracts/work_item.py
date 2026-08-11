@@ -26,12 +26,6 @@ class WorkItemStatus(str, Enum):
     awaiting_plan_approval = "awaiting_plan_approval"
     implementing = "implementing"
     validating = "validating"
-    # Porta 1 do deadlock de posse de spec (2026-08-07, wi_1a5f9e3d): o L1
-    # reprovou numa spec PRÉ-EXISTENTE cujo sujeito está no diff — nenhum ator
-    # do laço pode editá-la (Coder: revert determinístico; Tester: só spec
-    # própria). O item PARA aqui aguardando humano, na mesma primitiva durável
-    # do plan approval, em vez de comprar turnos que repetem a falha.
-    spec_conflict = "spec_conflict"
     # Fine-grained states of the PR/CI/review path. ``pr_ready`` stays below as
     # a historical wire alias: old Temporal histories and clients that already
     # persisted it keep decoding, but new executions use
@@ -63,8 +57,6 @@ _PUBLIC_STATUS_MAP: dict[WorkItemStatus, PublicStatus] = {
     WorkItemStatus.awaiting_plan_approval: "blocked",
     WorkItemStatus.implementing: "running",
     WorkItemStatus.validating: "running",
-    # spec_conflict -> "blocked": esperando decisão humana, como o plan approval.
-    WorkItemStatus.spec_conflict: "blocked",
     WorkItemStatus.pr_open: "running",
     WorkItemStatus.ci_pending: "running",
     WorkItemStatus.review_ready: "running",

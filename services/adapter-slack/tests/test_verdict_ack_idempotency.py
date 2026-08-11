@@ -1,7 +1,7 @@
 """Item 3 da rc do canal mínimo — ack visível e idempotência one-shot.
 
 (a) Todo clique atualiza a mensagem original IN-PLACE: os botões somem e ela
-    vira "✅ Aprovado por @X às HH:MM" / "⛔ Escalado por..." — quem olha a
+    vira "✅ Aprovado por @X às HH:MM" / "🚫 Rejeitado por..." — quem olha a
     thread vê a decisão e o decisor, não um prompt eternamente pendente.
 (b) Clique duplicado (ou em veredito já consumido) responde ephemeral
     "já resolvido por X às HH:MM" e NÃO emite segundo signal. O workflow já
@@ -67,7 +67,7 @@ def _post_interaction(payload: dict) -> dict:
     return resp.json()
 
 
-def _parked_item(fake_slack, *, ts: str) -> tuple[str, dict]:
+def _gated_item(fake_slack, *, ts: str) -> tuple[str, dict]:
     from dse_identity import resolve_principal
 
     created = _post_event({
@@ -78,7 +78,7 @@ def _parked_item(fake_slack, *, ts: str) -> tuple[str, dict]:
     conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE work_items SET status='spec_conflict' WHERE id=%s",
+            cur.execute("UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
                         (work_item_id,))
             cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
             tenant_id = cur.fetchone()[0]
@@ -93,7 +93,7 @@ def _parked_item(fake_slack, *, ts: str) -> tuple[str, dict]:
     resp = client.post("/internal/status-comment", json={
         "work_item_id": work_item_id, "channel": _CH,
         "body": "Parqueado: spec quebrada.", "actor": "system:orchestrator",
-        "status": "spec_conflict",
+        "status": "awaiting_plan_approval",
     })
     assert resp.status_code == 200
     return work_item_id, fake_slack.post_calls[-1]
@@ -127,11 +127,11 @@ def test_a_duplicate_click_emits_exactly_one_signal_and_tells_the_late_clicker(f
     """Dois cliques no mesmo botão → UM evento. O segundo recebe ephemeral
     'já resolvido por X' — nunca um segundo signal fantasma re-armando a flag
     consumida do workflow."""
-    work_item_id, post = _parked_item(fake_slack, ts="9101.000100")
-    first = _click(post, action_id="dse_park_escalate", value="escalate",
+    work_item_id, post = _gated_item(fake_slack, ts="9101.000100")
+    first = _click(post, action_id="dse_plan_reject", value="reject",
                    action_ts="9101.000900")
     assert first["path"] == "signal"
-    second = _click(post, action_id="dse_park_escalate", value="escalate",
+    second = _click(post, action_id="dse_plan_reject", value="reject",
                     action_ts="9101.000901")
     assert second["path"] == "already_resolved", (
         "o segundo clique não pode virar segundo signal — é ele que re-arma a "
@@ -144,15 +144,19 @@ def test_a_duplicate_click_emits_exactly_one_signal_and_tells_the_late_clicker(f
 
 def test_the_click_acks_in_place_and_the_buttons_disappear(fake_slack):
     """O clique atualiza a mensagem original: botões fora, decisão e decisor
-    dentro — '⛔ Escalado por @X às HH:MM'."""
-    _, post = _parked_item(fake_slack, ts="9102.000100")
-    _click(post, action_id="dse_park_escalate", value="escalate",
+    dentro — '🚫 Rejeitado por @X às HH:MM'.
+
+    O cenário era o parque de spec até 2026-08-10; o parque saiu, o invariante
+    (consumo one-shot + ack no lugar) é da infra de veredito e vale igual na
+    aprovação de plano, que é onde ele passa a ser exercitado."""
+    _, post = _gated_item(fake_slack, ts="9102.000100")
+    _click(post, action_id="dse_plan_reject", value="reject",
            action_ts="9102.000900")
     updates = [u for u in fake_slack.update_calls if u["ts"] == post["ts"]]
     assert updates, "o ack é o chat.update na PRÓPRIA mensagem do prompt"
     ack = updates[-1]
     assert "<@U_ACK_REQ>" in ack["text"], "o decisor aparece no ack"
-    assert "Escalado" in ack["text"]
+    assert "Rejeitado" in ack["text"]
     for block in ack.get("blocks") or []:
         assert block.get("type") != "actions", "os botões somem no ack"
 
@@ -192,18 +196,18 @@ def test_a_repark_rearms_the_decision(fake_slack):
     """PIN do re-arm: o mesmo item pode parquear DE NOVO (retry → falha → novo
     parque). Renderizar os botões outra vez re-arma a decisão — o clique novo
     grava um SEGUNDO evento, não um 'já resolvido'."""
-    work_item_id, post = _parked_item(fake_slack, ts="9104.000100")
-    _click(post, action_id="dse_park_escalate", value="escalate",
+    work_item_id, post = _gated_item(fake_slack, ts="9104.000100")
+    _click(post, action_id="dse_plan_reject", value="reject",
            action_ts="9104.000900")
     assert _event_count(work_item_id) == 1
     # o re-parque: o workflow posta o status de novo (upsert edita a mesma msg)
     resp = client.post("/internal/status-comment", json={
         "work_item_id": work_item_id, "channel": _CH,
         "body": "Parqueado de novo: outra spec.", "actor": "system:orchestrator",
-        "status": "spec_conflict",
+        "status": "awaiting_plan_approval",
     })
     assert resp.status_code == 200
-    result = _click(post, action_id="dse_park_escalate", value="escalate",
+    result = _click(post, action_id="dse_plan_reject", value="reject",
                     action_ts="9104.000901")
     assert result["path"] == "signal", "re-parque = nova decisão, o botão volta a valer"
     assert _event_count(work_item_id) == 2
@@ -213,7 +217,7 @@ def test_a_transition_without_buttons_clears_the_stale_blocks(fake_slack):
     """chat.update sem `blocks` PRESERVA os blocos antigos no Slack real — a
     transição pós-decisão (implementing etc.) precisa LIMPAR os botões, senão
     o prompt continua clicável para sempre."""
-    work_item_id, post = _parked_item(fake_slack, ts="9105.000100")
+    work_item_id, post = _gated_item(fake_slack, ts="9105.000100")
     resp = client.post("/internal/status-comment", json={
         "work_item_id": work_item_id, "channel": _CH,
         "body": "⚙️ implementando de novo", "actor": "system:orchestrator",

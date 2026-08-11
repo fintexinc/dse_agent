@@ -27,10 +27,6 @@ SIGNAL_MERGED_BY_HUMAN = "merged_by_human"
 # (WSA-E6-T3) — never again by `kind` alone.
 SIGNAL_PLAN_APPROVAL = "plan_approval"
 
-# Porta 1 do deadlock de posse de spec: veredito humano para um item parado em
-# work_items.status == 'spec_conflict'. Payload: {"verdict": "retry"|qualquer
-# outro (escala), "actor": principal, "comment": str}.
-SIGNAL_SPEC_CONFLICT_RESOLUTION = "spec_conflict_resolution"
 
 # Known limitation (document it, do not hide it — P8): correctly routing a
 # correlated ConversationEvent (Path B) should depend on the CURRENT state of
