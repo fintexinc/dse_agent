@@ -104,8 +104,8 @@ def pod_failure_detail(cfg: PreviewConfig, namespace: str, reason: str) -> str:
         logger.warning("preview: could not read pod logs in %s: %s", namespace, exc)
         return reason
     if not log:
-        return f"{reason} (o pod não escreveu log nenhum — morreu antes de arrancar)"
-    return f"{reason} — o pod disse: {log[-_POD_LOG_CHARS:]}"
+        return f"{reason} (the pod wrote no log at all — it died before starting)"
+    return f"{reason} — the pod said: {log[-_POD_LOG_CHARS:]}"
 
 
 def namespace_exists(cfg: PreviewConfig, namespace: str) -> bool:
@@ -764,8 +764,8 @@ def preview_body_line(
     (`_PREVIEW_LINE_RE`, `re.M`) casa UMA linha. Uma seção multi-linha faria o
     re-trigger do fix cycle empilhar frases contraditórias em vez de substituir.
     """
-    def _frase(texto: str) -> str:
-        return f"- **Preview**: {' '.join(texto.split())}"
+    def _sentence(text: str) -> str:
+        return f"- **Preview**: {' '.join(text.split())}"
 
     if status in ("skipped_disabled", "skipped_backend_only"):
         # Decisão de operador (2026-08-11): pulo legítimo não gera seção. Uma
@@ -773,22 +773,24 @@ def preview_body_line(
         return None
 
     if status == "created":
-        alvo = url or "(sem URL)"
+        target = url or "(no URL)"
         extra = f" (namespace `{namespace}`)" if namespace else ""
-        return _frase(f"{alvo}{extra}")
+        return _sentence(f"{target}{extra}")
 
     if status == "reaped":
-        return _frase("expirado (TTL) — o ambiente foi recolhido e o link não responde mais")
+        return _sentence(
+            "expired (TTL) — the environment was reaped and the link no longer resolves")
 
-    causa = (detail or "").strip()
+    cause = (detail or "").strip()
     if status == "degraded":
-        if causa:
-            return _frase(f"não subiu — {causa[:_PREVIEW_DETAIL_CHARS]}")
-        return _frase("não subiu, e o runtime não disse por quê (veja o ledger do item)")
+        if cause:
+            return _sentence(f"did not come up — {cause[:_PREVIEW_DETAIL_CHARS]}")
+        return _sentence(
+            "did not come up, and the runtime gave no reason (see the item's audit ledger)")
 
     # Desconhecido: fala mesmo assim, com o status cru.
-    resto = f" — {causa[:_PREVIEW_DETAIL_CHARS]}" if causa else ""
-    return _frase(f"estado `{status}`{resto}")
+    rest = f" — {cause[:_PREVIEW_DETAIL_CHARS]}" if cause else ""
+    return _sentence(f"state `{status}`{rest}")
 
 
 def _put_preview_in_pr_body(
@@ -806,7 +808,7 @@ def _put_preview_in_pr_body(
     if line is None:
         return
     if not inp.pr_number or not inp.repo:
-        _preview_body_failed(inp, actor, "sem pr_number/repo — não há PR onde escrever")
+        _preview_body_failed(inp, actor, "no pr_number/repo — there is no PR to write to")
         return
     try:
         from dse_validation.github.client import GitHubConfig, build_github_client
@@ -814,7 +816,7 @@ def _put_preview_in_pr_body(
         client = build_github_client(GitHubConfig())
         pr = client.get_pull_request(inp.repo, int(inp.pr_number))
         if pr is None:
-            _preview_body_failed(inp, actor, f"PR #{inp.pr_number} não encontrada em {inp.repo}")
+            _preview_body_failed(inp, actor, f"PR #{inp.pr_number} not found in {inp.repo}")
             return
         body = pr.get("body") or ""
         new_body = _preview_body_with_line(body, line)

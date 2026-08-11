@@ -43,6 +43,12 @@ _USER_FACING = {
     "services/ingest-gateway/ingest_gateway/dispatcher.py": "Slack (undeliverable)",
     # Título, corpo e comentário da PR no repositório do cliente.
     "services/validation/dse_validation/github/pr_finalizer.py": "GitHub (PR)",
+    # A linha de preview no corpo da PR. Entrou nesta lista em 2026-08-11, no
+    # mesmo commit em que o módulo passou a ESCREVER para humano: até então ele
+    # só provisionava, e por isso não era varrido. A ausência dele aqui deixou
+    # três frases em português chegarem ao corpo da PR de um cliente — o
+    # detector as reprova (score 2 e 3), ele só nunca foi apontado para cá.
+    "services/validation/dse_validation/preview/argocd.py": "GitHub (linha de preview na PR)",
     # Os outros canais de saída.
     "services/adapter-github/adapter_github/app.py": "GitHub (issue)",
     "services/adapter-jira/adapter_jira/app.py": "Jira",
