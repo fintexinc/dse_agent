@@ -306,25 +306,6 @@ _COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
 
-def _l1_infra_gates(findings) -> list[str]:
-    """Quais gates NÃO CONSEGUIRAM RODAR — pelo STATUS, não pela mensagem.
-
-    `GateStatus.ERROR` é o contrato para "a ferramenta não produziu veredito":
-    OOM (exit 134), comando ausente (127), o kill do cgroup. Quem classifica é
-    `_infra_failure`, em quality_checks.py, que já lê o returncode e os
-    marcadores do runtime. Aqui só se lê a conclusão dele.
-
-    Pela mensagem seria frágil: o texto é do runtime e muda com a ferramenta;
-    o status é contrato. É a mesma escolha que `_tester_infra_outcome` faz do
-    outro lado do laço."""
-    out: list[str] = []
-    for f in findings or []:
-        status = getattr(f, "status", None)
-        if getattr(status, "value", status) == GateStatus.ERROR.value:
-            out.append(getattr(f, "check", "?"))
-    return out
-
-
 def _client_spec_conflict_note(
     specs: list[str] | None, assertions: list[str] | None
 ) -> str:
@@ -2643,40 +2624,6 @@ class WorkItemLifecycleWorkflow:
                             )
 
                 failed_checks = [f for f in l1_result.findings if not f.passed]
-                # Um gate que NÃO RODOU não é veredito sobre o código, e nenhum
-                # turno de Coder o conserta. Medido no wi_530a1f56 (US$ 18,90):
-                # o `lint` abortou por heap (exit 134), o gate voltou ERROR, e o
-                # laço tratou igual a um FAIL — o Coder foi mandado "consertar"
-                # e passou duas rodadas mexendo no package.json do cliente. A
-                # causa estava no `.dse/validation.json` DELE, fixando
-                # `--max-old-space-size=1024` abaixo do que o sandbox oferecia.
-                #
-                # Mesmo desenho do lado do Tester
-                # (`tester-infra-outcome-escalates-v1`): escala com a razão
-                # nomeada e as palavras do runtime, sem comprar turnos que
-                # repetem a falha. FAIL continua sendo trabalho do Coder.
-                infra_gates = (
-                    _l1_infra_gates(failed_checks)
-                    if workflow.patched("l1-infra-error-escalates-v1") else []
-                )
-                if infra_gates:
-                    detail = " ".join(
-                        (getattr(f, "summary", "") or getattr(f, "detail", "") or "")
-                        for f in failed_checks
-                        if getattr(f, "check", None) in infra_gates
-                    ).strip()
-                    await self._audit(
-                        "l1_infra_error",
-                        {"gates": infra_gates, "attempt": input.coder_retry_count,
-                         "decision": "escalate"},
-                    )
-                    raise _EscalateNow(
-                        f"l1_infra_{'_'.join(infra_gates)}: the gate(s) "
-                        f"{', '.join(infra_gates)} could not RUN, so there is no "
-                        "verdict on the code and no Coder turn can produce one — "
-                        "this is the sandbox or the repository's own command, not "
-                        f"the change. {detail[:600]}"
-                    )
                 # Aqui vivia o PARQUE DE EXAUSTÃO DE SPEC PRÓPRIA, com a
                 # memória por spec que o armava (`tester-spec-memory-parks-v1`)
                 # e o gatilho v1 preservado para replay. Saiu inteiro em
