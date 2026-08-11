@@ -76,13 +76,24 @@ orchestrator:
   # pior caso, e 50 é teto de segurança, não de operação.
   defaultWorkItemMaxUsd: 50
   coderRetryCap: 8
-  replicas: 1                  # POC: 1 replica on the 2-core node (HA out of scope; frees ~400m of CPU)
+  replicas: 1                  # POC: 1 replica (HA fora de escopo)
   image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.79", digest: "" }
   resources:
-    # Measured 3m/80Mi idle. Runs validation activities in-process, so it bursts
-    # well above idle — hence a request far above measured, and a 1-core limit.
+    # Medido 3m/80Mi ocioso. Roda os gates do L1 IN-PROCESS, então estoura
+    # muito acima do ocioso — por isso o request fica bem acima do medido.
+    #
+    # O TETO subiu de 1 core / 1Gi em 2026-08-11, quando o nó passou a ter 8
+    # vCPU e 31 GiB. Ele era o gargalo real e ninguém tinha notado: o
+    # `fairness` autoriza 8 atividades caras por tenant em paralelo (o default
+    # de `DSE_FAIRNESS_DEFAULT_CAP`), o worker do Temporal não impõe teto
+    # próprio, e mesmo assim TODAS elas dividiam um único core — dois itens em
+    # paralelo faziam jest, tsc e ng build brigarem pela mesma CPU dentro do
+    # mesmo processo.
+    #
+    # Limite é TETO, não reserva: o request continua em 150m, então isto não
+    # tira capacidade de ninguém — só deixa de estrangular o pico.
     requests: { cpu: "150m", memory: "384Mi" }
-    limits: { cpu: "1", memory: "1Gi" }
+    limits: { cpu: "4", memory: "4Gi" }
 egressProxy:
   image: { repository: ghcr.io/fintexinc/dse_agent/egress-proxy, tag: *ghcrTag, digest: "" }
   replicas: 1                  # POC: 1 replica (the >=2 gate is strict-profile only)
@@ -262,7 +273,9 @@ preview:
 # ImagePullBackOff) and finalize_pr runs on the orchestrator worker, not here.
 validation:
   enabled: false
-# otel is best-effort; this saves RAM on the 2 vCPU VPS.
+# otel é best-effort e segue desligado. O motivo original ("economiza RAM no
+# VPS de 2 vCPU") caducou — o nó tem 31 GiB —, mas ligar telemetria é decisão
+# própria, não consequência de ter espaço.
 otelCollector:
   enabled: false
 
