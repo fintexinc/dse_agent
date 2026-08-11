@@ -325,25 +325,36 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     else:
         image = cfg.source_image
         proxy_step = ""
-        start = f"PORT={port} exec npm start -- --host 0.0.0.0 --port {port}"
+        # As TRÊS flags são obrigatórias, e cada uma foi medida no preview da
+        # PR #19 (fintexinc/bmo-fee-calculator-fe-dse), onde o Angular compilou
+        # ("Application bundle generation complete [28.2s]") e mesmo assim o pod
+        # ficou 0/1 para sempre:
+        #
+        #   --host 0.0.0.0  o socket do pod era `tcp ::1:4200 LISTEN`. `ng serve`
+        #                   escuta em localhost IPv6 por padrão: nem a sonda do
+        #                   kubelet nem o Service alcançam. Curl de dentro do
+        #                   cluster deu HTTP 000.
+        #   --port N        `ng serve` IGNORA a env PORT, e o `npm start` do repo
+        #                   é `ng serve --configuration development` sem `--port`.
+        #                   Sem a flag ele sobe na 4200 e o Service aponta para
+        #                   outra porta.
+        #   --allowed-hosts o dev server é Vite (Angular 19) e recusa Host que
+        #                   não conheça: HTTP 403 "Blocked request. This host is
+        #                   not allowed." Liberamos O HOST DO INGRESS, que é
+        #                   determinístico e nosso — não `--disable-host-check`,
+        #                   que abriria o servidor para rebinding de DNS por um
+        #                   ganho de zero (o hostname já é conhecido aqui).
+        flags = f"--host 0.0.0.0 --port {port}"
+        preview_host = cfg.external_hostname_for(namespace)
+        if preview_host:
+            flags += f" --allowed-hosts {preview_host}"
         if api_proxy_target:
             proxy_conf = json.dumps({"/api": {
                 "target": api_proxy_target, "changeOrigin": True, "secure": False,
             }})
             proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
-        # `--host 0.0.0.0 --port N` EXPLÍCITOS. Medido no preview da PR #19:
-        # `ng serve` ignora a env `PORT` e, pior, escuta em `::1` — o socket do
-        # pod era `tcp ::1:4200 LISTEN`, então nem a sonda do kubelet nem o
-        # Service alcançavam, e o preview ficava 0/1 para sempre com o app
-        # compilado e servindo lá dentro ("Application bundle generation
-        # complete" no log, HTTP 000 de fora).
-        #
-        # O `npm start` do repo é `ng serve --configuration development` sem
-        # `--port`: passar a env não basta, tem que ser flag.
-            start = (
-                f"PORT={port} exec npm start -- --host 0.0.0.0 --port {port} "
-                "--proxy-config proxy.preview.json"
-            )
+            flags += " --proxy-config proxy.preview.json"
+        start = f"PORT={port} exec npm start -- {flags}"
         script = (
             "set -eu; "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
