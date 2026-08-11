@@ -306,6 +306,34 @@ _COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
 
+def _l1_infra_gates(findings) -> list[str]:
+    """Os gates do L1 que NÃO CONSEGUIRAM RODAR — não os que reprovaram.
+
+    A distinção vem do STATUS, e é por isso que este classificador é de
+    três linhas: `GateStatus.ERROR` é contrato e significa "esta ferramenta
+    não produziu veredito". A mensagem é do runtime e muda; procurar
+    "killed" no texto seria a mesma aposta que o `_tail(stdout or stderr)`
+    do #60.
+
+    O laço não fazia a distinção porque `failed_checks` é `[f for f in
+    findings if not f.passed]` e um ERROR também tem `passed=False`. O
+    preço está medido: wi_530a1f56, US$ 18,90, três turnos de Coder
+    mexendo no `package.json` do cliente para consertar um `lint` que
+    morreu de SIGABRT por heap — coisa que nenhum turno de Coder podia
+    resolver, porque a causa era o `--max-old-space-size=1024` do próprio
+    `.dse/validation.json`.
+
+    Lê `status` como enum OU como a string crua que um payload decodificado
+    carrega, igual ao `_tester_infra_outcome`: os dois lados atravessam a
+    mesma fronteira de serialização."""
+    out: list[str] = []
+    for f in findings or []:
+        status = getattr(f, "status", None)
+        if getattr(status, "value", status) == GateStatus.ERROR.value:
+            out.append(getattr(f, "check", "?"))
+    return out
+
+
 def _client_spec_conflict_note(
     specs: list[str] | None, assertions: list[str] | None
 ) -> str:
@@ -2622,6 +2650,27 @@ class WorkItemLifecycleWorkflow:
                             self._client_spec_note = _client_spec_conflict_note(
                                 conflicts, assertions
                             )
+
+                # Um gate que não RODOU não é veredito sobre o código, e o
+                # molde é o do Tester (`_tester_infra_outcome`): fim de infra
+                # escala nomeando a causa, em vez de comprar turnos que
+                # repetem a falha. Antes do `failed_checks` de propósito — é
+                # ali que o ERROR viraria "conserte o lint".
+                infra_gates = _l1_infra_gates(l1_result.findings)
+                if infra_gates:
+                    detail = "; ".join(
+                        f"{f.check}:{f.detail}"
+                        for f in l1_result.findings
+                        if f.check in infra_gates and getattr(f, "detail", "")
+                    )
+                    await self._audit(
+                        "l1_infra_error_escalates",
+                        {"gates": infra_gates, "detail": detail[:500]},
+                    )
+                    raise _EscalateNow(
+                        f"l1_infra_error:{','.join(infra_gates)}"
+                        + (f" runtime said: {detail[:400]}" if detail else "")
+                    )
 
                 failed_checks = [f for f in l1_result.findings if not f.passed]
                 # Aqui vivia o PARQUE DE EXAUSTÃO DE SPEC PRÓPRIA, com a
