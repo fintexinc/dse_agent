@@ -63,7 +63,7 @@ def test_rung1_explicit_override_beats_binding(tenant):
     _bind(tenant, "slack", "channel", "C1", "org/from-binding")
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "use repo=org/explicit", "channel": "C1"},
         )
@@ -76,7 +76,7 @@ def test_rung2_channel_binding(tenant):
     _bind(tenant, "slack", "channel", "C_PAY", "org/payments", "develop")
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "fix the balance", "channel": "C_PAY"},
         )
@@ -90,7 +90,7 @@ def test_component_beats_project_jira(tenant):
     _bind(tenant, "jira", "component", "Payments", "org/payments")
     conn = psycopg2.connect(DSN)
     try:
-        repo, _ = resolve_repo(
+        repo, _, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="jira",
             signals={"text": "bug", "component": "Payments", "project": "FINX"},
         )
@@ -104,7 +104,7 @@ def test_rung4_single_repo_default(tenant):
     _bind(tenant, "slack", "channel", "C_A", "org/only")
     conn = psycopg2.connect(DSN)
     try:
-        repo, _ = resolve_repo(
+        repo, _, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "something", "channel": "C_UNKNOWN"},
         )
@@ -119,7 +119,7 @@ def test_ambiguous_returns_none_for_clarification(tenant):
     _bind(tenant, "slack", "channel", "C_B", "org/b")
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "something", "channel": "C_X"},
         )
@@ -131,7 +131,7 @@ def test_ambiguous_returns_none_for_clarification(tenant):
 def test_empty_tenant_returns_none(tenant):
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "no binding at all", "channel": "C_X"},
         )
@@ -159,7 +159,7 @@ def test_rung4_does_not_call_a_two_repo_tenant_single_because_only_one_is_bound(
 
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "show a coloured badge on the reports dashboard",
                      "channel": "C_UNBOUND"},
@@ -182,7 +182,7 @@ def test_rung4_still_defaults_when_the_tenant_genuinely_has_one_repo(tenant):
 
     conn = psycopg2.connect(DSN)
     try:
-        repo, branch = resolve_repo(
+        repo, branch, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "anything", "channel": "C_UNKNOWN"},
         )
@@ -202,7 +202,7 @@ def test_rung4_counts_a_repo_present_in_both_tables_once(tenant):
 
     conn = psycopg2.connect(DSN)
     try:
-        repo, _ = resolve_repo(
+        repo, _, _scope = resolve_repo(
             conn, tenant_id=tenant, platform="slack",
             signals={"text": "anything", "channel": "C_UNKNOWN"},
         )

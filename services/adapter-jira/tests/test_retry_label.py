@@ -139,7 +139,7 @@ def db(monkeypatch):
         monkeypatch.setattr("adapter_jira.ingest.audit_emit", store.emit)
         monkeypatch.setattr(
             "adapter_jira.ingest.resolve_repo",
-            lambda conn, **kw: ("acme/resolved-by-cascade", "main"),
+            lambda conn, **kw: ("acme/resolved-by-cascade", "main", []),
         )
         store.conn = conn
         return store

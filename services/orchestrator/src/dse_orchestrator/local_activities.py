@@ -1112,7 +1112,9 @@ only when you genuinely cannot tell. Do not use it as a default.
 """
 
 
-def _route_repos_sync(tenant_id: str, instruction: str) -> dict[str, Any]:
+def _route_repos_sync(
+    tenant_id: str, instruction: str, work_item_id: str | None = None
+) -> dict[str, Any]:
     """Ask the model which repositories a request needs. Never raises.
 
     The intelligence lives HERE, in the orchestrator, and not in
@@ -1132,11 +1134,27 @@ def _route_repos_sync(tenant_id: str, instruction: str) -> dict[str, Any]:
     conn = _get_connection()
     try:
         with conn, conn.cursor() as cur:
-            cur.execute(
-                TENANT_REPO_CATALOGUE_SQL,
-                {"t": tenant_id},
-            )
+            # O RECORTE DA ORIGEM, quando existe. Um canal do Slack (ou um
+            # project/component do Jira) com mais de um repositório amarrado
+            # não escolhe — ele DELIMITA, e o `repo_resolver` gravou o conjunto
+            # em `work_items.repo_candidates` no momento da admissão.
+            #
+            # Sem isso o catálogo é o do tenant inteiro, que é o que já era: ao
+            # plugar uma trilha de teste com mais um frontend e mais um
+            # backend, o canal que decidia entre 2 repositórios passou a decidir
+            # entre 4 sem que ninguém tocasse no roteador.
+            scope: list[str] = []
+            if work_item_id:
+                cur.execute(
+                    "SELECT repo_candidates FROM work_items WHERE id = %s",
+                    (work_item_id,),
+                )
+                row = cur.fetchone()
+                scope = list(row[0]) if row and row[0] else []
+            cur.execute(TENANT_REPO_CATALOGUE_SQL, {"t": tenant_id})
             rows = cur.fetchall()
+            if scope:
+                rows = [r for r in rows if r[0] in scope]
     finally:
         conn.close()
 
@@ -1229,8 +1247,14 @@ def _route_repos_sync(tenant_id: str, instruction: str) -> dict[str, Any]:
 async def route_repos(payload: dict[str, Any]) -> dict[str, Any]:
     import asyncio
 
+    # `work_item_id` já vinha no payload — por isso o RECORTE POR ORIGEM não
+    # muda o comando que o workflow grava, e portanto não precisa de
+    # `workflow.patched`. Histórias antigas replayam idênticas.
     return await asyncio.to_thread(
-        _route_repos_sync, payload["tenant_id"], payload.get("instruction") or ""
+        _route_repos_sync,
+        payload["tenant_id"],
+        payload.get("instruction") or "",
+        payload.get("work_item_id"),
     )
 
 

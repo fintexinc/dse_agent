@@ -75,7 +75,7 @@ def ingest_task_trigger(
         # override in the text → Component (finest) → Project → tenant default.
         # With no resolution, repo=None and the clarification gate asks (it
         # never guesses).
-        repo, base_branch = resolve_repo(
+        repo, base_branch, repo_candidates = resolve_repo(
             conn, tenant_id=tenant_id, platform="jira",
             signals={"text": sanitized, "component": events.first_component(issue),
                      "project": channel},
@@ -88,6 +88,7 @@ def ingest_task_trigger(
                 channel=channel,
                 repo=repo,
                 base_branch=base_branch,
+                repo_candidates=repo_candidates,
                 requester_principal=resolved_principal,
                 # Plan 08 §A: deterministic task_class at intake — ticket labels
                 # + Jira issue type (Bug→bug_fix, Story→feature_small…).
@@ -345,8 +346,12 @@ def ingest_retry_trigger(
         # whose repo came from a human answering the clarification, the cascade
         # alone would land back on "ambiguous" and ask the same question again.
         repo, base_branch = prior_repo, prior_base_branch
+        # Inheriting a repo means there is nothing left to route, so there is no
+        # scope to carry either — the empty list is the honest value, and
+        # binding it here keeps the name defined on both branches.
+        repo_candidates: list[str] = []
         if not repo:
-            repo, base_branch = resolve_repo(
+            repo, base_branch, repo_candidates = resolve_repo(
                 conn, tenant_id=tenant_id, platform="jira",
                 signals={"text": sanitized,
                          "component": events.first_component(issue),
@@ -360,6 +365,7 @@ def ingest_retry_trigger(
                 channel=channel,
                 repo=repo,
                 base_branch=base_branch,
+                repo_candidates=repo_candidates,
                 requester_principal=resolved_principal,
                 task_class=classify_task_class(
                     labels=events.issue_labels(issue),

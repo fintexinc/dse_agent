@@ -388,7 +388,7 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
         # default). With no resolution, repo=None and the clarification gate
         # asks (it never guesses). The text used is the SANITIZED one (never
         # the raw one).
-        repo, base_branch = resolve_repo(
+        repo, base_branch, repo_candidates = resolve_repo(
             conn, tenant_id=tenant_id, platform="slack",
             signals={"text": sanitized, "channel": channel},
         )
@@ -400,6 +400,7 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
                 channel=channel,
                 repo=repo,
                 base_branch=base_branch,
+                repo_candidates=repo_candidates,
                 requester_principal=principal,
                 sanitized_content=sanitized,
                 conn=conn,

@@ -44,7 +44,7 @@ def _insert_binding(tenant_id: str, repo: str, deploys_preview: bool):
             cur.execute(
                 "INSERT INTO repo_bindings (tenant_id, platform, binding_type, binding_value, repo, base_branch, deploys_preview) "
                 "VALUES (%s,'slack','channel',%s,%s,'main',%s) "
-                "ON CONFLICT (tenant_id, platform, binding_type, binding_value) DO UPDATE SET deploys_preview = EXCLUDED.deploys_preview",
+                "ON CONFLICT (tenant_id, platform, binding_type, binding_value, repo) DO UPDATE SET deploys_preview = EXCLUDED.deploys_preview",
                 (tenant_id, f"C-{repo}", repo, deploys_preview),
             )
         conn.commit()

@@ -85,6 +85,7 @@ def admit_work_item(
     requester_principal: str,
     repo: str | None = None,
     base_branch: str | None = None,
+    repo_candidates: list[str] | None = None,
     data_class: str = "internal",
     task_class: str = "chore",
     sanitized_content: str | None = None,
@@ -124,8 +125,9 @@ def admit_work_item(
                 """
                 INSERT INTO work_items
                     (id, tenant_id, source, source_ref, repo, base_branch,
-                     requester, data_class, task_class, idempotency_key)
-                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                     requester, data_class, task_class, idempotency_key,
+                     repo_candidates)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """,
                 (
@@ -139,6 +141,13 @@ def admit_work_item(
                     data_class,
                     task_class,
                     idempotency_key,
+                    # O recorte que a ORIGEM impôs, decidido aqui e não
+                    # recalculado depois: o `component` de um issue do Jira não
+                    # sobrevive em `source_ref`, então reconstruir isso adiante
+                    # exigiria uma segunda cópia da montagem de sinais de cada
+                    # adapter. Vazio = sem recorte, e o roteador segue vendo o
+                    # catálogo do tenant inteiro.
+                    list(repo_candidates or []),
                 ),
             )
             cur.execute(
