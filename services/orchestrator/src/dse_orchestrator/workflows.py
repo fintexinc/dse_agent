@@ -2818,7 +2818,19 @@ class WorkItemLifecycleWorkflow:
         # Failure/degradation NEVER blocks the PR (failure mode 9) — degraded
         # evidence is recorded and the flow moves on to human review.
         input.last_files_changed = list(coder_result.files_changed)
-        await self._run_evidence_pipeline(coder_result.files_changed, reason="initial")
+        # O ACUMULADO, não o último turno. `finalize_pr` sessenta linhas acima
+        # já usa `cumulative_files_changed`, e a diferença entre os dois custou
+        # a PR #8 (2026-08-10): quatro arquivos .java na PR, o último turno do
+        # Coder sem mudança nenhuma, e o paths-filter recebendo `[]` →
+        # `skipped_backend_only` num repo que casa `**/*.java`.
+        #
+        # É a mesma lição do commit e841542, que corrigiu SÓ o call site do
+        # `human_request`. O diff por turno não representa a mudança; o
+        # `base..HEAD` sim.
+        await self._run_evidence_pipeline(
+            list(input.cumulative_files_changed or coder_result.files_changed),
+            reason="initial",
+        )
         await self._emit_history_metric("pr_finalized")
 
         # We do NOT `continue_as_new` here (deliberate — see README.md, section
@@ -3640,8 +3652,16 @@ class WorkItemLifecycleWorkflow:
                 input.ci_wait_started_at_epoch = None
                 # ADR-26: fix cycle = new commit that changes behavior -> 1 refresh
                 input.last_files_changed = list(fix_result.files_changed)
-                await self._run_evidence_pipeline(fix_result.files_changed,
-                                                  reason="fix_cycle_ci_red")
+                # Acumula o commit do fix e classifica pela PR INTEIRA — o fix
+                # de CI costuma tocar um arquivo só, e sozinho ele reclassifica
+                # a PR para o tipo errado (ou para tipo nenhum).
+                input.cumulative_files_changed = sorted(
+                    set(input.cumulative_files_changed) | set(fix_result.files_changed or [])
+                )
+                await self._run_evidence_pipeline(
+                    list(input.cumulative_files_changed or fix_result.files_changed),
+                    reason="fix_cycle_ci_red",
+                )
                 continue
 
             if ci.status == "no_ci":
@@ -3778,7 +3798,13 @@ class WorkItemLifecycleWorkflow:
                 # evidence refresh (the refresh is triggered by the fix COMMIT,
                 # never by the comments themselves).
                 input.last_files_changed = list(fix_result.files_changed)
-                await self._run_evidence_pipeline(fix_result.files_changed, reason="fix_cycle")
+                input.cumulative_files_changed = sorted(
+                    set(input.cumulative_files_changed) | set(fix_result.files_changed or [])
+                )
+                await self._run_evidence_pipeline(
+                    list(input.cumulative_files_changed or fix_result.files_changed),
+                    reason="fix_cycle",
+                )
                 continue
 
             if "approved" in verdicts:

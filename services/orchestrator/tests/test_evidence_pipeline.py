@@ -84,7 +84,12 @@ async def test_ui_touching_pr_runs_full_evidence_pipeline(time_skipping_env):
 
     # exact payloads re-validated with the CONTRACT MODELS (not a lenient dict)
     prev = TriggerPreviewInput(**state.last_preview_payload)
-    assert prev.files_changed == ["frontend/App.tsx", "api/handler.py"]
+    # CONJUNTO, não lista: a partir de 2026-08-11 o preview recebe o diff
+    # ACUMULADO da PR (`cumulative_files_changed`), que é `sorted()` — e a
+    # ordem dos arquivos nunca significou nada aqui. O paths-filter casa glob
+    # por arquivo, sem depender de posição. A intenção da asserção — "o preview
+    # recebe exatamente estes dois arquivos" — é o que está preservado.
+    assert set(prev.files_changed) == {"frontend/App.tsx", "api/handler.py"}
     assert prev.pr_number == 1000
     demo = RunDemoEvidenceInput(**state.last_demo_payload)
     assert demo.base_url == f"http://preview-{work_item_id}.local"  # URL of the created preview
