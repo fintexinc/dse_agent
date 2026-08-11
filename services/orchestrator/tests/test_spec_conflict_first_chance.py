@@ -25,7 +25,6 @@ from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.local_activities import LOCAL_ACTIVITIES
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import (
-    _AUTO_REAUTHOR_CAP,
     WorkItemLifecycleWorkflow,
 )
 
@@ -87,7 +86,6 @@ async def _start(state: FakeControlPlane, work_item_id: str, env):
         # F3 (2026-08-10): as duas primeiras ordens de reescrita saem sozinhas.
         # O canal de direcionamento HUMANO que este arquivo pina é o segundo
         # estágio — declarar o orçamento gasto o põe onde ele existe.
-        auto_reauthor_rounds=_AUTO_REAUTHOR_CAP,
     )
     handle = await env.client.start_workflow(
         WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue)
@@ -165,48 +163,6 @@ async def test_the_same_spec_failing_again_keeps_working_instead_of_parking(time
 
 
 @pytest.mark.asyncio
-async def test_the_retry_comment_reaches_the_coder_context(time_skipping_env):
-    """Medido no wi_cc72b204 (2026-08-09): três rodadas (~US$ 11) perseguindo o
-    sintoma (modal) sem tocar a causa (comparador de mudanças) — e o humano no
-    parque SABIA a causa, mas o retry não tinha canal: o comment morria no
-    audit (rc.51 plumbou comment→reauthor; retry ficou de fora). O comment do
-    veredito retry viaja na frente do fix_context, como no reauthor.
-
-    EVOLUIU em 2026-08-10 (F2): o canal continua exatamente igual, mas o
-    cenário mudou de parque. Spec de CLIENTE não parqueia mais, então o teste
-    exercita o parque que RESTA — a spec do próprio Tester —, que é onde o
-    humano ainda decide e onde o direcionamento dele ainda precisa chegar."""
-    work_item_id = new_work_item_id("v3-guide")
-    insert_work_item(work_item_id)
-    # a spec que falha é a do PRÓPRIO Tester: parque de exaustão, o que sobrou
-    tester_detail = _MAXW_DETAIL.replace(_CLIENT_SPEC, _DSE_SPEC)
-    state = FakeControlPlane(
-        plan_risk_class="low",
-        l1_fail_times=2,
-        l1_fail_detail=tester_detail,
-        coder_files_changed=[_SUBJECT_HTML],
-        tester_test_files=[_DSE_SPEC],
-    )
-    worker, handle = await _start(state, work_item_id, time_skipping_env)
-    async with worker:
-        await wait_for_status(handle, {"spec_conflict"})
-        direction = "A causa é o comparador de mudanças, não o modal."
-        await handle.signal(
-            "spec_conflict_resolution",
-            {"verdict": "retry", "actor": "usr_test", "comment": direction},
-        )
-        await wait_for_status(handle, {"review_ready"})
-        assert direction in state.coder_instructions[-1], (
-            "o direcionamento humano do retry chega ao Coder — sem canal, o "
-            "veredito vira torcida"
-        )
-        await handle.signal("review_comment", {"verdict": "approved"})
-        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
-        result = await handle.result()
-    assert result.status == WorkItemStatus.done.value
-
-
-@pytest.mark.asyncio
 async def test_inherited_red_spec_never_parks_nor_defers(time_skipping_env):
     """DoD 1c: spec vermelha no base é achado HERDADO (NOT_OUR_FAILURE) mesmo
     com o sujeito no diff — não parqueia nem ganha "primeira chance"; a falha
@@ -234,3 +190,11 @@ async def test_inherited_red_spec_never_parks_nor_defers(time_skipping_env):
         await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
         result = await handle.result()
     assert result.status == WorkItemStatus.done.value
+
+
+# `test_the_retry_comment_reaches_the_coder_context` vivia aqui e saiu em
+# 2026-08-10 com o último parque. Ele pinava o canal pelo qual o
+# direcionamento humano de um veredito de retry chegava ao Coder — canal que
+# existia porque havia um parque onde o humano opinava no MEIO do laço. Sem
+# parque não há veredito, e a direção humana volta a entrar por onde sempre
+# entrou fora do laço: a descrição do item e a revisão da PR.

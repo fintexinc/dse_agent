@@ -295,37 +295,7 @@ class _PlanRejected(Exception):
 
 #: As linhas "FAIL <suite>" que o quality_checks conta no detail do gate `test`.
 _FAILING_SUITE_LINE = re.compile(r"^FAIL\s+(\S+)", re.MULTILINE)
-#: O dialeto surefire: a suite que falhou é nomeada pela CLASSE, não pelo
-#: caminho — `... <<< FAILURE! -- in com.x.ClasseTest`. Sem esta extração o
-#: Java nunca era reconhecido pela maquinaria de exaustão e queimava o cap em
-#: rodadas cegas (wi_893de651, 3×).
-_SUREFIRE_FAILING_CLASS = re.compile(
-    r"<<<\s*(?:FAILURE|ERROR)!\s*--\s*in\s+(\S+)\s*$", re.MULTILINE
-)
 _TS_SPEC_SUFFIX = re.compile(r"\.(?:spec|test)\.(?:ts|tsx|js|jsx)$")
-
-
-def _failing_spec_ids(test_detail: str) -> list[str]:
-    """Ids das suites que falharam, nos dois dialetos: caminho (jest) e classe
-    (surefire). Ordem de aparição, sem duplicatas."""
-    ids: list[str] = []
-    for rx in (_FAILING_SUITE_LINE, _SUREFIRE_FAILING_CLASS):
-        for m in rx.finditer(test_detail or ""):
-            if m.group(1) not in ids:
-                ids.append(m.group(1))
-    return ids
-
-
-def _spec_id_is_owned(spec_id: str, owned: set[str]) -> bool:
-    """Posse nos dois dialetos: caminho idêntico (jest), ou classe cujo nome
-    simples casa com o STEM de um arquivo do Tester
-    (com.x.ClasseTest ↔ src/test/java/.../ClasseTest.java)."""
-    if spec_id in owned:
-        return True
-    simple = spec_id.rsplit(".", 1)[-1]
-    return any(
-        p.rsplit("/", 1)[-1].rsplit(".", 1)[0] == simple for p in owned
-    )
 
 
 #: Os dois marcadores que `_detail_with` (validation/l1/quality_checks.py)
@@ -336,29 +306,42 @@ _COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
 
-def _reauthor_evidence(detail: str | None, limit: int = 1500) -> str:
-    """O trecho do detail que viaja na ORDEM DE REESCRITA — a causa, não a cauda.
+def _client_spec_conflict_note(
+    specs: list[str] | None, assertions: list[str] | None
+) -> str:
+    """A MIRA que o Coder recebe quando o diff quebrou spec pré-existente.
 
-    Medido no wi_3355102d (2026-08-10): o detail do gate `test` tinha 4.329
-    chars, `ApplicationContext` estava nele e NÃO estava nos últimos 1500. O
-    corte antigo (`detail[-1500:]`) entregava ao Tester a lista
-    `Unconditional classes:` do relatório de auto-configuração do Spring, e ele
-    reescreveu duas vezes sem nunca saber que o contexto não carregava.
+    O detector `preexisting_spec_conflicts` sempre soube QUAIS specs o diff
+    quebrou; a lista era auditada e descartada, e o turno seguinte recebia só
+    o nome dos gates que falharam. Enquanto existia parque isso passava — o
+    dossiê ia para o humano e ele direcionava. Sem parque, é a única mira que
+    resta, e a falta dela tem custo medido: no wi_3355102d o Coder recebeu
+    "L1 rejected the previous attempt" duas vezes com a mesma saída de gate e
+    o item morreu em `coder_not_converging`.
 
-    `_detail_with` põe deliberadamente as linhas que o gate CONTOU na frente,
-    logo depois do summary — então quando esse bloco existe, a cabeça é a
-    evidência e é ela que vai. Quando não existe (o contexto do Tester monta a
-    política primeiro e o output do runner por último), a cauda continua sendo
-    a evidência certa e nada muda: é o mesmo cuidado de #60, do outro lado do
-    cano."""
-    text = detail or ""
-    if len(text) <= limit:
-        return text
-    mark = _COUNTED_BLOCK_MARK.search(text)
-    if mark is None:
-        return text[-limit:]
-    end = text.find(_RAW_TAIL_MARK, mark.end())
-    return text[: end if end != -1 else len(text)][:limit]
+    O par esperado/recebido viaja junto porque o que se pede ao ator é
+    JULGAMENTO — asserção obsoleta vira atualização, defeito real vira
+    conserto de código — e não dá para julgar sem ver os dois lados."""
+    paths = list(specs or [])
+    if not paths:
+        return ""
+    lines = [
+        "Your change breaks these PRE-EXISTING specs of the repository: "
+        + ", ".join(paths) + ".",
+        "They are yours to deal with: UPDATE the assertion when it pins "
+        "behaviour this task deliberately changed, or fix the code when it "
+        "exposes a real defect. Either way the edit lands in the PR diff for "
+        "human review — it is legitimate work, not a violation.",
+    ]
+    # `_EXPECTED_RECEIVED_LINE` tem UM grupo: `findall` devolve as LINHAS
+    # ("Expected: 3", "Received: 4"), não pares. Tratá-las como pares levantava
+    # ValueError DENTRO do workflow — task falhando, retry infinito, item
+    # pendurado. Exatamente o modo de falha que esta rodada existe para tirar
+    # do sistema; foi a suíte que pegou.
+    seen = [a for a in (assertions or []) if a]
+    if seen:
+        lines.append("What they assert, verbatim: " + " | ".join(seen))
+    return "\n".join(lines)
 
 
 #: Extensões de código que aparecem em saída de compilador/runner com o caminho
@@ -433,70 +416,9 @@ def preexisting_spec_conflicts(
     return out
 
 
-#: "Expected:"/"Received:" do jest — o par que resolve o dossiê do beco 1 em
-#: trinta segundos humanos. Ausente em falhas sem esse formato (TypeError):
-#: o excerto de asserções cobre.
-#: Quantas ordens de reescrita o sistema emite SOZINHO antes de devolver o
-#: impasse ao humano. Dois: a primeira cobre o caso comum (a spec do Tester
-#: envelheceu em relação ao código); a segunda cobre o Tester ter errado a
-#: reescrita. A terceira seria fé, não engenharia.
-_AUTO_REAUTHOR_CAP = 2
 
 _EXPECTED_RECEIVED_LINE = re.compile(r"^\s*((?:Expected|Received)[:\s][^\n]*)$", re.MULTILINE)
 
-#: Suite que morreu na CARGA (jest) ou compilação (maven) — sem veredito.
-_LOAD_FAILURE_MARK = re.compile(r"●\s+Test suite failed to run|\[ERROR\]\s+/workspace/")
-
-
-def exclusively_tester_spec_failures(
-    failed_check_names: list[str], *, test_detail: str, tester_owned: list[str]
-) -> list[str]:
-    """Beco 1 — reconhecimento de EXAUSTÃO, deliberadamente não um classificador
-    (decidir se a asserção está errada ou o código está é a indecidibilidade da
-    porta 2; aqui ninguém decide isso).
-
-    Devolve as specs falhando SE E SOMENTE SE nenhum ator autorizado pode agir:
-      - o único gate reprovando é `test` (build/typecheck reprovando junto = o
-        Coder ainda tem produção para consertar);
-      - TODA suite FAIL é do próprio Tester (spec do cliente na lista = ou é a
-        porta 1, ou é produção quebrada — nunca este parque);
-      - com VEREDITO presente (carga/compilação morta = zero veredito =
-        território do repair da porta 5, que já rodou no turno).
-    Qualquer outra combinação: lista vazia, fluxo normal."""
-    if set(failed_check_names) != {"test"}:
-        return []
-    detail = test_detail or ""
-    if _LOAD_FAILURE_MARK.search(detail):
-        return []
-    specs = _failing_spec_ids(detail)
-    if not specs:
-        return []
-    owned = set(tester_owned or [])
-    if any(not _spec_id_is_owned(s, owned) for s in specs):
-        return []
-    return specs
-
-
-def tester_spec_assertion_failures(
-    failed_check_names: list[str], *, test_detail: str, tester_owned: list[str]
-) -> list[str]:
-    """A MEMÓRIA do beco 1 (gatilho por spec, wi_c9c7b200): specs PRÓPRIAS na
-    lista FAIL com veredito presente — independente de outros gates reprovando
-    na mesma rodada. Isto REGISTRA "esta spec já reprovou com asserção neste
-    item"; não decide parque nenhum: parquear continua exigindo a exclusividade
-    de `exclusively_tester_spec_failures` (nenhum ator autorizado AGORA)."""
-    if "test" not in set(failed_check_names):
-        return []
-    detail = test_detail or ""
-    if _LOAD_FAILURE_MARK.search(detail):
-        return []
-    owned = set(tester_owned or [])
-    specs: list[str] = []
-    for m in _FAILING_SUITE_LINE.finditer(detail):
-        s = m.group(1)
-        if s in owned and s not in specs:
-            specs.append(s)
-    return specs
 
 
 class _BlockNow(Exception):
@@ -559,14 +481,11 @@ class WorkItemLifecycleWorkflow:
         self._retry_caps_resolved = False
         self._empty_diff_rounds = 0
         self._empty_diff_note: str | None = None
+        #: A mira do conflito de spec de cliente — quais specs o diff quebrou e
+        #: o que elas asseriam. Viaja na FRENTE do contexto do L1, como o irmão
+        #: acima: o L1 nomeia gates, e um gate não diz em que arquivo mexer.
+        self._client_spec_note: str | None = None
         # --- Porta 1: deadlock de posse de spec (espera durável) ---
-        self._spec_conflict_received = False
-        self._spec_conflict_payload: dict[str, Any] | None = None
-        #: O comment do último veredito de spec_conflict — o canal de
-        #: INSTRUÇÃO do humano para a ordem de reauthor (wi_53c820f1: "estilo
-        #: por classe/atributo, nunca display computado" precisa chegar ao
-        #: prompt, não morrer no audit).
-        self._last_verdict_comment = ""
         # --- Phase 2: operator-driven budget retry (WSB-E4-T1) ---
         self._budget_raise_requested = False
         self._budget_new_max: float | None = None
@@ -654,16 +573,6 @@ class WorkItemLifecycleWorkflow:
         anti-clobber discipline as the other signals)."""
         self._plan_approval_payload = payload
         self._plan_approval_received = True
-
-    @workflow.signal(name="spec_conflict_resolution")
-    def spec_conflict_resolution(self, payload: dict[str, Any]) -> None:
-        """Porta 1 — veredito humano para um item parado em `spec_conflict`.
-        O nome casa `dse_contracts.SIGNAL_SPEC_CONFLICT_RESOLUTION`. Payload:
-        {"verdict": "retry"|outro, "actor": principal, "comment": str}.
-        Mesma disciplina anti-clobber dos outros signals: a flag não é
-        resetada aqui."""
-        self._spec_conflict_payload = payload
-        self._spec_conflict_received = True
 
     @workflow.signal
     def raise_budget(self, new_max_usd: float) -> None:
@@ -1401,147 +1310,6 @@ class WorkItemLifecycleWorkflow:
             status=WorkItemStatus.failed.value,
             detail=detail,
             pr_number=self._input.pr_number,
-        )
-
-    async def _park_spec_conflict(
-        self, specs: list[str], detail: str, diff_files: list[str],
-        *, reason: str = "preexisting_spec_broken_by_diff",
-    ) -> str | bool:
-        """ÚLTIMO RECURSO do deadlock de posse de spec: para o item em
-        `spec_conflict` na primitiva de espera durável do plan approval, com
-        TUDO que o humano precisa para decidir — qual spec, quais asserções, o
-        diff que a invalidou.
-
-        O que ele DEIXOU de ser (2026-08-10, e o docstring antigo dizia
-        "Porta 1" como se ainda fosse a regra): conflito em spec de CLIENTE não
-        chega mais aqui — o Coder atualiza a spec e a PR revisa
-        (`client-spec-never-parks-v1`). Exaustão em spec PRÓPRIA também não
-        chega de primeira: as duas primeiras ordens de reescrita saem sozinhas
-        (`auto-reauthor-before-park-v1`), e só o terceiro impasse parqueia.
-        Esta espera NÃO tem prazo — por isso ela ficou como último recurso, e
-        não como a resposta padrão a uma spec vermelha.
-
-        Retorna o veredito que resume o laço ("retry" sempre; "reauthor" só no
-        parque de exaustão de spec própria); levanta _EscalateNow para qualquer
-        outro; retorna False se um cancel chegou durante a espera (o chamador
-        finaliza cancelado)."""
-        assertions = (detail or "")[:2000]
-        diff_files = list(diff_files or [])
-        # AUTONOMIA ANTES DA ESPERA (decisão de operador, 2026-08-10).
-        #
-        # No impasse de spec PRÓPRIA do Tester, o veredito que o humano dava era
-        # sempre o mesmo — `reauthor` — e a ordem já é inteiramente executável
-        # sem ele (as guardas de posse vivem no Pod, em
-        # `_pod_reauthor_partition`, e valem contra ordem também). Chamar alguém
-        # para dizer o óbvio custava uma espera SEM PRAZO.
-        #
-        # Aqui a primitiva resolve sozinha e devolve o MESMO veredito que o
-        # humano devolveria, então os três call sites herdam o comportamento sem
-        # duplicar lógica. O orçamento existe para que a autonomia termine: sem
-        # ele, Tester reescreve → falha → reescreve seria um ciclo pago. Esgotado,
-        # o item parqueia como sempre, e aí a decisão é mesmo humana.
-        if (
-            reason == "tester_spec_exhaustion"
-            and workflow.patched("auto-reauthor-before-park-v1")
-            and self._input.auto_reauthor_rounds < _AUTO_REAUTHOR_CAP
-        ):
-            self._input.auto_reauthor_rounds += 1
-            await self._audit(
-                "tester_reauthor_ordered_automatically",
-                {"specs": specs, "round": self._input.auto_reauthor_rounds,
-                 "cap": _AUTO_REAUTHOR_CAP,
-                 "expected_vs_received": _EXPECTED_RECEIVED_LINE.findall(detail or "")[:12]},
-            )
-            self._last_verdict_comment = (
-                "Automatic order (no human in the loop): the spec you authored for "
-                "this task keeps failing and the Coder may not edit it. Rewrite it "
-                "against the code as it is now — or, if the code is genuinely wrong, "
-                "write the assertion that proves it."
-            )
-            return "reauthor"
-        # O par Expected/Received quando o runner o imprime — é o que resolve o
-        # dossiê em trinta segundos humanos (medido nos dois casos do beco 1).
-        expected_vs_received = _EXPECTED_RECEIVED_LINE.findall(detail or "")[:12]
-        await self._audit(
-            "spec_conflict_detected",
-            {"specs": specs, "assertions": assertions, "diff_files": diff_files,
-             "reason": reason, "expected_vs_received": expected_vs_received},
-        )
-        await self._set_status(
-            WorkItemStatus.spec_conflict, audit_action="spec_conflict",
-            details={"specs": specs},
-        )
-        if reason == "tester_spec_exhaustion":
-            comment = (
-                "The Tester's OWN spec(s) keep failing identically and no actor "
-                "in the loop may act — the Coder cannot edit the Tester's "
-                "specs, the Tester does not re-author a spec that delivered a "
-                "verdict. A human call is needed. Specs: " + ", ".join(specs)
-                + (". Expected vs received: " + " | ".join(expected_vs_received)
-                   if expected_vs_received else "")
-                + ". Diff files: " + ", ".join(diff_files)
-                + ". Failing assertions:\n" + assertions[:900]
-            )
-        else:
-            # Decisão de operador 2026-08-10: o Coder PODE editar spec de
-            # cliente (a edição entra no diff da PR). Este parque agora
-            # significa "o laço não convergiu" — a chance do Coder (v3) já
-            # rodou e as specs seguem quebradas; o Retry com direcionamento
-            # é efetivo, não mais anulado por revert.
-            comment = (
-                "Pre-existing spec(s) still failing after the Coder's attempt "
-                "(the Coder MAY update customer specs since 2026-08-10; the "
-                "change lands in the PR diff for human review). Specs: "
-                + ", ".join(specs)
-                # O par Expected/Received também no parque de spec de cliente —
-                # é o dossiê mínimo legível do A6 (a renderização completa é
-                # B3/B4); só o de exaustão o trazia.
-                + (". Expected vs received: " + " | ".join(expected_vs_received)
-                   if expected_vs_received else "")
-                + ". Diff files: " + ", ".join(diff_files)
-                + ". Failing assertions:\n" + assertions[:900]
-            )
-        await self._post_status_comment("spec_conflict", detail=comment,
-                                        park_reason=reason)
-
-        def decided() -> bool:
-            return (self._spec_conflict_received or self._cancelled
-                    or self._operator_escalate_requested)
-
-        await workflow.wait_condition(decided)
-        if self._cancelled:
-            return False
-        if self._operator_escalate_requested:
-            raise _EscalateNow("operator_escalate_during_spec_conflict")
-        payload = self._spec_conflict_payload or {}
-        # Consumido AQUI, nunca no handler (anti-clobber): sem este reset, um
-        # SEGUNDO parque no mesmo item encontraria a flag do primeiro ainda
-        # armada e se auto-resolveria com o veredito velho — medido no teste
-        # do cenário wi_8edaef39 (park 2 "resolvido" sem nenhum signal novo).
-        self._spec_conflict_received = False
-        self._spec_conflict_payload = None
-        self._last_verdict_comment = str(payload.get("comment") or "")
-        verdict = str(payload.get("verdict") or "").strip().lower()
-        await self._audit(
-            "spec_conflict_resolved",
-            {"verdict": verdict, "actor": payload.get("actor"),
-             "comment": payload.get("comment")},
-        )
-        if verdict == "retry":
-            return "retry"
-        # `reauthor` é ordem humana de reescrever spec PRÓPRIA do Tester — só
-        # existe no parque de exaustão. Num parque de spec do CLIENTE (porta 1)
-        # não autoriza ninguém: o DSE não reescreve spec de cliente nem por
-        # ordem, e o veredito cai no escalate abaixo.
-        if (
-            verdict == "reauthor"
-            and reason == "tester_spec_exhaustion"
-            and workflow.patched("tester-reauthor-verdict-v1")
-        ):
-            return "reauthor"
-        raise _EscalateNow(
-            f"spec_conflict_{verdict or 'unresolved'}: human declined to resume after "
-            f"pre-existing specs broke ({', '.join(specs)})"
         )
 
     async def _finish_blocked(self, reason: str, *, audit_action: str) -> WorkItemLifecycleResult:
@@ -2372,177 +2140,118 @@ class WorkItemLifecycleWorkflow:
 
         while True:
             await self._boundary_gate()
-            # Beco 1, veredito `reauthor`: ordem humana pendente → a rodada é
-            # do TESTER, sem turno de Coder — o código está certo por
-            # julgamento humano; o Coder só teria a asserção recém-julgada-
-            # errada para perseguir. Lida AQUI (topo do laço, via input) para
-            # sobreviver a um continue_as_new entre o veredito e a execução.
-            reauthor_order: list[str] = []
-            if getattr(input, "reauthor_specs", None) and workflow.patched(
-                "tester-reauthor-verdict-v1"
-            ):
-                reauthor_order = list(input.reauthor_specs)
-            if not reauthor_order:
-                await self._budget_boundary("coder_turn")
-                await self._maybe_retry_from_checkpoint()
+            # Toda rodada tem turno de Coder. Havia aqui um desvio para o
+            # Tester quando existia ordem de reescrita pendente; ele saiu em
+            # 2026-08-10 com o reauthor, e com ele saiu a classe de bug que a
+            # auditoria de fluxo encontrou: a ordem viajava no `input` para
+            # sobreviver a um `continue_as_new`, mas nada a limpava ao sair da
+            # fase de implementação — uma re-clarificação com a ordem armada
+            # voltava para cá, pulava o Coder, e `coder_result` chegava sem
+            # valor ao L2. UnboundLocalError, task falhando, retry infinito.
+            await self._budget_boundary("coder_turn")
+            await self._maybe_retry_from_checkpoint()
 
-                coder_result: CoderTurnResult = await self._run_model_activity(
-                    ACTIVITY_RUN_CODER_TURN,
-                    {
-                        "sandbox_id": input.sandbox_id,
-                        "work_item_id": input.work_item_id,
-                        "tenant_id": input.tenant_id,
-                        # S1: RunCoderTurnInput requires `instruction` (singular).
-                        # The workflow used to send `instructions`/`objections`
-                        # (fields the model does not have — dropped at decode); now
-                        # the real task + L2 objections are folded into the
-                        # instruction.
-                        "instruction": self._agent_instruction(include_objections=True),
-                        "branch": input.branch,
-                        "model_override": self._model_override,
-                        "runtime_override": self._runtime_override,
-                        # plan anchor: new files outside it are pruned post-turn
-                        # (the CLI creates spontaneous reports — real finding)
-                        "expected_files": list((input.plan_json or {}).get("expected_files", [])),
-                    },
-                    CoderTurnResult,
+            coder_result: CoderTurnResult = await self._run_model_activity(
+                ACTIVITY_RUN_CODER_TURN,
+                {
+                    "sandbox_id": input.sandbox_id,
+                    "work_item_id": input.work_item_id,
+                    "tenant_id": input.tenant_id,
+                    # S1: RunCoderTurnInput requires `instruction` (singular).
+                    # The workflow used to send `instructions`/`objections`
+                    # (fields the model does not have — dropped at decode); now
+                    # the real task + L2 objections are folded into the
+                    # instruction.
+                    "instruction": self._agent_instruction(include_objections=True),
+                    "branch": input.branch,
+                    "model_override": self._model_override,
+                    "runtime_override": self._runtime_override,
+                    # plan anchor: new files outside it are pruned post-turn
+                    # (the CLI creates spontaneous reports — real finding)
+                    "expected_files": list((input.plan_json or {}).get("expected_files", [])),
+                },
+                CoderTurnResult,
+            )
+            await self._consume_cost(coder_result.cost_usd, source="coder")
+            # Porta 1 v2: acumula o diff do item (união por turno). Ordenado
+            # para ser determinístico no replay; ver o campo em models.py.
+            input.cumulative_files_changed = sorted(
+                set(input.cumulative_files_changed) | set(coder_result.files_changed or [])
+            )
+            # The projector filters audit-derived runs to system:orchestrator
+            # rows, so the ledger marker the Activity writes into its OWN audit
+            # copy is invisible to it and has to be carried up here. Without it
+            # the projector would create a second run for a turn already in the
+            # ledger and double the cost it reports.
+            if workflow.patched("coder-cost-ledger-id-v1"):
+                await self._audit(
+                    "coder_turn_completed",
+                    {"files_changed": coder_result.files_changed,
+                     "cost_usd": coder_result.cost_usd,
+                     "ledger_id": coder_result.ledger_id},
                 )
-                await self._consume_cost(coder_result.cost_usd, source="coder")
-                # Porta 1 v2: acumula o diff do item (união por turno). Ordenado
-                # para ser determinístico no replay; ver o campo em models.py.
-                input.cumulative_files_changed = sorted(
-                    set(input.cumulative_files_changed) | set(coder_result.files_changed or [])
+            else:
+                await self._audit(
+                    "coder_turn_completed",
+                    {"files_changed": coder_result.files_changed, "cost_usd": coder_result.cost_usd},
                 )
-                # The projector filters audit-derived runs to system:orchestrator
-                # rows, so the ledger marker the Activity writes into its OWN audit
-                # copy is invisible to it and has to be carried up here. Without it
-                # the projector would create a second run for a turn already in the
-                # ledger and double the cost it reports.
-                if workflow.patched("coder-cost-ledger-id-v1"):
-                    await self._audit(
-                        "coder_turn_completed",
-                        {"files_changed": coder_result.files_changed,
-                         "cost_usd": coder_result.cost_usd,
-                         "ledger_id": coder_result.ledger_id},
-                    )
-                else:
-                    await self._audit(
-                        "coder_turn_completed",
-                        {"files_changed": coder_result.files_changed, "cost_usd": coder_result.cost_usd},
-                    )
 
-                # A fix turn that moved no file leaves the tree byte-identical, so
-                # the Tester and L1 can only return the verdict they already
-                # returned — for the price they already charged.
-                #
-                # Measured on `wi_t1-f0a824a0`: three consecutive turns reported
-                # `files_changed=[]`, the checkpoint after each wrote the SAME
-                # git_ref, and L1 answered `{typecheck, build}` all three times.
-                # Those three rounds spent 1041s + 1023s + 1014s of Tester and L1 —
-                # fifty-one minutes — re-deciding a tree nothing had touched.
-                #
-                # `files_changed` is not the model's claim about its own work: the
-                # Activity computes it from git against the turn's base_sha and only
-                # falls back to the agent's list when git found something. Empty
-                # means HEAD did not move, and `commit()` runs under `has_changes()`,
-                # so even an uncommitted edit would have moved it.
-                #
-                # Gated on a non-empty `fix_context`, because only then does a
-                # verdict for this exact tree already exist to reuse. A FIRST turn
-                # that writes nothing is a different failure and still goes through
-                # the gates.
-                if workflow.patched("skip-gates-on-noop-coder-turn-v1"):
-                    noop = bool(input.fix_context) and not getattr(
-                        coder_result, "files_changed", None
-                    )
-                    if noop:
-                        self._noop_coder_turns += 1
-                        # Twice in a row is not a slow convergence, it is a Coder
-                        # that cannot act on what it was told. Burning the rest of
-                        # the retry cap re-reading the same tree buys nothing; a
-                        # human reading the reason is worth more than three more
-                        # identical rounds.
-                        if self._noop_coder_turns >= 2:
-                            # Pinça reconhecida pelo PRÓPRIO ator (wi_0d95384f,
-                            # escalado sem dossiê): dois no-ops contra uma
-                            # última falha exclusivamente de spec própria com
-                            # veredito são o Coder declarando "não tenho
-                            # jogada" — evidência de exaustão mais forte que
-                            # uma segunda rodada de L1, e já paga (os gates
-                            # nem precisam re-rodar). O parque leva o MESMO
-                            # dossiê do caminho via L1: a evidência armada na
-                            # falha que iniciou este fix-loop. Sem pinça
-                            # armada, escala como sempre.
-                            # A segunda garra (no-ops causados pela reversão de
-                            # instrumento, wi_36acfb3d) SAIU em 2026-08-10: sem
-                            # revert de teste não existe mais esse no-op — o
-                            # Coder edita a spec e o turno tem diff.
-                            if (
-                                workflow.patched("noop-pincer-parks-v1")
-                                and input.last_tester_exhaustion_specs
-                            ):
-                                pincer_specs = list(input.last_tester_exhaustion_specs)
-                                pincer_detail = input.last_tester_exhaustion_detail or ""
-                                resumed = await self._park_spec_conflict(
-                                    pincer_specs, pincer_detail,
-                                    list(input.cumulative_files_changed),
-                                    reason="tester_spec_exhaustion",
-                                )
-                                if self._cancelled:
-                                    return await self._finish_cancelled()
-                                if resumed == "reauthor":
-                                    input.reauthor_specs = pincer_specs
-                                    input.reauthor_context = (
-                                        (self._last_verdict_comment + "\n\n"
-                                         if self._last_verdict_comment else "")
-                                        + _reauthor_evidence(pincer_detail)
-                                    )
-                                    # o humano deu nova direção; o contador de
-                                    # no-ops recomeça com ela — e o ORÇAMENTO
-                                    # de tentativas também. Sem isto o parque
-                                    # é teatro: medido no wi_82254f59, o
-                                    # veredito chegou com o teto quase gasto,
-                                    # o Tester consertou, e o item morreu no
-                                    # L1 seguinte. Quem decide compra uma
-                                    # chance nova, não um suspiro.
-                                    self._noop_coder_turns = 0
-                                    input.coder_retry_count = 0
-                                    await self._set_status(
-                                        WorkItemStatus.implementing,
-                                        audit_action="tester_reauthor_ordered",
-                                        details={"specs": pincer_specs,
-                                                 "reason": "tester_spec_exhaustion"},
-                                    )
-                                    continue
-                                if resumed:
-                                    self._noop_coder_turns = 0
-                                    input.coder_retry_count = 0
-                                    await self._set_status(
-                                        WorkItemStatus.implementing,
-                                        audit_action="spec_conflict_retry",
-                                        details={"specs": pincer_specs,
-                                                 "reason": "tester_spec_exhaustion"},
-                                    )
-                                    continue
-                            raise _EscalateNow(
-                                "coder_made_no_change: two consecutive fix turns "
-                                "changed no file, so the gates would return the "
-                                "verdict they already returned"
-                            )
-                        input.coder_retry_count += 1
-                        await self._set_status(
-                            WorkItemStatus.implementing,
-                            audit_action="coder_turn_made_no_change",
-                            details={"attempt": input.coder_retry_count,
-                                     "consecutive": self._noop_coder_turns},
+            # A fix turn that moved no file leaves the tree byte-identical, so
+            # the Tester and L1 can only return the verdict they already
+            # returned — for the price they already charged.
+            #
+            # Measured on `wi_t1-f0a824a0`: three consecutive turns reported
+            # `files_changed=[]`, the checkpoint after each wrote the SAME
+            # git_ref, and L1 answered `{typecheck, build}` all three times.
+            # Those three rounds spent 1041s + 1023s + 1014s of Tester and L1 —
+            # fifty-one minutes — re-deciding a tree nothing had touched.
+            #
+            # `files_changed` is not the model's claim about its own work: the
+            # Activity computes it from git against the turn's base_sha and only
+            # falls back to the agent's list when git found something. Empty
+            # means HEAD did not move, and `commit()` runs under `has_changes()`,
+            # so even an uncommitted edit would have moved it.
+            #
+            # Gated on a non-empty `fix_context`, because only then does a
+            # verdict for this exact tree already exist to reuse. A FIRST turn
+            # that writes nothing is a different failure and still goes through
+            # the gates.
+            if workflow.patched("skip-gates-on-noop-coder-turn-v1"):
+                noop = bool(input.fix_context) and not getattr(
+                    coder_result, "files_changed", None
+                )
+                if noop:
+                    self._noop_coder_turns += 1
+                    # Twice in a row is not a slow convergence, it is a Coder
+                    # that cannot act on what it was told. Burning the rest of
+                    # the retry cap re-reading the same tree buys nothing; a
+                    # human reading the reason is worth more than three more
+                    # identical rounds.
+                    if self._noop_coder_turns >= 2:
+                        # O duplo no-op parqueava aqui quando a última falha
+                        # era exclusivamente de spec do próprio Tester: o
+                        # Coder declarava "não tenho jogada" e só um humano
+                        # (via Reauthor) podia destravar, porque a spec era
+                        # intocável para ele. O parque saiu em 2026-08-10 com
+                        # o reauthor — hoje o Coder edita essa spec como
+                        # qualquer outro arquivo, e um no-op contra ela é o
+                        # mesmo no-op de sempre: o ator não agiu sobre o que
+                        # lhe foi dito, e isso escala com a razão nomeada.
+                        raise _EscalateNow(
+                            "coder_made_no_change: two consecutive fix turns "
+                            "changed no file, so the gates would return the "
+                            "verdict they already returned"
                         )
-                        continue  # straight back to the Coder, gates untouched
-                    self._noop_coder_turns = 0
-            # else: `coder_result` mantém o valor da última rodada REAL do
-            # Coder — o diff de produção não mudou desde então (só a spec vai
-            # mudar), e é sobre esse diff que doc-only e L2 raciocinam. A
-            # primeira rodada nunca é de reauthor (o parque exige duas
-            # falhas), então o nome está sempre ligado.
+                    input.coder_retry_count += 1
+                    await self._set_status(
+                        WorkItemStatus.implementing,
+                        audit_action="coder_turn_made_no_change",
+                        details={"attempt": input.coder_retry_count,
+                                 "consecutive": self._noop_coder_turns},
+                    )
+                    continue  # straight back to the Coder, gates untouched
+                self._noop_coder_turns = 0
+
 
             # WSB-E2-T3 — Tester session (writes/adjusts tests BEFORE L1).
             #
@@ -2562,11 +2271,7 @@ class WorkItemLifecycleWorkflow:
             # the contracts package, deliberately not a second copy — two lists
             # that drift is how a skip becomes a false green.
             skip_tester = (
-                # Nunca com ordem pendente: pular o Tester aqui descartaria a
-                # ordem humana em silêncio (o doc-only olha o diff da rodada
-                # ANTERIOR do Coder, não o trabalho desta rodada).
-                not reauthor_order
-                and workflow.patched("skip-tester-on-doc-only-v1")
+                workflow.patched("skip-tester-on-doc-only-v1")
                 and is_documentation_only(getattr(coder_result, "files_changed", None))
             )
             if skip_tester:
@@ -2590,23 +2295,10 @@ class WorkItemLifecycleWorkflow:
                         "plan": input.plan_json,
                         "model_override": self._model_override,
                         "runtime_override": self._runtime_override,
-                        # Beco 1: a ordem humana de re-autoria ([] em turno
-                        # normal); a posse é re-verificada no git do Pod.
-                        "reauthor_specs": reauthor_order,
-                        "reauthor_context": (
-                            input.reauthor_context if reauthor_order else None
-                        ),
                     },
                     TesterTurnResult,
                 )
                 await self._consume_cost(tester_result.cost_usd, source="tester")
-                if reauthor_order:
-                    # One-shot: executada (ou recusada e auditada) no turno que
-                    # acabou de rodar — nunca um estado que vaza para os
-                    # próximos. Consumo APÓS o turno: se a activity morrer no
-                    # meio, o retry dela ainda carrega a ordem.
-                    input.reauthor_specs = []
-                    input.reauthor_context = None
                 await self._audit(
                     "tester_turn_completed",
                     {
@@ -2706,63 +2398,14 @@ class WorkItemLifecycleWorkflow:
                     ):
                         input.coder_retry_count += 1
                         if input.coder_retry_count > input.coder_retry_cap:
-                            # O que o Tester escreveu é o que está reprovando, e
-                            # o cap acabou: o dono do defeito é o TESTER, e só
-                            # um humano pode mandá-lo reescrever (`reauthor`).
-                            # Morrer aqui deixava o humano sem dossiê e sem
-                            # saída — medido 2026-08-10 em toda a família do
-                            # dia (testes que nem compilam, rc=2).
-                            # ESTREITO de propósito: só quando a suíte morreu na
-                            # CARGA/COMPILAÇÃO (zero veredito — o que o Tester
-                            # escreveu não compila). Uma asserção falhando é
-                            # trabalho do CODER e continua indo ao cap como
-                            # sempre (pin test_an_ordinary_failing_suite_...).
-                            tester_own_defect = bool(
-                                _LOAD_FAILURE_MARK.search(
-                                    getattr(tester_result, "failure_output", "") or ""
-                                )
-                            )
-                            if (
-                                tester_own_defect
-                                and workflow.patched("tester-own-failure-parks-v1")
-                                and getattr(tester_result, "test_files", None)
-                            ):
-                                own_specs = list(tester_result.test_files)
-                                resumed = await self._park_spec_conflict(
-                                    own_specs,
-                                    "\n".join(self._tester_failure_context(tester_result)),
-                                    list(input.cumulative_files_changed),
-                                    reason="tester_spec_exhaustion",
-                                )
-                                if self._cancelled:
-                                    return await self._finish_cancelled()
-                                if resumed == "reauthor":
-                                    input.reauthor_specs = own_specs
-                                    input.reauthor_context = (
-                                        (self._last_verdict_comment + "\n\n"
-                                         if self._last_verdict_comment else "")
-                                        + _reauthor_evidence("\n".join(self._tester_failure_context(tester_result)))
-                                    )
-                                    input.coder_retry_count = 0
-                                    await self._set_status(
-                                        WorkItemStatus.implementing,
-                                        audit_action="tester_reauthor_ordered",
-                                        details={"specs": own_specs,
-                                                 "reason": "tester_spec_exhaustion"},
-                                    )
-                                    continue
-                                if resumed:
-                                    # O humano mandou seguir: a chance nova
-                                    # precisa de turnos, senão o cap volta a
-                                    # estourar na mesma linha.
-                                    input.coder_retry_count = 0
-                                    await self._set_status(
-                                        WorkItemStatus.implementing,
-                                        audit_action="spec_conflict_retry",
-                                        details={"specs": own_specs,
-                                                 "reason": "tester_spec_exhaustion"},
-                                    )
-                                    continue
+                            # O cap acabou. Isto parqueava quando a suíte do
+                            # Tester morria na CARGA/COMPILAÇÃO: o dono do
+                            # defeito era o Tester e só um humano podia mandá-lo
+                            # reescrever, porque a spec era intocável para o
+                            # Coder. Saiu em 2026-08-10 com o reauthor — o Coder
+                            # conserta a spec que não compila como conserta
+                            # qualquer arquivo, e essa correção acontece DENTRO
+                            # do cap, nas rodadas que ele já tinha.
                             return await self._finish_failed(
                                 "tester_failed_after_retry_cap",
                                 audit_action="tester_retry_cap_exhausted",
@@ -2949,189 +2592,50 @@ class WorkItemLifecycleWorkflow:
                                         {"specs": conflicts},
                                     )
                                     conflicts = []
-                        if conflicts and workflow.patched("client-spec-never-parks-v1"):
-                            # A TRAVA QUE SAIU (decisão de operador, 2026-08-10 e
-                            # reafirmada): spec PRÉ-EXISTENTE quebrada pelo diff não
-                            # para mais o item para pedir licença. O Coder pode
-                            # corrigi-la (política de 10/08) e a instrução passou a
-                            # autorizá-lo explicitamente (F1) — parar aqui era pedir
-                            # permissão para um trabalho já permitido, e custava uma
-                            # espera SEM PRAZO por 3 testes de 4.980.
+                        if conflicts:
+                            # A TRAVA QUE SAIU (decisão de operador, 2026-08-10):
+                            # spec PRÉ-EXISTENTE quebrada pelo diff não para mais o
+                            # item para pedir licença. O Coder pode corrigi-la e a
+                            # instrução o autoriza — parar aqui era pedir permissão
+                            # para trabalho já permitido, e custava uma espera SEM
+                            # PRAZO por 3 testes de 4.980.
                             #
-                            # A supervisão não sumiu, mudou de lugar: a edição aparece
-                            # no diff da PR, e o conflito fica no ledger para quem
-                            # revisa. Os freios que encerram o item continuam todos:
-                            # coder_not_converging (mesma queixa 2x), o teto de
-                            # tentativas, a pinça de no-op e o gate de diff vazio.
+                            # A supervisão não sumiu, mudou de lugar: a edição
+                            # aparece no diff da PR e o conflito fica no ledger.
+                            # Os freios que encerram o item continuam todos:
+                            # coder_not_converging, o teto de tentativas, o duplo
+                            # no-op e o gate de diff vazio.
+                            assertions = _EXPECTED_RECEIVED_LINE.findall(
+                                test_bad.detail or ""
+                            )[:12]
                             await self._audit(
                                 "client_spec_conflict_autofixing",
                                 {"specs": conflicts,
                                  "diff_files": list(input.cumulative_files_changed),
-                                 "expected_vs_received": _EXPECTED_RECEIVED_LINE.findall(
-                                     test_bad.detail or "")[:12]},
+                                 "expected_vs_received": assertions},
                             )
-                            conflicts = []
-                        if conflicts:
-                            resumed = await self._park_spec_conflict(
-                                conflicts, test_bad.detail or "",
-                                list(input.cumulative_files_changed),
+                            # …e a MIRA vai junto. Até aqui a lista era calculada,
+                            # auditada e DESCARTADA: o Coder recebia só o nome dos
+                            # gates que falharam, e no wi_3355102d isso rendeu duas
+                            # rodadas idênticas até o coder_not_converging. Com o
+                            # parque fora, esta é a única mira que resta.
+                            self._client_spec_note = _client_spec_conflict_note(
+                                conflicts, assertions
                             )
-                            if self._cancelled:
-                                return await self._finish_cancelled()
-                            if resumed:
-                                # O direcionamento humano do retry viaja na
-                                # frente da evidência (wi_cc72b204: 3 rodadas
-                                # no sintoma com o humano sabendo a causa —
-                                # o comment morria no audit).
-                                input.fix_context = (
-                                    ([self._last_verdict_comment]
-                                     if self._last_verdict_comment else [])
-                                    + self._l1_failure_context(
-                                        [f for f in l1_result.findings if not f.passed]
-                                    )
-                                )
-                                await self._set_status(
-                                    WorkItemStatus.implementing,
-                                    audit_action="spec_conflict_retry",
-                                    details={"specs": conflicts},
-                                )
-                                continue
+
                 failed_checks = [f for f in l1_result.findings if not f.passed]
-                # ANTES do incremento e do cap check: parquear É o substituto
-                # do teto quando a exaustão está reconhecida. O wi_6f00bf0a
-                # morreu em coder_retry_cap_exhausted com a memória armada —
-                # o cap executou primeiro o item que o parque existia para
-                # salvar. (Mesma posição estrutural da porta 1, que sempre
-                # parqueou pré-incremento.)
-                # Beco 1 (medido 2x: pageSize wi_5eecf486, 'warning'
-                # wi_32eb136f): specs do próprio Tester reprovando com
-                # veredito = nenhum ator autorizado. Parqueia na primitiva
-                # da porta 1 com o dossiê; retry humano volta ao laço.
+                # Aqui vivia o PARQUE DE EXAUSTÃO DE SPEC PRÓPRIA, com a
+                # memória por spec que o armava (`tester-spec-memory-parks-v1`)
+                # e o gatilho v1 preservado para replay. Saiu inteiro em
+                # 2026-08-10.
                 #
-                # Gatilho v2 (wi_c9c7b200, morto no teto): memória POR
-                # SPEC, não fingerprint consecutivo. A sequência real foi
-                # test(badge) → lint+build → test(badge) idêntico — a
-                # rodada do meio resetava o contador e o parque nunca
-                # disparava. Agora: a mesma spec própria reprovando com
-                # veredito em QUALQUER rodada posterior parqueia,
-                # independente do que falhou entre elas. O registro é
-                # amplo (specs próprias FAIL com veredito, mesmo com
-                # outros gates juntos); o PARQUE continua exigindo a
-                # exclusividade — só dispara quando o Coder não tem mais
-                # nada legítimo para consertar.
-                exh_finding = next(
-                    (f for f in failed_checks if f.check == "test"), None
-                )
-                own_specs: list[str] = []
-                if workflow.patched("tester-spec-memory-parks-v1"):
-                    recorded_now: list[str] = []
-                    exclusive_now: list[str] = []
-                    if exh_finding is not None:
-                        # ERROR é artefato de infra (autópsia wi_32eb136f:
-                        # kill no meio do L1 deixa lint/build em ERROR), não
-                        # veredito — fica FORA da exclusividade e do desarme
-                        # da pinça; FAIL real continua contando. Medido no
-                        # wi_6f00bf0a: lint ERROR na rodada final teria
-                        # bloqueado o parque.
-                        verdict_failed_names = [
-                            f.check for f in failed_checks
-                            if getattr(f, "status", None) != GateStatus.ERROR
-                        ]
-                        recorded_now = tester_spec_assertion_failures(
-                            verdict_failed_names,
-                            test_detail=exh_finding.detail or "",
-                            tester_owned=list(
-                                getattr(tester_result, "test_files", None) or []
-                            ),
-                        )
-                        exclusive_now = exclusively_tester_spec_failures(
-                            verdict_failed_names,
-                            test_detail=exh_finding.detail or "",
-                            tester_owned=list(
-                                getattr(tester_result, "test_files", None) or []
-                            ),
-                        )
-                    # A pinça armada para o parque via NO-OP (wi_0d95384f):
-                    # falha exclusiva → specs+detail ficam no input; QUALQUER
-                    # outra falha desarma — evidência de duas rodadas atrás
-                    # não parqueia ninguém.
-                    if exclusive_now and exh_finding is not None:
-                        input.last_tester_exhaustion_specs = list(exclusive_now)
-                        input.last_tester_exhaustion_detail = (
-                            exh_finding.detail or ""
-                        )[:2000]
-                    else:
-                        input.last_tester_exhaustion_specs = []
-                        input.last_tester_exhaustion_detail = None
-                    seen = set(input.tester_assertion_failed_specs or [])
-                    if exclusive_now and any(s in seen for s in exclusive_now):
-                        own_specs = exclusive_now
-                    if recorded_now:
-                        merged = sorted(seen | set(recorded_now))
-                        if merged != sorted(seen):
-                            input.tester_assertion_failed_specs = merged
-                            await self._audit(
-                                "tester_spec_assertion_recorded",
-                                {"specs": recorded_now},
-                            )
-                elif (
-                    self._same_repair_count >= 1
-                    and workflow.patched("tester-spec-exhaustion-parks-v1")
-                ):
-                    # Gatilho v1 (consecutivo), preservado VERBATIM para o
-                    # replay de histórias rc.46 — nunca alcançado em
-                    # execução nova (o patch novo acima vence).
-                    if exh_finding is not None:
-                        own_specs = exclusively_tester_spec_failures(
-                            [f.check for f in failed_checks],
-                            test_detail=exh_finding.detail or "",
-                            tester_owned=list(
-                                getattr(tester_result, "test_files", None) or []
-                            ),
-                        )
-                if own_specs and exh_finding is not None:
-                    resumed = await self._park_spec_conflict(
-                        own_specs, exh_finding.detail or "",
-                        list(input.cumulative_files_changed),
-                        reason="tester_spec_exhaustion",
-                    )
-                    if self._cancelled:
-                        return await self._finish_cancelled()
-                    if resumed == "reauthor":
-                        # Julgamento humano, execução do sistema: a
-                        # próxima rodada é do TESTER (re-autoria in-
-                        # place). Nada de fix_context — um turno de
-                        # Coder aqui perseguiria a asserção que o
-                        # humano acabou de julgar errada. A INSTRUÇÃO do
-                        # veredito (comment) viaja na frente da evidência.
-                        input.reauthor_specs = list(own_specs)
-                        input.reauthor_context = (
-                            (self._last_verdict_comment + "\n\n"
-                             if self._last_verdict_comment else "")
-                            + _reauthor_evidence(exh_finding.detail)
-                        )
-                        await self._set_status(
-                            WorkItemStatus.implementing,
-                            audit_action="tester_reauthor_ordered",
-                            details={"specs": own_specs,
-                                     "reason": "tester_spec_exhaustion"},
-                        )
-                        continue
-                    if resumed:
-                        # Mesmo canal do site da porta 1: comment do retry
-                        # na frente da evidência.
-                        input.fix_context = (
-                            ([self._last_verdict_comment]
-                             if self._last_verdict_comment else [])
-                            + self._l1_failure_context(failed_checks)
-                        )
-                        await self._set_status(
-                            WorkItemStatus.implementing,
-                            audit_action="spec_conflict_retry",
-                            details={"specs": own_specs,
-                                     "reason": "tester_spec_exhaustion"},
-                        )
-                        continue
+                # A premissa dele era "spec do próprio Tester reprovando com
+                # veredito = NENHUM ator autorizado" — verdadeira enquanto o
+                # Coder não podia editar essa spec. Hoje ele pode, então a
+                # célula tem ator e não há impasse a parquear: é mais uma
+                # rodada do laço, com a evidência no contexto, terminando pelos
+                # freios de sempre (teto de tentativas, coder_not_converging,
+                # duplo no-op, diff vazio, teto de gasto).
                 input.coder_retry_count += 1
                 if input.coder_retry_count > self._input.coder_retry_cap:
                     self._input.terminal_detail = (
@@ -3190,6 +2694,9 @@ class WorkItemLifecycleWorkflow:
                     # vazio quando nenhum check falhou — o caso do gate): sem
                     # isto, a sobrescrita aqui apagava a única instrução que
                     # explicava ao Coder por que o turno voltou.
+                    if self._client_spec_note:
+                        notes = [self._client_spec_note] + notes
+                        self._client_spec_note = None
                     if self._empty_diff_note:
                         notes = [self._empty_diff_note] + notes
                         self._empty_diff_note = None

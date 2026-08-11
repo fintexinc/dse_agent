@@ -132,37 +132,7 @@ class WorkItemLifecycleInput:
     # perder isto daria chances infinitas e nunca parquearia.
     spec_conflict_deferred_specs: list[str] = field(default_factory=list)
 
-    # Beco 1, gatilho por memória de spec (wi_c9c7b200): specs PRÓPRIAS do
-    # Tester que já reprovaram COM VEREDITO neste item, em qualquer rodada. A
-    # mesma spec reprovando de novo — em rodada exclusivamente-de-test —
-    # parqueia, independente do que falhou entre as duas (o fingerprint
-    # consecutivo resetava numa rodada de lint+build no meio e o item morria
-    # mudo no teto). No input: perder isto num continue_as_new apagaria a
-    # memória e re-armaria o teto.
-    tester_assertion_failed_specs: list[str] = field(default_factory=list)
-    # A pinça ARMADA (wi_0d95384f): quando a última falha de L1 foi
-    # exclusivamente specs próprias com veredito, o conjunto e o detail ficam
-    # aqui — é a evidência que o parque via NO-OP usa para montar o mesmo
-    # dossiê do parque via L1 (specs, asserções, Expected/Received). Zerada em
-    # qualquer falha não-exclusiva: evidência de duas rodadas atrás não
-    # parqueia ninguém. No input: um continue_as_new entre a falha e o no-op
-    # não pode desarmar a pinça.
-    last_tester_exhaustion_specs: list[str] = field(default_factory=list)
-    last_tester_exhaustion_detail: str | None = None
 
-    # Beco 1, veredito `reauthor`: ordem humana pendente de re-autoria da spec
-    # PRÓPRIA do Tester (caminhos exatos + evidência da falha). No INPUT — não
-    # em atributo de instância — para sobreviver a um continue_as_new entre o
-    # veredito e o turno que o executa; uma ordem perdida em silêncio seria o
-    # humano mandando e ninguém obedecendo. Consumida (zerada) no despacho.
-    #: Quantas ordens de reescrita o SISTEMA emitiu sozinho neste item, sem
-    #: clique humano (decisão de operador 2026-08-10). Existe para que a
-    #: autonomia tenha fim: esgotado o orçamento, o impasse volta a ser
-    #: decisão humana, com dossiê e botões. Aditivo — histórias antigas
-    #: decodificam com 0.
-    auto_reauthor_rounds: int = 0
-    reauthor_specs: list[str] = field(default_factory=list)
-    reauthor_context: str | None = None
 
     # ------------------------------------------------------------------
     # Phase 2 — budgets (WSB-E4-T1). `budget_max_usd` comes from the JSONB
