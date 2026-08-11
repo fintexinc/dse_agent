@@ -266,7 +266,12 @@ preview:
   # previews churn, so they would burn that budget and take the webhook
   # certificate down with them. A wildcard cert via the DNS-01 challenge is the
   # fix when previews need HTTPS; it is one certificate for every preview.
-  externalHostTemplate: "http://{namespace}.preview.notas.api.br"
+  # https, e nao http: desde a rc.82 o Ingress do preview pede certificado e
+  # declara `entrypoints: websecure`, entao o router SO atende na 443 --
+  # anunciar http:// na PR daria um link que nao responde. Alem disso,
+  # origem insegura desliga crypto.subtle, service workers e todo SDK de auth
+  # (medido na PR #19: app inteiro de pe, tela em branco).
+  externalHostTemplate: "https://{namespace}.preview.notas.api.br"
   # CURATIVO DATADO (2026-08-09, G-4 interino): 6h em vez de 1h só para a
   # janela da demo do caso 3. O reaper de 1h derrubou o par FE+BE DUAS vezes
   # durante a aceitação — a cena (FE-preview servido pelo BE-preview do mesmo

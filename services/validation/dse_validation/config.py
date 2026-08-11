@@ -916,7 +916,24 @@ class PreviewConfig:
         (useful only from the inside — the link still shows up on the PR, D1,
         but D3 is what makes it clickable)."""
         if self.external_host_template:
-            return self.external_host_template.replace("{namespace}", namespace)
+            url = self.external_host_template.replace("{namespace}", namespace)
+            # HTTPS SEMPRE, mesmo que o template diga http. Desde a rc.82 o
+            # Ingress do preview declara `entrypoints: websecure` e o router só
+            # atende na 443 — mas o template vive no values, em outro
+            # repositório de decisões, e os dois divergiram na primeira
+            # oportunidade: o preview subiu com TLS e o link que iria para a PR
+            # era `http://`, sem responder.
+            #
+            # Normalizar aqui não é gentileza com um values errado: é fechar a
+            # única porta pela qual o esquema anunciado pode discordar do que o
+            # Ingress serve. Corrigir só o values conserta hoje; isto impede
+            # amanhã.
+            if url.startswith("http://"):
+                url = "https://" + url[len("http://"):]
+            return url
+        # Sem template não há Ingress nem certificado: este é o DNS interno do
+        # cluster, e forçar https aqui quebraria o único caminho que funciona
+        # sem TLS.
         return f"http://preview.{namespace}.svc.cluster.local"
 
     def external_hostname_for(self, namespace: str) -> str | None:

@@ -99,3 +99,33 @@ def test_no_certificate_is_requested_when_there_is_no_hostname():
     bare.mode = "source"
     bare.external_host_template = ""
     assert _ingress(bare) == "", "sem hostname não deve haver ingress algum"
+
+
+def test_the_announced_url_is_https_even_if_the_template_says_http():
+    """O esquema anunciado e o TLS do Ingress moram em arquivos diferentes, e
+    divergiram: a rc.82 passou a declarar `entrypoints: websecure` (o router só
+    atende na 443) enquanto o values de produção ainda dizia
+    `http://{namespace}.preview.notas.api.br`. O link que iria para a PR não
+    responderia — 100% das vezes, em todo preview.
+
+    Corrigir só o values conserta hoje e não impede amanhã: são dois lugares que
+    ninguém compara. Como a receita SEMPRE pede certificado quando há hostname,
+    a URL sempre pode ser https, e normalizar aqui torna a divergência
+    impossível em vez de improvável."""
+    cfg = PreviewConfig()
+    cfg.external_host_template = "http://{namespace}.preview.notas.api.br"
+    url = cfg.preview_url_for("preview-wi-x")
+    assert url.startswith("https://"), (
+        f"a URL anunciada e {url!r}: o Ingress escuta so na 443 desde a rc.82, "
+        "entao esse link nao responde"
+    )
+    assert url == "https://preview-wi-x.preview.notas.api.br"
+
+
+def test_the_internal_dns_fallback_is_untouched():
+    """PIN de fronteira: sem template não há Ingress nem TLS — o endereço
+    interno do cluster continua http, e forçar https ali quebraria o único
+    caminho que ainda funciona sem certificado."""
+    bare = PreviewConfig()
+    bare.external_host_template = ""
+    assert bare.preview_url_for("preview-wi-x").startswith("http://")
