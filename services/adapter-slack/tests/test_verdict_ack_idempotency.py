@@ -1,7 +1,7 @@
 """Item 3 da rc do canal mínimo — ack visível e idempotência one-shot.
 
 (a) Todo clique atualiza a mensagem original IN-PLACE: os botões somem e ela
-    vira "✅ Aprovado por @X às HH:MM" / "🚫 Rejeitado por..." — quem olha a
+    vira "✅ Approved by @X at HH:MM" / "🚫 Rejected by..." — quem olha a
     thread vê a decisão e o decisor, não um prompt eternamente pendente.
 (b) Clique duplicado (ou em veredito já consumido) responde ephemeral
     "já resolvido por X às HH:MM" e NÃO emite segundo signal. O workflow já
@@ -139,12 +139,12 @@ def test_a_duplicate_click_emits_exactly_one_signal_and_tells_the_late_clicker(f
     )
     assert _event_count(work_item_id) == 1, "um clique humano = um signal"
     assert fake_slack.ephemeral_calls, "quem clicou tarde precisa saber"
-    assert "já resolvido" in fake_slack.ephemeral_calls[-1]["text"].lower()
+    assert "already resolved" in fake_slack.ephemeral_calls[-1]["text"].lower()
 
 
 def test_the_click_acks_in_place_and_the_buttons_disappear(fake_slack):
     """O clique atualiza a mensagem original: botões fora, decisão e decisor
-    dentro — '🚫 Rejeitado por @X às HH:MM'.
+    dentro — '🚫 Rejected by @X at HH:MM'.
 
     O cenário era o parque de spec até 2026-08-10; o parque saiu, o invariante
     (consumo one-shot + ack no lugar) é da infra de veredito e vale igual na
@@ -156,13 +156,13 @@ def test_the_click_acks_in_place_and_the_buttons_disappear(fake_slack):
     assert updates, "o ack é o chat.update na PRÓPRIA mensagem do prompt"
     ack = updates[-1]
     assert "<@U_ACK_REQ>" in ack["text"], "o decisor aparece no ack"
-    assert "Rejeitado" in ack["text"]
+    assert "Rejected" in ack["text"]
     for block in ack.get("blocks") or []:
         assert block.get("type") != "actions", "os botões somem no ack"
 
 
 def test_the_approve_click_acks_with_the_approved_stamp(fake_slack):
-    """O mesmo contrato no prompt de plano: '✅ Aprovado por @X às HH:MM'."""
+    """O mesmo contrato no prompt de plano: '✅ Approved by @X at HH:MM'."""
     created = _post_event({
         "type": "app_mention", "channel": _CH, "ts": "9103.000100",
         "user": "U_ACK_REQ", "text": "plan approval ack scenario",
@@ -189,7 +189,7 @@ def test_the_approve_click_acks_with_the_approved_stamp(fake_slack):
                     action_ts="9103.000900")
     assert result["path"] == "signal"
     updates = [u for u in fake_slack.update_calls if u["ts"] == post["ts"]]
-    assert updates and "Aprovado" in updates[-1]["text"] and "✅" in updates[-1]["text"]
+    assert updates and "Approved" in updates[-1]["text"] and "✅" in updates[-1]["text"]
 
 
 def test_a_repark_rearms_the_decision(fake_slack):

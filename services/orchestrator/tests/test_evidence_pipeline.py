@@ -84,7 +84,10 @@ async def test_ui_touching_pr_runs_full_evidence_pipeline(time_skipping_env):
 
     # exact payloads re-validated with the CONTRACT MODELS (not a lenient dict)
     prev = TriggerPreviewInput(**state.last_preview_payload)
-    assert prev.files_changed == ["frontend/App.tsx", "api/handler.py"]
+    # A ORDEM continua asserida: desde 2026-08-11 o preview recebe o diff
+    # ACUMULADO (`cumulative_files_changed`), que é `sorted()` — determinístico.
+    # Trocar por comparação de conjunto perderia a asserção de forma de graça.
+    assert prev.files_changed == ["api/handler.py", "frontend/App.tsx"]
     assert prev.pr_number == 1000
     demo = RunDemoEvidenceInput(**state.last_demo_payload)
     assert demo.base_url == f"http://preview-{work_item_id}.local"  # URL of the created preview

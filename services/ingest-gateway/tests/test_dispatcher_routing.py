@@ -303,7 +303,7 @@ def test_notify_undeliverable_posts_to_the_slack_adapter(tenant_id, monkeypatch)
     url, body = posts[0]
     assert url.endswith("/internal/status-comment")
     assert body["work_item_id"] == wi and body["channel"] == "C_NOTIF"
-    assert "Não consegui aplicar" in body["body"]
+    assert "Could not apply" in body["body"]
     assert "implementing" in body["body"]
 
 # Os dois testes de rota de VEREDITO DE PARQUE saíram em 2026-08-10 com o

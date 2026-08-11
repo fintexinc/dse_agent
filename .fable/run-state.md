@@ -1,62 +1,65 @@
-# Run state — make a work item finish in a fraction of the time, without weakening it
+# Run state — botão de detalhes do plano, tudo em inglês, e o porquê dos previews ausentes
 
-Goal: cut the end-to-end wall clock of a work item, and keep the gate as strong
-as it is today.
+Started: 2026-08-11 08:20 UTC  |  Branch: main  |  Last updated: 2026-08-11 08:20 UTC
 
-| # | Criterion | Status |
-|---|---|---|
-| 1 | Measured per-activity breakdown from real runs | VERIFIED |
-| 2 | Ranked optimisations, each with its robustness argument | in flight (3 scouts) |
-| 3 | The safe ones implemented, tested, merged, deployed | pending |
-| 4 | A work item measured before/after | pending |
+Every agent on this run reads this file before starting and writes to it before finishing.
+If the run is interrupted, this file — not the conversation — is what carries the job forward.
 
-## Verified facts (measured, not inferred)
+## Definition of Done
 
-Work item `wi_rc25-5fe461b9`, Angular repo, 1030 files, 1401 npm packages,
-running rc.25 (sandbox cpu=3, mem=3Gi). Durations from Temporal history:
+> DoD source: **derivada** do pedido do usuário (três tarefas numeradas, sem critérios de
+> aceitação explícitos). Declarada aqui e seguida sem check-in, conforme instrução
+> ("aja de maneira autônoma", "não deixe pergunta").
 
-| activity | seconds | share |
-|---|---|---|
-| `run_l1_pipeline` | 638 | 45% |
-| `run_tester_turn` | 555 | 39% |
-| `finalize_pr` | 186 | 13% (three failed retries) |
-| coder + planner + provision + checkpoint + teardown | <35 | 2% |
-| **total** | **1417 (23.6 min)** | |
+| # | Criterion | Status | Evidence |
+|---|-----------|--------|----------|
+| 1 | Botão Details abrindo modal com o plano; Approve/Reject intactos | IMPLEMENTED-NOT-VERIFIED | `fa154cb`; 5 testes novos + 76 na suite do Slack. NÃO verificado no Slack real (sem crédito, nenhum item chega ao gate) |
+| 2 | Comunicação com o usuário em inglês, com teste que impede regressão | VERIFIED | `c05dd9d`; `tests/test_user_facing_text_is_english.py` varre 9 módulos e passa; 10 textos traduzidos |
+| 3 | Por que as PRs saíram sem preview, com evidência — e correção | VERIFIED (diagnóstico) / IMPLEMENTED-NOT-VERIFIED (fix) | `88fcfeb`; causa provada no ledger da PR #8; os 4 call sites alinhados e pinados por teste. Preview real não sobe sem crédito |
+| 4 | lint + suites + PR revisada + deploy verificado | IN-PROGRESS | 1.608 testes verdes nos 7 grupos; PR #64 aberta com 3 revisores |
 
-Two activities are 84% of the clock. Everything else is noise.
+## Regras do usuário para esta rodada
 
-Inside L1, from the gate's own output: `npm ci` = **55s** (it was ~2 min before
-the CPU limit went from 1 to 3). So ~583s of the 638 is lint + tsc + jest +
-build.
-
-Every L1 gate PASSED on this run, including `typecheck`, which reported
-"no type errors in the files this change touched (262 elsewhere in the
-repository, not this change's)". The gate is not what blocks a PR any more.
-
-`finalize_pr` failed on `git push failed (exit=-1): - Finding files` — the
-target repo's `.husky/pre-push` running `ng lint` on our push until the 60s
-timeout. Fixed in PR #52.
+1. Avaliar o fluxo antes de agir.
+2. Não pressupor nada — rastrear até a fonte real.
+3. Rodar agentes de verificação depois de implementar.
 
 ## Decision ledger
-- This file is NOT committed — scaffolding, not the client's code.
-- Speed work is ranked by (seconds saved × confidence) ÷ risk. A change that
-  saves a minute but can produce a FALSE GREEN is not taken: the gate exists to
-  be believed, and an unbelievable fast gate is worth less than a slow one.
-- Findings are scoped to the changed files; gates skip entirely for a
-  documentation-only change; `sast` probes for Python before running bandit; an
-  OOM/abort is infra, not a verdict on the code. All shipped, rc.24/rc.25.
-- Sandbox limits: cpu 1 -> 3, mem 1536Mi -> 3Gi. The node has 4 vCPU and ~10 GB
-  free; the limit is a ceiling, not a reservation.
+
+| Date | Decision | Why | Lives in |
+|------|----------|-----|----------|
+| 2026-08-11 | Deploy da rc é parte do DoD e NÃO é hard stop nesta rodada | O usuário pediu explicitamente para subir e testar ao acordar; deploy é rotina neste repo e o rollback é re-pin da rc anterior (feito várias vezes nesta sessão) | `deploy/vps/values-vps-poc.yaml` |
+| 2026-08-11 | NÃO recarregar crédito da Anthropic | Gastar dinheiro é hard stop do skill e decisão do usuário | — |
+
+## Verified facts
+
+| Fact | How it was traced | Anchor |
+|------|-------------------|--------|
+| A mensagem do gate NÃO contém o plano — só a frase do template | trace workflow→local_activities→adapter | `local_activities.py:793` |
+| NADA no repositório renderizava `plan["steps"]` | grep no repo inteiro | — |
+| Um botão novo cairia no fallthrough e APROVARIA o plano | `parse_slack_approval` devolve `approved` para qualquer id fora dos tokens de rejeição | `events.py:63-86` |
+| Preview: `repo_bindings.deploys_preview = t` para os DOIS repos ativos | SELECT em produção | — |
+| Preview da PR #8 recebeu `files_changed: []` com 4 `.java` na PR | audit_log de produção | `wi_a47c490a` |
+| A frota roda rc.78; todos os pods de pé | `kubectl get deploy -o jsonpath` + `helm list` em 2026-08-11 03:31 | helm rev 92 |
+| O crédito da Anthropic AINDA está esgotado | log do model-gateway em 07:58 + `repo_routing_decided {"repos": [], "reason": "router unavailable: HTTPStatusError"}` | `wi_8d729b92` |
+| Fila do Temporal vazia (0 Running) | `temporal workflow count --query "ExecutionStatus='Running'"` | 2026-08-11 |
+| Há 1 workflow vivo (`wi_8d729b92`), em `needs_clarification` — fase de INTAKE | `workflow list` + SELECT no banco | 2026-08-11 09:0x |
+| O deploy desta rc é seguro para ele: TODA mudança de workflow desta PR (payload do gate, 4 call sites do preview) fica DEPOIS da clarificação, em código que a história dele ainda não executou. Nenhum comando foi adicionado nem removido, então não há patch guard a considerar | leitura do diff + posição do item | `git diff main...HEAD -- services/orchestrator` |
+
+## Interface contracts
+
+| With | Shape / contract | Agreed on | Status |
+|------|------------------|-----------|--------|
+| — | — | — | — |
+
+## Drive-by fixes
+
+| What was broken | Commit |
+|-----------------|--------|
+| A mensagem do gate de plano dizia `(risk: —)` — prometia o risco e mostrava travessão, no texto que decide quem pode aprovar. Faltava `detail` no payload. | `fa154cb` |
 
 ## Open items
-- The Tester authored a TypeScript spec to assert a markdown file exists. That
-  single file made the change non-documentation-only and dragged the whole
-  Angular toolchain back into L1 — undoing the skip that had just landed. Rule
-  worth having: if the Coder's diff is documentation-only, the Tester has
-  nothing to test.
-- A DSE git command must not execute code from the customer's repository,
-  wherever it is issued. Fixed three times now at three call sites (checkpoint
-  commit #46, hygiene checkouts, push #52). Worth making structural.
-- `tests (control-plane)` is timing-sensitive under CI contention: the suite
-  uses a time-skipping Temporal env whose clock only advances in idle windows.
-  Fails on a different test each time. Rerunning with an empty queue works.
+
+| Item | Assumption taken | Recommendation |
+|------|------------------|----------------|
+| Rodada real end-to-end | Impossível sem crédito | Medir quando o usuário recarregar |

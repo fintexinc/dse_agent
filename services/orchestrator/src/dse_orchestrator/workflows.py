@@ -2818,7 +2818,19 @@ class WorkItemLifecycleWorkflow:
         # Failure/degradation NEVER blocks the PR (failure mode 9) — degraded
         # evidence is recorded and the flow moves on to human review.
         input.last_files_changed = list(coder_result.files_changed)
-        await self._run_evidence_pipeline(coder_result.files_changed, reason="initial")
+        # O ACUMULADO, não o último turno. `finalize_pr` sessenta linhas acima
+        # já usa `cumulative_files_changed`, e a diferença entre os dois custou
+        # a PR #8 (2026-08-10): quatro arquivos .java na PR, o último turno do
+        # Coder sem mudança nenhuma, e o paths-filter recebendo `[]` →
+        # `skipped_backend_only` num repo que casa `**/*.java`.
+        #
+        # É a mesma lição do commit e841542, que corrigiu SÓ o call site do
+        # `human_request`. O diff por turno não representa a mudança; o
+        # `base..HEAD` sim.
+        await self._run_evidence_pipeline(
+            list(input.cumulative_files_changed or coder_result.files_changed),
+            reason="initial",
+        )
         await self._emit_history_metric("pr_finalized")
 
         # We do NOT `continue_as_new` here (deliberate — see README.md, section
@@ -2949,8 +2961,14 @@ class WorkItemLifecycleWorkflow:
         try:
             await workflow.execute_activity(
                 ACTIVITY_POST_TRACKING_COMMENT,
+                # `detail` preenche o `{detail}` do template de status, que
+                # neste caso é literalmente "(risk: {detail})". Sem ele a
+                # mensagem do gate dizia "(risk: —)": prometia o risco e
+                # mostrava um travessão, justo no texto que decide QUEM pode
+                # aprovar.
                 {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
-                 "pr_number": None, "status": "awaiting_plan_approval"},
+                 "pr_number": None, "status": "awaiting_plan_approval",
+                 "detail": input.risk_class},
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )
@@ -3640,6 +3658,13 @@ class WorkItemLifecycleWorkflow:
                 input.ci_wait_started_at_epoch = None
                 # ADR-26: fix cycle = new commit that changes behavior -> 1 refresh
                 input.last_files_changed = list(fix_result.files_changed)
+                # NÃO acumula: os dois `fix_cycle` seguem classificando pelo
+                # diff do turno. Provavelmente têm o mesmo defeito do preview
+                # inicial — mas isso não foi MEDIDO em run nenhum, e acumular
+                # aqui muta `cumulative_files_changed`, que alimenta o aviso de
+                # edição de teste no corpo da PR. Mudar o corpo da PR de
+                # carona, sem teste, não é o que este item pediu. Registrado
+                # como item aberto no run-state.
                 await self._run_evidence_pipeline(fix_result.files_changed,
                                                   reason="fix_cycle_ci_red")
                 continue
@@ -3778,6 +3803,8 @@ class WorkItemLifecycleWorkflow:
                 # evidence refresh (the refresh is triggered by the fix COMMIT,
                 # never by the comments themselves).
                 input.last_files_changed = list(fix_result.files_changed)
+                # idem ao ramo de CI vermelho acima: não medido, não testado,
+                # e mutar o acumulado mexeria no corpo da PR.
                 await self._run_evidence_pipeline(fix_result.files_changed, reason="fix_cycle")
                 continue
 

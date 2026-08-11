@@ -114,6 +114,9 @@ class ScriptedSlackClient:
     def conversations_replies(self, **kwargs):
         return self._next("conversations_replies", kwargs)
 
+    def views_open(self, **kwargs):
+        return self._next("views_open", kwargs)
+
 
 def _raise_or_return(outcome):
     if isinstance(outcome, Exception):
@@ -284,18 +287,23 @@ def test_wrapper_posts_exactly_once_through_a_throttle(clock):
 
 
 def test_wrapper_forwards_every_client_method(clock):
-    inner = ScriptedSlackClient(
-        [FakeSlackResponse(), FakeSlackResponse(), FakeSlackResponse(), FakeSlackResponse()]
-    )
+    """Inclui `views_open` desde 2026-08-11, e a razão é um incidente: o
+    `FakeSlackClient` tinha o método e ESTE wrapper não. Todos os testes usavam
+    o fake, a suíte ficava verde, e o primeiro clique real do canal morria em
+    `AttributeError` — medido em produção em 2026-08-10. Um método que só o
+    fake conhece é um método que não existe."""
+    inner = ScriptedSlackClient([FakeSlackResponse() for _ in range(5)])
     client = RateLimitedSlackClient(inner, deadline=clock.monotonic() + 60.0)
 
     client.chat_postMessage(channel="C1", text="a")
     client.chat_update(channel="C1", ts="1.0", text="b")
     client.chat_postEphemeral(channel="C1", user="U1", text="c")
     client.conversations_replies(channel="C1", ts="1.0")
+    client.views_open(trigger_id="t.1", view={"type": "modal"})
 
     assert [c["method"] for c in inner.calls] == [
-        "chat_postMessage", "chat_update", "chat_postEphemeral", "conversations_replies",
+        "chat_postMessage", "chat_update", "chat_postEphemeral",
+        "conversations_replies", "views_open",
     ]
 
 

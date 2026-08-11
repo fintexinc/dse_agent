@@ -777,3 +777,48 @@ def test_no_reminder_pseudo_status_exists():
     """
     assert "awaiting_plan_approval_reminder" not in _STATUS_BODIES
     assert not [status for status in _STATUS_BODIES if "reminder" in status]
+
+
+@pytest.mark.asyncio
+async def test_the_gate_message_names_the_effective_risk(time_skipping_env):
+    """A mensagem do gate prometia o risco e mostrava um travessão.
+
+    O template é literal: `"📋 Plan ready — awaiting human approval
+    (risk: {detail})."` (local_activities `_STATUS_BODIES`), e o payload que o
+    workflow mandava ao entrar no gate não tinha `detail` — o
+    `.format(detail=detail or "—")` resolvia para o travessão.
+
+    O risco é o que decide se aprovação é exigida e quem pode dá-la
+    (`policy.classify_risk` escala para `high` quando o plano toca
+    `.github/workflows/`, `migrations/`, `auth/`…). Um gate que pede decisão
+    humana e esconde justamente o dado que a qualifica é pior que um gate mudo:
+    parece informativo.
+
+    O que viaja é o risco EFETIVO (`input.risk_class`, já classificado pela
+    política), nunca o declarado pelo Planner."""
+    work_item_id = new_work_item_id("gaterisk")
+    # `high` faz o item PARAR no gate — é a única forma de observar a mensagem;
+    # e sem aprovador o gate bloqueia antes de postar.
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    ledger = _Ledger()
+    state = FakeControlPlane(plan_risk_class="high")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        # o handle não é usado: o gate é observado pelo LEDGER, não pelo
+        # resultado — o workflow fica parado esperando o veredito humano.
+        await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id),
+            id=work_item_id, task_queue=task_queue)
+        await _wait_for_audit(ledger, "awaiting_plan_approval")
+
+        gate_msgs = [body for status, body in ledger.comments
+                     if status == STATUS_AWAITING_PLAN_APPROVAL]
+        assert gate_msgs, "o gate não postou nada — não há mensagem a inspecionar"
+        assert gate_msgs[-1] == "high", (
+            "o payload do gate não carrega o risco, então o template resolve "
+            f"'(risk: —)'. Veio: {gate_msgs[-1]!r}"
+        )

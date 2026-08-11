@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from .backend import (
     SlackCommentBackend,
     approval_blocks,
+    plan_details_view,
     build_real_slack_client,
     repo_select_blocks,
 )
@@ -144,7 +145,11 @@ def _stage_for_action(action_id: str) -> str | None:
     """O stage da decisão one-shot, derivado do PRÓPRIO botão (determinístico).
     A mensagem de status é UMA por item (ts eterno), então a chave do consumo
     é (work_item_id, stage) — nunca o ts."""
-    if action_id.startswith("dse_plan_"):
+    # ALLOWLIST, não prefixo. Com `startswith("dse_plan_")` qualquer botão novo
+    # da família herdava o consumo one-shot do veredito — foi o que quase
+    # aconteceu com o Details, e um `dse_plan_explain` futuro cairia igual sem
+    # nenhum teste falhar. Botão que DECIDE se declara aqui.
+    if action_id in ("dse_plan_approve", "dse_plan_reject"):
         return "awaiting_plan_approval"
     return None
 
@@ -174,6 +179,61 @@ def _consume_verdict(conn, work_item_id: str, stage: str,
     return False, (prev[0] if prev else None), (prev[1] if prev else None)
 
 
+#: Item terminal não é candidato. `correlate` recusa match terminal e trata a
+#: mensagem como tarefa nova (`correlate.py`); esta busca não recusava, e o
+#: fallback por thread pegava o item MAIS RECENTE — que numa thread com um item
+#: já concluído ao lado de um no gate mostraria o plano ERRADO na tela de
+#: decisão. Leitura errada num gate é pior que leitura nenhuma.
+_TERMINAL_STATUSES = ("done", "failed", "cancelled", "escalated")
+
+
+def _plan_for_message(
+    tenant_id: str, channel: str, message: dict
+) -> tuple[str | None, dict | None, str | None]:
+    """O item, o plano e o risco EFETIVO da mensagem clicada — leitura pura.
+
+    Escopada por `tenant_id` e `source`, como TODA leitura de `work_items`
+    neste repositório (`correlate.py`, `_distinct_repos_for_tenant`). O tenant
+    já está resolvido no handler; não usá-lo seria abrir a única exceção não
+    documentada da regra.
+
+    `source_ref @> %s::jsonb` e não `jsonb_exists(...)`: o índice de
+    `source_ref` é GIN `jsonb_ops` (0001_foundation.sql), que serve `@>` e NÃO
+    serve `source_ref->>'channel' = %s`. Com o operador errado cada clique
+    varria a tabela inteira — duas vezes, quando o primeiro ramo não casava.
+
+    A chave é a MESMA do clique de veredito (`{channel, bot_ts}`): o prompt
+    pertence a UM item, e a thread não desambigua quando irmãos de um fan-out a
+    compartilham. Fallback por `thread_ts` para prompts anteriores ao registro
+    do `bot_ts`, com o mais recente vencendo — o mesmo desempate do resto do
+    adapter."""
+    ts = message.get("ts")
+    thread_ts = message.get("thread_ts") or ts
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for ref in (
+                {"channel": channel, "bot_ts": [ts]} if ts else None,
+                {"channel": channel, "thread_ts": thread_ts} if thread_ts else None,
+            ):
+                if ref is None:
+                    continue
+                cur.execute(
+                    "SELECT id, plan, risk_class FROM work_items "
+                    "WHERE tenant_id = %s AND source = 'slack' "
+                    "AND source_ref @> %s::jsonb "
+                    "AND status NOT IN %s "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (tenant_id, json.dumps(ref), _TERMINAL_STATUSES),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1], row[2]
+    finally:
+        conn.close()
+    return None, None, None
+
+
 def _rearm_verdict(work_item_id: str, stage: str) -> None:
     """Re-arma a decisão quando os botões daquele stage são RENDERIZADOS de
     novo — um re-parque do mesmo item é uma decisão nova (pin do re-arm)."""
@@ -193,10 +253,10 @@ def _ack_text_for(action_id: str, user_id: str) -> str:
     hhmm = time.strftime("%H:%M", time.gmtime())
     who = f"<@{user_id}>"
     if action_id == "dse_plan_approve":
-        return f"✅ Aprovado por {who} às {hhmm} (UTC)"
+        return f"✅ Approved by {who} at {hhmm} (UTC)"
     if action_id == "dse_plan_reject":
-        return f"🚫 Rejeitado por {who} às {hhmm} (UTC) — replanejando"
-    return f"✔️ Registrado por {who} às {hhmm} (UTC)"
+        return f"🚫 Rejected by {who} at {hhmm} (UTC) — replanning"
+    return f"✔️ Recorded by {who} at {hhmm} (UTC)"
 
 
 def _ack_update(channel: str, message_ts: str, text: str) -> None:
@@ -224,7 +284,7 @@ def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
     if result.get("path") == "already_resolved":
         by, at = result.get("by") or "?", result.get("at") or "?"
         _notify_ephemeral(
-            channel, user_id, f"⏳ Já resolvido por {by} às {at} (UTC)."
+            channel, user_id, f"⏳ Already resolved by {by} at {at} (UTC)."
         )
     elif result.get("path") == "signal" and message_ts:
         _ack_update(channel, message_ts, ack_text)
@@ -235,8 +295,8 @@ def _finish_verdict_click(result: dict, *, channel: str, user_id: str,
         # signal nasceu (o caminho de refusal não grava nada).
         _ack_update(
             channel, message_ts,
-            "⚠️ Não consegui aplicar: a tarefa desta conversa não está mais "
-            "ativa (encerrada ou cancelada).",
+            "⚠️ Could not apply: the task in this conversation is no longer "
+            "active (it finished or was cancelled).",
         )
 
 
@@ -362,7 +422,7 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
                 )
                 cand = cur.fetchone()
             if cand:
-                hint = f" A tarefa mais recente aqui é `{cand[0][:15]}…` (thread {cand[1]})."
+                hint = f" The most recent task here is `{cand[0][:15]}…` (thread {cand[1]})."
             audit_emit(
                 actor=principal,
                 action="non_task_admission_refused",
@@ -374,8 +434,8 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
             conn.commit()
             _notify_ephemeral(
                 channel, conv_event.actor.platform_user_id,
-                "Não encontrei a tarefa desta conversa — responda na conversa "
-                "da tarefa original (a thread onde ela foi criada)." + hint,
+                "I could not find the task for this conversation — reply in "
+                "the original task's thread (where it was created)." + hint,
             )
             return {"ok": True, "path": "refused_non_task"}
 
@@ -527,6 +587,59 @@ async def slack_interactions(request: Request) -> dict:
     # first click irreversible — getting the repo wrong would fire an agent turn
     # against the wrong repo. So the select merely stages (the choice sits in
     # the message `state`) and only the button promotes it to a signal.
+    # DETAILS do plano — leitura, e por isso ANTES do fallthrough de veredito.
+    #
+    # O desvio explícito não é estilo: sem ele o clique passaria por três
+    # máquinas que transformam "quero ler" em "aprovei" — `parse_slack_approval`
+    # devolve `approved` para qualquer action_id fora dos tokens de rejeição, o
+    # veredito one-shot é CONSUMIDO, e o ack reescreve a mensagem sumindo com os
+    # botões. Escolher outro nome de action_id resolveria as duas últimas e não
+    # a primeira. As três estão pinadas em `test_plan_details_modal.py`.
+    if action.get("action_id") == "dse_plan_details":
+        channel = payload["channel"]["id"]
+        # MESMO gate dos outros botões. A primeira versão não tinha, com o
+        # argumento de que "ler não injeta direção" — verdadeiro sobre
+        # INTEGRIDADE e irrelevante aqui, porque a questão é
+        # CONFIDENCIALIDADE. O modal mostra o que a mensagem do canal não
+        # mostra: caminhos reais do repo do cliente, o teto de diff e — pior —
+        # `forbidden_paths`, que é o mapa das guardas. Entregar isso a um
+        # convidado de canal é reconhecimento de guarda por um clique.
+        if not is_authorized_to_steer(tenant_id, principal):
+            audit_emit(actor=principal, action="plan_details_refused_unauthorized",
+                       tenant_id=tenant_id,
+                       details={"channel": channel})
+            _notify_ephemeral(channel, user_id,
+                              "You are not allowed to read this task's plan.")
+            return {"ok": True, "path": "unauthorized"}
+        message = payload.get("message") or {}
+        work_item_id, plan, risk = _plan_for_message(tenant_id, channel, message)
+        if not work_item_id:
+            _notify_ephemeral(channel, user_id,
+                              "I could not find the task for this message.")
+            return {"ok": True, "path": "plan_details_no_item"}
+        try:
+            # deadline = AGORA, igual ao `_notify_ephemeral` logo acima e pelo
+            # mesmo motivo, que está escrito lá: isto roda DENTRO da corrotina
+            # de `/slack/interactions`, e o `time.sleep` de um retry paralisa o
+            # event loop do uvicorn — `/slack/events` para de responder, o Slack
+            # expira em 3s e REDISTRIBUI, e o `/health` cala até a liveness
+            # reiniciar o pod. Um budget de 2.5s "para caber na validade do
+            # trigger_id" comprava a janela do modal com a disponibilidade do
+            # adapter inteiro. Sem absorção de throttle o modal simplesmente não
+            # abre, e o humano clica de novo — nada foi gravado.
+            build_real_slack_client(
+                get_slack_bot_token(), deadline=time.monotonic()
+            ).views_open(
+                trigger_id=payload.get("trigger_id", ""),
+                view=plan_details_view(work_item_id, plan, effective_risk=risk),
+            )
+        except Exception:  # noqa: BLE001 — sem modal, o gate continua clicável
+            logger.warning("views_open failed (plan details)", exc_info=True)
+            _notify_ephemeral(channel, user_id,
+                              "I could not open the plan — please try again.")
+            return {"ok": True, "path": "plan_details_failed"}
+        return {"ok": True, "path": "plan_details_opened"}
+
     if action.get("action_id") == "dse_repo_select":
         # No-op ack: an empty 200 keeps the Slack client from flagging the
         # interaction as failed, and nothing is recorded until the Confirm.
