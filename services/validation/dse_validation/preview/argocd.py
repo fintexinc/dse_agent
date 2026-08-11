@@ -325,13 +325,25 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     else:
         image = cfg.source_image
         proxy_step = ""
-        start = f"PORT={port} exec npm start"
+        start = f"PORT={port} exec npm start -- --host 0.0.0.0 --port {port}"
         if api_proxy_target:
             proxy_conf = json.dumps({"/api": {
                 "target": api_proxy_target, "changeOrigin": True, "secure": False,
             }})
             proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
-            start = f"PORT={port} exec npm start -- --proxy-config proxy.preview.json"
+        # `--host 0.0.0.0 --port N` EXPLÍCITOS. Medido no preview da PR #19:
+        # `ng serve` ignora a env `PORT` e, pior, escuta em `::1` — o socket do
+        # pod era `tcp ::1:4200 LISTEN`, então nem a sonda do kubelet nem o
+        # Service alcançavam, e o preview ficava 0/1 para sempre com o app
+        # compilado e servindo lá dentro ("Application bundle generation
+        # complete" no log, HTTP 000 de fora).
+        #
+        # O `npm start` do repo é `ng serve --configuration development` sem
+        # `--port`: passar a env não basta, tem que ser flag.
+            start = (
+                f"PORT={port} exec npm start -- --host 0.0.0.0 --port {port} "
+                "--proxy-config proxy.preview.json"
+            )
         script = (
             "set -eu; "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
