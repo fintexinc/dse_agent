@@ -31,6 +31,13 @@ e um único processo resolve o primeiro para todos.
 - Ids de work item irmãos são hasheados (`sha256(event_id:repo)`), nunca sufixados:
   `pod_name_for` trunca em 63 e o id já tem 67 chars.
 - `awaiting_human_review` é sucesso, não travamento. O DSE nunca aprova o próprio trabalho.
+- **Não existe posse de teste** (decisão de operador, 2026-08-10). O DSE altera qualquer
+  teste — inclusive as specs que o próprio laço escreveu — e a supervisão é o diff da PR.
+  Saíram junto: o revert pós-turno, o oráculo de autoria (`-dse`, subject de commit), o
+  rename guard, o parque `spec_conflict` e o reauthor. Sobrou UMA autoria: a porta 5, em
+  que o Tester conserta a spec que ele acabou de escrever e que nem carrega. Laço que não
+  converge termina só de um jeito: `escalated`, pelos freios de sempre (teto de tentativas,
+  `coder_not_converging`, duplo no-op, diff vazio, teto de gasto).
 - `repo_bindings` não é "os repositórios do tenant" — tem uma linha por binding.
   O conjunto candidato é `repo_bindings UNION repo_profiles`.
 

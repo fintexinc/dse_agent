@@ -1,5 +1,19 @@
 # Review de backlog em dois chapéus — 09/08/2026
 
+> **NOTA DE 2026-08-10 — leia antes do resto.** Este documento é um RETRATO do
+> dia 09/08 e fica como registro; não foi reescrito. No dia seguinte uma decisão
+> de operador removeu do produto **o parque de spec (`spec_conflict`), o
+> reauthor e toda a noção de posse de teste**: o DSE passou a poder alterar
+> qualquer teste, com a supervisão no diff da PR, e a única saída de laço
+> travado passou a ser `escalated`.
+>
+> Portanto, no texto abaixo: o verbete "Parque / portas" do glossário, o "Túnel
+> do reauthor", os itens **A6**, **B1**, **B3**, **B4**, **B8**, **E3**, **E4**,
+> **E5**, **E12** e o "bloco do parque" citado como critério da Fase 1
+> descrevem um mecanismo **que não existe mais**. Os vereditos continuam
+> válidos como julgamento da época — e o desfecho deles, aliás, foi o inverso
+> do previsto: o custo do parque não se pagou, e o mecanismo inteiro saiu.
+
 **Objeto:** os ~40 itens de `docs/BACKLOG-DSE.md` (projetos A–G), revisados em dois passes independentes — Tech (registro, sem opinião) e Produto (julgamento, em cima do registro) — e fechados com uma síntese.
 
 **Fontes e estado do mundo no momento do review:**

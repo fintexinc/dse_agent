@@ -1,65 +1,50 @@
-"""Alcançabilidade das fronteiras de posse (2026-08-07).
+"""Alcançabilidade das fronteiras de posse (2026-08-07; reescrito em 2026-08-10).
 
 Para cada célula (quem quebrou, em que arquivo a falha se manifesta, modo de
-falha), tem que existir PELO MENOS UM ator autorizado a corrigir — ou uma
-escalada DESENHADA para humano. Morrer no teto de retentativas não é saída:
-é exaustão, e foi exatamente assim que wi_5620d2c1 e wi_8edaef39 morreram
-antes das portas 1/5.
+falha), tem que existir PELO MENOS UM ator autorizado a corrigir. Morrer no
+teto de retentativas não é saída: é exaustão, e foi exatamente assim que
+wi_5620d2c1 e wi_8edaef39 morreram antes das portas 1/5.
 
-As regras modeladas aqui espelham código real (referências abaixo). Isto NÃO
-importa os serviços — é um mapa executável; quem mudar uma regra atualiza a
-célula, e o teste força isso: célula viva sem saída falha; beco documentado
-que ganhar saída vira XPASS estrito e falha também, exigindo promover a
-célula.
+Isto NÃO importa os serviços — é um mapa executável, escrito à mão. Por isso
+ele pode MENTIR e continuar verde: quem muda uma regra atualiza a célula, e é
+esse acordo que dá valor ao arquivo.
 
-As regras e onde vivem:
-  R1 revert do INSTRUMENTO         — workspace_hygiene.revert_test_edits (2026-08-10):
-                                     o Coder edita spec do CLIENTE à vontade (a mudança
-                                     entra no diff da PR); o que o pós-turno desfaz é a
-                                     edição sobre o INSTRUMENTO deste laço — a spec com
-                                     commit `tester(<este work_item_id>)`. Antes: todo
-                                     caminho de teste era revertido.
-  R2 posse do Tester               — activities.py:_is_dse_authored (~2347) + rename guard
-                                     (~2329): o Tester nunca destrói spec do cliente.
-  R3 reuso existencial + exceção   — activities.py (~2889: reused) + porta 5
-     zero-veredito                   (_zero_verdict_specs + repair in-place, rc.42):
-                                     re-autoria SÓ quando a suite própria não executa
-                                     asserção alguma (carga/compilação).
-  R4 deferral                      — activities.py:_suite_verdict_deferred (~2034):
-                                     suite própria falhando não é gate; L1 julga.
-  R5 detector da porta 1           — dse_orchestrator/workflows.py:preexisting_spec_conflicts:
-                                     spec FAIL não-do-Tester com SUJEITO no diff
-                                     ACUMULADO (v2). Em DOIS estágios (v3): verde no
-                                     base + 1ª ocorrência → o CODER ganha uma rodada
-                                     com as asserções (spec_conflict_deferred_to_coder);
-                                     a MESMA spec de novo → parque p/ humano. Vermelha
-                                     no base nunca entra (é achado herdado, R8).
-  R6 forbidden_paths               — validation (plan_compliance): gate sobre o diff do
-                                     Coder; o próprio Coder pode remover o que criou.
-  R7 diff_budget                   — validation: idem — o Coder pode encolher o diff.
-  R8 baseline check                — l1/quality_checks.py:_baseline_failing_suites +
-                                     test_check(base_sha=): suite já vermelha no base
-                                     vira NOT_OUR_FAILURE e o item SEGUE (promoveu os
-                                     becos 2 e 3 deste mapa).
-  R9 exaustão em spec própria      — workflows.py:exclusively_tester_spec_failures +
-                                     tester_spec_assertion_failures (a MEMÓRIA) +
-                                     parque na primitiva da porta 1. Gatilho v2 por
-                                     MEMÓRIA DE SPEC: a mesma spec própria reprovando
-                                     com veredito em QUALQUER rodada posterior parqueia,
-                                     independente do que falhou entre elas — o
-                                     fingerprint consecutivo resetava numa rodada de
-                                     lint+build no meio e o wi_c9c7b200 morreu no teto
-                                     com o parque deployado. Medidos: pageSize
-                                     wi_5eecf486, 'warning' wi_32eb136f, alternado
-                                     wi_c9c7b200.
-  R10 pinça declarada pelo ator     — workflows.py, ramo do coder_made_no_change:
-                                     dois no-ops consecutivos com a pinça ARMADA
-                                     (última falha de L1 exclusivamente spec própria
-                                     com veredito) parqueiam com o MESMO dossiê do
-                                     caminho via L1, em vez da escalada muda — o
-                                     wi_0d95384f escalou sem dossiê porque o no-op
-                                     pula os gates e a memória nunca via a 2ª
-                                     reprovação. No-op sem pinça armada escala.
+**O que este arquivo perdeu em 2026-08-10, e por quê.** Ele já teve dez regras
+(R1–R10) e três becos. Metade delas existia para responder uma pergunta só:
+*de quem é este arquivo de teste?* — com oráculo de autoria por histórico git,
+marcador `-dse` no nome, rename guard, revert pós-turno, e um PARQUE para
+quando a resposta fosse "de ninguém que possa agir". Uma decisão de operador
+removeu a pergunta: **o DSE altera qualquer teste, e a supervisão é o diff da
+PR**. Sem a pergunta, R1 (revert de instrumento), R2 (posse do Tester), R9
+(exaustão em spec própria) e R10 (pinça declarada) não descrevem mais nada.
+
+As regras que sobraram, e onde vivem:
+  R3 porta 5, zero-veredito       — activities.py:_zero_verdict_specs + reparo
+                                    in-place: quando a spec que o TESTER acabou de
+                                    escrever não CARREGA (import quebrado, erro de
+                                    compilação), ele conserta antes de gastar uma
+                                    rodada do Coder atrás de um teste que nunca rodou.
+                                    Escopo = a lista de alvos do turno; asserção
+                                    falhando é veredito e nunca entra aqui.
+  R4 deferral                     — activities.py:_suite_verdict_deferred: suite
+                                    própria falhando não é gate; o L1 julga.
+  R5 detector de conflito         — workflows.py:preexisting_spec_conflicts: spec
+                                    pré-existente FAIL com SUJEITO no diff acumulado.
+                                    Não parqueia mais nada — hoje ele só produz a
+                                    MIRA (caminhos + asserções) para o turno seguinte
+                                    do Coder e a evidência no ledger.
+  R6 forbidden_paths              — validation (plan_compliance): gate sobre o diff do
+                                    Coder; o próprio Coder pode remover o que criou.
+  R7 diff_budget                  — validation: idem — o Coder pode encolher o diff.
+  R8 baseline check               — l1/quality_checks.py:_baseline_failing_suites +
+                                    test_check(base_sha=): suite já vermelha no base
+                                    vira NOT_OUR_FAILURE e o item SEGUE (promoveu os
+                                    becos 2 e 3 deste mapa).
+
+E os freios que encerram um item que não converge — teto de tentativas,
+`coder_not_converging`, duplo no-op, gate de diff vazio, teto de gasto —
+continuam todos, terminando em `escalated`. Eles não são "saída" no sentido
+deste mapa (são exaustão), e é por isso que toda célula viva precisa de ator.
 """
 from __future__ import annotations
 
@@ -90,36 +75,30 @@ class Celula:
 
 
 def saidas(c: Celula) -> set[str]:
-    """Os atores/parques autorizados pelas regras R1-R7 — deny-by-default."""
+    """Os atores autorizados — deny-by-default, uma regra por bloco."""
     s: set[str] = set()
 
-    # Coder: autorizado em PRODUÇÃO e nos gates sobre o próprio diff (R6/R7).
-    # R1 o exclui apenas do INSTRUMENTO (SPEC_TESTER) — spec do cliente ele
-    # edita, e a saída aparece em R5 logo abaixo.
-    if c.arquivo == PRODUCAO:
+    # O CODER, em tudo que tem veredito. Esta é a mudança de 2026-08-10 e é o
+    # motivo de este arquivo ter encolhido: antes a autorização dependia de
+    # QUEM escreveu o arquivo, e cada resposta a essa pergunta precisava de um
+    # oráculo (histórico git, marcador `-dse`), de uma exceção, e de um parque
+    # para quando o oráculo dissesse "ninguém pode". Agora é uma linha: se
+    # existe veredito, o Coder é ator.
+    if c.modo in {COMPILE_PRODUCAO, ASSERCAO, ASSERCAO_CODER_SEM_JOGADA,
+                  FORBIDDEN_PATHS, DIFF_BUDGET} and c.quem != "cliente":
         s.add("coder")
-    if c.modo in {FORBIDDEN_PATHS, DIFF_BUDGET}:
+    # Zero-veredito em produção/spec de cliente também é dele: a carga morreu
+    # por causa do diff, e o diff é o que ele controla.
+    if c.modo == ZERO_VEREDITO and c.quem != "cliente":
         s.add("coder")
 
-    # Tester: R3 — re-autoria in-place APENAS na spec própria sem veredito
-    # (posse via git do Pod; asserção falhando é veredito e fica de fora).
+    # O TESTER, na porta 5 e só nela: a spec que ele acabou de escrever não
+    # CARREGA (import quebrado, erro de compilação), então não há veredito a
+    # proteger — é instrumento quebrado, e ele conserta in-place antes de
+    # gastar uma rodada do Coder atrás de um teste que nunca rodou. O escopo é
+    # a lista de alvos DO TURNO; não há mais pergunta ao git.
     if c.arquivo == SPEC_TESTER and c.modo == ZERO_VEREDITO:
         s.add("tester")
-
-    # R5 (v4, ator único) — spec do CLIENTE na lista FAIL com sujeito no diff
-    # acumulado E verde no base: o CODER resolve, em toda rodada, com as
-    # asserções exatas no contexto. O 2º estágio (parque na reincidência) SAIU
-    # em 2026-08-10 (`client-spec-never-parks-v1`): a política passou a
-    # autorizá-lo a atualizar a spec, e a supervisão migrou para o diff da PR —
-    # pedir clique no meio do laço para o que já é permitido era só atrito.
-    # Vermelha no base (quem == "cliente") não entra: é herdada (R8).
-    if (
-        c.quem != "cliente"
-        and c.arquivo == SPEC_CLIENTE
-        and c.sujeito_no_diff
-        and c.modo in {ASSERCAO, ZERO_VEREDITO}
-    ):
-        s.add("coder")
 
     # R8 — o vermelho que o item ENCONTROU: a suite já falhava no base_sha, então
     # não é reprovação dele. Não precisa de ator nem de humano: o gate classifica
@@ -127,29 +106,6 @@ def saidas(c: Celula) -> set[str]:
     if c.quem == "cliente" and c.arquivo == SPEC_CLIENTE:
         s.add("baseline:not_our_failure")
 
-    # R9 — exaustão reconhecida (não classificada): asserção em spec própria
-    # com veredito, REPETIDA EM QUALQUER RODADA POSTERIOR (memória por spec,
-    # não fingerprint consecutivo — rodadas heterogêneas no meio não apagam),
-    # sem ator autorizado → parque para humano com dossiê, na primitiva da
-    # porta 1.
-    if c.arquivo == SPEC_TESTER and c.modo == ASSERCAO:
-        # F3 (2026-08-10): as duas primeiras ordens de reescrita saem SOZINHAS
-        # (`auto-reauthor-before-park-v1`) — é o efeito exato do clique em
-        # Reauthor, que o humano dava sempre igual. O parque continua existindo
-        # como último recurso, no terceiro impasse: sem ele o laço não converge.
-        s.add("tester:auto_reauthor")
-        s.add("humano:spec_conflict")
-
-    # R10 — a pinça declarada pelo próprio ator: o duplo no-op contra spec
-    # própria reprovada com veredito é reconhecimento de exaustão mais forte
-    # que uma segunda rodada de L1. Mesma saída, mesmo dossiê, sem L1 extra.
-    if c.arquivo == SPEC_TESTER and c.modo == ASSERCAO_CODER_SEM_JOGADA:
-        s.add("tester:auto_reauthor")  # F3: mesma primitiva, mesmo orçamento de 2
-        s.add("humano:spec_conflict")
-
-    # R2: célula (tester quebrou spec do cliente) é estruturalmente impossível —
-    # o rename guard desvia a escrita para um caminho -dse próprio. Modelada
-    # fora da matriz (ver test_r2_torna_a_celula_impossivel).
     return s
 
 
@@ -158,19 +114,32 @@ VIVAS: list[Celula] = [
     Celula("coder", PRODUCAO, COMPILE_PRODUCAO,
            nota="fix_context → Coder (medido: wi_1a5f9e3d corrigiu typecheck+build)"),
     Celula("coder", PRODUCAO, ASSERCAO,
-           nota="spec do Tester reprovando código: o alvo do conserto é a produção"),
-    # Porta 1 (rc.41 + v2 rc.42 + v3): spec do cliente invalidada pelo diff →
-    # Coder primeiro, humano na reincidência.
+           nota="spec reprovando código: o alvo do conserto é a produção"),
+    # Spec de CLIENTE quebrada pelo diff: um ator, nenhum parque (2026-08-10).
     Celula("coder", SPEC_CLIENTE, ASSERCAO,
-           nota="dois estágios (wi_c9c7b200): 1ª falha vira rodada de Coder com as "
-                "asserções; a mesma spec de novo parqueia (wi_8edaef39, diff acumulado)"),
+           nota="o Coder recebe os caminhos e as asserções e julga: atualizar a "
+                "spec obsoleta ou consertar o código. A edição entra no diff da PR"),
     Celula("coder", SPEC_CLIENTE, ZERO_VEREDITO,
-           nota="carga da spec do cliente quebrada por mudança no sujeito → parque"),
-    # Porta 5 (rc.42): instrumento próprio quebrado → o próprio Tester repara.
+           nota="carga da spec do cliente quebrada por mudança no sujeito"),
+    # Spec que o próprio laço escreveu: também do Coder desde 2026-08-10 — era
+    # AQUI que morava o impasse que sustentava o reauthor e o parque.
+    Celula("coder", SPEC_TESTER, ASSERCAO,
+           nota="pageSize (wi_5eecf486), 'warning' (wi_32eb136f), o alternado do "
+                "wi_c9c7b200: todos morriam sem ator porque a spec era intocável"),
+    Celula("coder", SPEC_TESTER, ASSERCAO_CODER_SEM_JOGADA,
+           nota="wi_0d95384f: o duplo no-op deixou de ser 'não tenho jogada' — ele "
+                "tem; se ainda assim não agir, escala com a razão nomeada"),
+    # Porta 5 (rc.42), preservada: instrumento próprio que nem carrega.
     Celula("tester", SPEC_TESTER, ZERO_VEREDITO,
            nota="@MockBean (wi_5620d2c1): testCompile sem veredito → repair in-place"),
     Celula("coder", SPEC_TESTER, ZERO_VEREDITO,
-           nota="@ngx-translate herdado (wi_8edaef39): posse decide, não a autoria do defeito"),
+           nota="@ngx-translate herdado (wi_8edaef39): dois atores, e está certo — "
+                "quem chegar primeiro resolve"),
+    # O Tester sobrescrevendo spec do CLIENTE deixou de ser impossível: o rename
+    # guard saiu junto (decisão de operador). A célula nasce viva e com ator.
+    Celula("tester", SPEC_CLIENTE, ASSERCAO,
+           nota="sem rename guard o Tester escreve onde pediu; se ele piorar uma "
+                "spec do cliente, o Coder conserta e o diff da PR mostra"),
     # Gates sobre o diff do Coder: o Coder é o ator (remove/encolhe).
     Celula("coder", PRODUCAO, FORBIDDEN_PATHS,
            nota="run 1: Dockerfile fora do plano — o Coder pode deletar o que criou"),
@@ -182,24 +151,8 @@ VIVAS: list[Celula] = [
            nota="baseline vermelha do repo: classificada NOT_OUR_FAILURE, o item segue"),
     Celula("cliente", SPEC_CLIENTE, ZERO_VEREDITO, sujeito_no_diff=False,
            nota="mesma baseline morrendo na carga: idem — comparada suite a suite"),
-    # v3: herdada MESMO com o sujeito no diff acumulado — o vermelho já existia
-    # no base, então não é conflito deste item nem ganha chance de Coder.
     Celula("cliente", SPEC_CLIENTE, ASSERCAO, sujeito_no_diff=True,
            nota="baseline vermelha cujo sujeito o diff tocou: segue NOT_OUR_FAILURE"),
-    # Promovida de beco por R9: a exaustão em spec própria parqueia com dossiê
-    # (specs, asserções, esperado vs recebido, diff) em vez de morrer no teto.
-    Celula("tester", SPEC_TESTER, ASSERCAO,
-           nota="pageSize (wi_5eecf486), 'warning' (wi_32eb136f) e o alternado "
-                "test→lint+build→test (wi_c9c7b200, que escapou do gatilho consecutivo "
-                "e morreu no teto): memória por spec parqueia na 2ª reprovação da "
-                "mesma spec, e o humano decide com o dossiê — retry ou reauthor"),
-    # Promovida por R10: o Coder honesto que se recusa a perseguir a asserção
-    # (wi_0d95384f: build → test(badge) → no-op → no-op escalou SEM dossiê,
-    # com a memória armada e sem o L1 re-rodar) agora parqueia pelo ramo do
-    # no-op, com o dossiê completo do caminho via L1.
-    Celula("tester", SPEC_TESTER, ASSERCAO_CODER_SEM_JOGADA,
-           nota="a recusa dupla do Coder é a própria evidência de exaustão; "
-                "parque imediato, sem pagar outra rodada de L1 (wi_0d95384f)"),
 ]
 
 #: BECOS CONHECIDOS — vazio hoje: os três medidos foram promovidos (R8, R9).
@@ -217,43 +170,50 @@ def test_toda_celula_viva_tem_saida(celula: Celula):
     )
 
 
-def test_r2_torna_a_celula_impossivel():
-    """(tester, spec_cliente, *) não é um beco — é INALCANÇÁVEL por construção:
-    o rename guard (activities.py ~2329) desvia qualquer escrita do Tester sobre
-    spec do cliente para um caminho -dse próprio. Se essa guarda cair, a célula
-    nasce sem dono e este teste é o lembrete de modelá-la."""
-    protegida = Celula("tester", SPEC_CLIENTE, ASSERCAO)
-    assert "tester" not in saidas(protegida), "o Tester nunca é ator em spec do cliente"
+def test_o_coder_e_ator_em_qualquer_teste():
+    """A decisão de 2026-08-10, no seu formato mais curto.
+
+    Este pin já afirmou o oposto duas vezes, e as duas estavam certas para a
+    época: primeiro "o Coder NUNCA edita caminho de teste" (R1, revert total),
+    depois "o instrumento do laço continua fora do alcance dele" (rc.76). Hoje
+    não há posse de teste: qualquer spec com veredito tem o Coder como ator, e
+    é isso que fez o parque e o reauthor perderem a razão de existir."""
+    for arquivo in (SPEC_TESTER, SPEC_CLIENTE):
+        celula = Celula("tester", arquivo, ASSERCAO)
+        assert "coder" in saidas(celula), (
+            f"o Coder tem que ser ator em {arquivo} — sem isso a célula volta a "
+            "precisar de um parque"
+        )
 
 
-def test_porta1_v4_o_coder_resolve_spec_de_cliente_sem_pedir_licenca():
-    """v4 (2026-08-10): o conflito em spec do cliente tem UM ator — o Coder — e
-    NENHUM parque. Este pin afirmava o contrário até hoje ("a reincidência
-    parqueia"), e afirmava a política certa PARA A ÉPOCA: spec de cliente era
-    intocável, então parar e perguntar era a única saída honesta.
+def test_nenhuma_celula_depende_de_humano_no_meio_do_laco():
+    """A saída humana do MEIO do laço sumiu — sobrou a da BORDA (a PR).
 
-    A política mudou (spec de cliente é editável, revisada no diff da PR) e o
-    parque virou atrito puro: o humano via 3 falhas em 4.980 e clicava a mesma
-    coisa toda vez. O que NÃO mudou está no pin abaixo — o instrumento do
-    laço continua fora do alcance do Coder."""
-    fresca = Celula("coder", SPEC_CLIENTE, ASSERCAO)
-    assert saidas(fresca) == {"coder"}
-    assert "humano:spec_conflict" not in saidas(fresca), (
-        "spec de cliente não parqueia mais: a supervisão é o diff da PR"
+    Enquanto o parque existiu, `humano:spec_conflict` era a saída de duas
+    células, e ele não tinha prazo nenhum: o item ficava parado até alguém
+    clicar. Hoje toda célula viva tem ator do laço; o humano decide onde
+    sempre decidiu de fato — aprovando o plano e revisando a PR."""
+    for celula in VIVAS:
+        assert not any(x.startswith("humano:") for x in saidas(celula)), (
+            f"{celula} ainda depende de decisão humana no meio do laço"
+        )
+
+
+def test_a_porta_5_continua_sendo_do_tester():
+    """O que NÃO mudou: a spec que o Tester acabou de escrever e que nem carrega
+    é dele para consertar, in-place, antes de gastar uma rodada do Coder atrás
+    de um teste que nunca rodou. É a única autoria que sobrou no sistema, e ela
+    não depende de perguntar ao git quem escreveu o quê."""
+    celula = Celula("tester", SPEC_TESTER, ZERO_VEREDITO)
+    assert "tester" in saidas(celula)
+    celula_com_veredito = Celula("tester", SPEC_TESTER, ASSERCAO)
+    assert "tester" not in saidas(celula_com_veredito), (
+        "asserção falhando é VEREDITO: reescrevê-la seria o laço apagando a "
+        "própria régua sem que ninguém visse. Quem mexe ali é o Coder, e a "
+        "mudança aparece no diff da PR"
     )
+
+
+def test_o_vermelho_herdado_nao_precisa_de_ator():
     herdada = Celula("cliente", SPEC_CLIENTE, ASSERCAO, sujeito_no_diff=True)
     assert saidas(herdada) == {"baseline:not_our_failure"}
-
-
-def test_deferral_nao_e_saida_e_sim_encaminhamento():
-    """R4: o deferral não autoriza ninguém — só move o veredito para o L1. A
-    célula que era o beco 1 tem saída HOJE por causa do parque R9, não do
-    deferral: a única saída é o humano, nunca um ator do laço."""
-    celula = Celula("tester", SPEC_TESTER, ASSERCAO)
-    assert "coder" not in saidas(celula), (
-        "o instrumento do laço continua fora do alcance do Coder — é a régua "
-        "com que ele é julgado"
-    )
-    # F3: a saída deixou de ser SÓ humana. As duas primeiras ordens de
-    # reescrita saem sozinhas; o parque fica para o terceiro impasse.
-    assert saidas(celula) == {"tester:auto_reauthor", "humano:spec_conflict"}
