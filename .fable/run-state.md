@@ -13,10 +13,10 @@ If the run is interrupted, this file — not the conversation — is what carrie
 
 | # | Criterion | Status | Evidence |
 |---|-----------|--------|----------|
-| 1 | A mensagem de aprovação de plano no Slack tem um botão que abre um MODAL com o plano completo. Aprovar/Rejeitar continuam funcionando igual (one-shot, ack in-place). | TODO | |
-| 2 | Toda comunicação com o USUÁRIO (Slack, corpo de PR, comentários de tracking, mensagens de erro que o humano lê) está em inglês. Um teste automatizado falha se voltar português. | TODO | |
-| 3 | Resposta fundamentada, com evidência do ledger e do código, sobre por que PRs foram criadas sem preview — e correção aplicada se a causa for defeito nosso. | TODO | |
-| 4 | (implícito) `make lint` verde + suites das áreas tocadas verdes com XML no disco; rc cortada, CI verde, deploy verificado pela imagem em uso. | TODO | |
+| 1 | Botão Details abrindo modal com o plano; Approve/Reject intactos | IMPLEMENTED-NOT-VERIFIED | `fa154cb`; 5 testes novos + 76 na suite do Slack. NÃO verificado no Slack real (sem crédito, nenhum item chega ao gate) |
+| 2 | Comunicação com o usuário em inglês, com teste que impede regressão | VERIFIED | `c05dd9d`; `tests/test_user_facing_text_is_english.py` varre 9 módulos e passa; 10 textos traduzidos |
+| 3 | Por que as PRs saíram sem preview, com evidência — e correção | VERIFIED (diagnóstico) / IMPLEMENTED-NOT-VERIFIED (fix) | `88fcfeb`; causa provada no ledger da PR #8; os 4 call sites alinhados e pinados por teste. Preview real não sobe sem crédito |
+| 4 | lint + suites + PR revisada + deploy verificado | IN-PROGRESS | 1.608 testes verdes nos 7 grupos; PR #64 aberta com 3 revisores |
 
 ## Regras do usuário para esta rodada
 
@@ -35,6 +35,11 @@ If the run is interrupted, this file — not the conversation — is what carrie
 
 | Fact | How it was traced | Anchor |
 |------|-------------------|--------|
+| A mensagem do gate NÃO contém o plano — só a frase do template | trace workflow→local_activities→adapter | `local_activities.py:793` |
+| NADA no repositório renderizava `plan["steps"]` | grep no repo inteiro | — |
+| Um botão novo cairia no fallthrough e APROVARIA o plano | `parse_slack_approval` devolve `approved` para qualquer id fora dos tokens de rejeição | `events.py:63-86` |
+| Preview: `repo_bindings.deploys_preview = t` para os DOIS repos ativos | SELECT em produção | — |
+| Preview da PR #8 recebeu `files_changed: []` com 4 `.java` na PR | audit_log de produção | `wi_a47c490a` |
 | A frota roda rc.78; todos os pods de pé | `kubectl get deploy -o jsonpath` + `helm list` em 2026-08-11 03:31 | helm rev 92 |
 | O crédito da Anthropic AINDA está esgotado | log do model-gateway em 07:58 + `repo_routing_decided {"repos": [], "reason": "router unavailable: HTTPStatusError"}` | `wi_8d729b92` |
 | Fila do Temporal vazia (0 Running) | `temporal workflow count --query "ExecutionStatus='Running'"` | 2026-08-11 |
@@ -49,7 +54,7 @@ If the run is interrupted, this file — not the conversation — is what carrie
 
 | What was broken | Commit |
 |-----------------|--------|
-| | |
+| A mensagem do gate de plano dizia `(risk: —)` — prometia o risco e mostrava travessão, no texto que decide quem pode aprovar. Faltava `detail` no payload. | `fa154cb` |
 
 ## Open items
 
