@@ -2,8 +2,10 @@
 
 Two layers of proof, without a cluster:
   1. The op itself (real git in tmp dirs): pruning disposables, restoring
-     lockfile churn, reverting test edits and the scoped commit/push — the SAME
-     sequence as the worker, now executable inside the Pod.
+     lockfile churn and the scoped commit/push — the SAME sequence as the
+     worker, now executable inside the Pod. (O revert de edição de teste saiu
+     em 2026-08-10 com o reauthor; a fronteira nova está em
+     `test_no_test_edit_is_ever_reverted.py`.)
   2. The whole `_run_coder_turn_impl` in pod-git mode: a StubDriver with
      `workspace_is_host_visible=False` routes execute_op/execute_stage to the
      REAL runner functions against a directory that simulates the Pod volume —
@@ -53,10 +55,11 @@ def test_post_turn_full_hygiene_and_scoped_push(tmp_path):
     req, boot = _bootstrap(tmp_path, wi)
     ws = tmp_path / "workspace"
 
-    # simulates the agent turn: legitimate source + junk + churn + a NEW
-    # customer-convention test + a FORGED tester-marker file. Desde 2026-08-10
-    # (decisão de operador) o teste novo em convenção de cliente FICA — o que
-    # o revert remove é só a forja do marcador do Tester.
+    # simulates the agent turn: legitimate source + junk + churn + dois testes
+    # novos, um em convenção de cliente e outro com o antigo marcador `-dse`.
+    # Desde a remoção do revert (2026-08-10) os DOIS ficam: o marcador deixou
+    # de significar posse, e apagar arquivo novo de teste seria destruir
+    # trabalho do único ator que estava trabalhando.
     (ws / "src").mkdir()
     (ws / "src" / "app.py").write_text("X = 1\n")
     (ws / "BUG_FIX_REPORT.md").write_text("spontaneous report\n")
@@ -77,13 +80,16 @@ def test_post_turn_full_hygiene_and_scoped_push(tmp_path):
     )
     assert not post.failed
     assert post.sha != boot.sha
-    assert post.files_changed == ["src/app.py", "tests/test_smuggled.py"]
+    assert post.files_changed == [
+        "src/app.py", "tests/test_forged-dse.py", "tests/test_smuggled.py",
+    ]
     assert post.pruned == ["BUG_FIX_REPORT.md"]
     assert post.restored_lockfiles == ["package-lock.json"]
-    assert post.reverted_tests == ["tests/test_forged-dse.py"]
     assert not (ws / "BUG_FIX_REPORT.md").exists()
     assert (ws / "tests" / "test_smuggled.py").exists(), "convenção de cliente fica"
-    assert not (ws / "tests" / "test_forged-dse.py").exists(), "forja -dse sai"
+    assert (ws / "tests" / "test_forged-dse.py").exists(), (
+        "o marcador -dse não significa mais posse; o arquivo fica e aparece na PR"
+    )
 
     # the push reached the checkpoint (fixed refspec)
     ck = checkpoint_workspace(

@@ -55,11 +55,18 @@ def test_the_tester_failure_note_does_not_forbid_what_policy_allows():
         "proibição ABSOLUTA: desde 2026-08-10 atualizar spec de CLIENTE é permitido, e "
         "esta frase é a última coisa que o Coder lê antes de agir"
     )
-    assert "tester" in text.lower(), (
-        "a proibição que SOBREVIVE precisa ser nomeada: o instrumento do Tester"
+    low = text.lower()
+    assert "any test in this repository is yours to edit" in low, (
+        "a permissão hoje é a mais ampla possível — inclusive as specs escritas "
+        "para esta task. Nomeá-la é o que faz o ator exercê-la"
     )
-    assert "never delete" in text.lower(), (
-        "a permissão é para ATUALIZAR asserção obsoleta, nunca para apagar cobertura"
+    assert "reverted" not in low, (
+        "não existe mais revert de teste; prometer um manda o Coder não tentar"
+    )
+    assert "never delete" in low and "weaken" in low, (
+        "a permissão é para ATUALIZAR asserção obsoleta, nunca para apagar "
+        "cobertura nem afrouxar asserção — e essa regra perdeu o mecanismo "
+        "atrás dela, então o texto é a única defesa antes da revisão humana"
     )
 
 

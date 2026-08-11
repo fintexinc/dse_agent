@@ -559,9 +559,6 @@ class WorkItemLifecycleWorkflow:
         self._retry_caps_resolved = False
         self._empty_diff_rounds = 0
         self._empty_diff_note: str | None = None
-        #: Caminhos revertidos pela proteção de instrumento nos turnos no-op —
-        #: a segunda garra da pinça (wi_36acfb3d).
-        self._noop_instrument_reverts: list[str] = []
         # --- Porta 1: deadlock de posse de spec (espera durável) ---
         self._spec_conflict_received = False
         self._spec_conflict_payload: dict[str, Any] | None = None
@@ -930,18 +927,20 @@ class WorkItemLifecycleWorkflow:
         # CLIENTE é editável, e a mudança entra no diff da PR para revisão humana. Como
         # esta nota é a ÚLTIMA coisa que o Coder lê antes de agir, ela decidia o
         # comportamento — o item parou três vezes num impasse que ele podia resolver.
-        # O que sobrevive é a fronteira que importa: o instrumento do Tester.
+        # Desde a remoção do reauthor (2026-08-10) não há mais fronteira de posse:
+        # QUALQUER teste é editável, inclusive o que o próprio laço escreveu. O que
+        # resta é julgamento, e ele é pedido explicitamente — mais a única regra
+        # que continua absoluta, porque nenhum mecanismo a garante agora.
         return [
             "The test suite you must satisfy is FAILING.\n"
-            "- If a spec THE TESTER wrote for this task is failing, fix the CODE. Those "
-            "specs are the loop's ruler and your edits to them are reverted.\n"
-            "- If a PRE-EXISTING spec of the repository is failing, judge it: when the "
-            "assertion pins behaviour this task deliberately changed, UPDATE the spec; "
-            "when it exposes a real defect in the new code, fix the code. Updating a "
-            "customer spec is legitimate work — it lands in the PR diff for human "
-            "review.\n"
-            "- NEVER delete, skip or empty a test to make the suite pass. Deleting "
-            "coverage is not fixing; update the assertion or fix the code.\n"
+            "- Any test in this repository is yours to edit — including the ones "
+            "written for this task. Judge each failure: when the assertion pins "
+            "behaviour this task deliberately changed, UPDATE the test; when it "
+            "exposes a real defect in the new code, fix the code. Both land in the "
+            "PR diff for human review.\n"
+            "- NEVER delete, skip or empty a test to make the suite pass, and never "
+            "weaken an assertion you cannot justify. Deleting coverage is not fixing. "
+            "Nothing reverts this for you: what you write is what the reviewer gets.\n"
             f"Exit code: {getattr(tester_result, 'returncode', '?')}\n"
             f"Output:\n{output}"
         ]
@@ -2458,18 +2457,6 @@ class WorkItemLifecycleWorkflow:
                     )
                     if noop:
                         self._noop_coder_turns += 1
-                        # wi_36acfb3d: um no-op CAUSADO por reversão de
-                        # instrumento não é "o Coder não fez nada" — é o Coder
-                        # tentando editar o teste do Tester e a reversão
-                        # (correta) desfazendo. Acumula os caminhos para armar
-                        # a pinça abaixo com o dossiê certo.
-                        reverted_now = list(
-                            getattr(coder_result, "reverted_test_paths", None) or []
-                        )
-                        if reverted_now:
-                            self._noop_instrument_reverts = sorted(
-                                set(self._noop_instrument_reverts) | set(reverted_now)
-                            )
                         # Twice in a row is not a slow convergence, it is a Coder
                         # that cannot act on what it was told. Burning the rest of
                         # the retry cap re-reading the same tree buys nothing; a
@@ -2486,36 +2473,16 @@ class WorkItemLifecycleWorkflow:
                             # dossiê do caminho via L1: a evidência armada na
                             # falha que iniciou este fix-loop. Sem pinça
                             # armada, escala como sempre.
-                            # Segunda garra (wi_36acfb3d): no-ops CAUSADOS por
-                            # reversão de instrumento. A primeira garra exige
-                            # specs-com-veredito; testes do Tester que NEM
-                            # COMPILAM são zero-veredito (porta 5 falhando em
-                            # convergir) e ficavam fora — a escalação dizia
-                            # coder_made_no_change, culpando o ator errado e
-                            # sem dossiê. O parque é o MESMO (exaustão de spec
-                            # própria, onde o Reauthor existe).
-                            instrument_pincer = (
-                                workflow.patched("instrument-revert-pincer-v1")
-                                and bool(self._noop_instrument_reverts)
-                            )
+                            # A segunda garra (no-ops causados pela reversão de
+                            # instrumento, wi_36acfb3d) SAIU em 2026-08-10: sem
+                            # revert de teste não existe mais esse no-op — o
+                            # Coder edita a spec e o turno tem diff.
                             if (
                                 workflow.patched("noop-pincer-parks-v1")
-                                and (input.last_tester_exhaustion_specs
-                                     or instrument_pincer)
+                                and input.last_tester_exhaustion_specs
                             ):
-                                if input.last_tester_exhaustion_specs:
-                                    pincer_specs = list(input.last_tester_exhaustion_specs)
-                                    pincer_detail = input.last_tester_exhaustion_detail or ""
-                                else:
-                                    pincer_specs = list(self._noop_instrument_reverts)
-                                    pincer_detail = (
-                                        "O Coder tentou editar arquivo(s) de teste "
-                                        "AUTORADOS PELO TESTER e a reversão de "
-                                        "instrumento desfez as edições — dois turnos "
-                                        "sem mudança. A falha que o Coder perseguia:\n"
-                                        + "\n".join(input.fix_context or [])[:1500]
-                                    )
-                                    self._noop_instrument_reverts = []
+                                pincer_specs = list(input.last_tester_exhaustion_specs)
+                                pincer_detail = input.last_tester_exhaustion_detail or ""
                                 resumed = await self._park_spec_conflict(
                                     pincer_specs, pincer_detail,
                                     list(input.cumulative_files_changed),

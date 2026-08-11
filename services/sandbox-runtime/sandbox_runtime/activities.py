@@ -573,7 +573,6 @@ def _build_substrate(script: list[dict[str, Any]] | None, *, stage: str = "coder
 # same logic runs in the worker (Docker) and INSIDE the runner (K8s, --op
 # post_turn) — single source of truth; the aliases preserve call sites/tests.
 _prune_disposable_artifacts = workspace_hygiene.prune_disposable_artifacts
-_revert_coder_test_edits = workspace_hygiene.revert_test_edits
 
 
 # Key the spend of a FAILED turn travels under, inside the `details` of the
@@ -848,7 +847,6 @@ async def _run_coder_turn_impl(
             ("coder_out_of_plan_files_pruned", post.pruned),
             ("coder_out_of_plan_files_kept", post.kept_out_of_plan),
             ("lockfile_churn_restored", post.restored_lockfiles),
-            ("coder_test_edits_reverted", post.reverted_tests),
         ):
             if items:
                 audit_emit(
@@ -859,7 +857,6 @@ async def _run_coder_turn_impl(
                     details={"paths": items[:20]},
                 )
         files_changed = list(post.files_changed)
-        reverted_test_paths = list(post.reverted_tests or [])
     else:
         # Layer 2 (deterministic, P1): delete NEW (untracked) files that are
         # obvious CLI JUNK (unsolicited report/log/scratch) before the commit —
@@ -901,22 +898,9 @@ async def _run_coder_turn_impl(
 
         _restore_lockfile_churn_audited(workspace_dir, inp.tenant_id, inp.work_item_id, stage="coder")
 
-        # Desde 2026-08-10 o revert protege só o INSTRUMENTO do Tester
-        # (autoria via histórico git; ver workspace_hygiene.revert_test_edits);
-        # edição de spec de cliente e arquivos do próprio Coder sobrevivem.
-        reverted_tests = _revert_coder_test_edits(
-            workspace_dir, base_sha, inp.work_item_id
-        )
-        if reverted_tests:
-            audit_emit(
-                actor="system:sandbox-runtime",
-                action="coder_test_edits_reverted",
-                tenant_id=inp.tenant_id,
-                work_item_id=inp.work_item_id,
-                details={"reverted": reverted_tests[:20],
-                         "reason": "tester-authored instrument"},
-            )
-        reverted_test_paths = list(reverted_tests)
+        # Aqui havia o revert de edição de teste do Coder. SAIU em 2026-08-10
+        # junto com o reauthor: o DSE altera qualquer teste, e a mudança entra
+        # no diff da PR, que é onde a supervisão passou a morar.
 
         # Deterministic commit/push — the substrate never has git access.
         git_session = ScopedGitSession(workspace_dir=workspace_dir, branch=branch)
@@ -960,7 +944,6 @@ async def _run_coder_turn_impl(
         sandbox_id=artifacts.sandbox_id,
         diff_summary=artifacts.diff_summary,
         files_changed=files_changed or artifacts.files_changed,
-        reverted_test_paths=reverted_test_paths,
         cost_usd=artifacts.cost_usd,
         tokens_in=artifacts.tokens_in,
         tokens_out=artifacts.tokens_out,
@@ -2567,23 +2550,24 @@ def plan_constraints_note(expected_files: list[str]) -> str:
         lines.append(
             f"- Focus your production changes on these files: {', '.join(production)}."
         )
+    # A nota dizia só o que era PROIBIDO ("suas edições em spec do Tester são
+    # revertidas"), e um ator que nunca é autorizado não exerce permissão
+    # nenhuma: o item parou três vezes num impasse que ele podia resolver. Desde
+    # 2026-08-10 não há mais posse de teste — o revert saiu junto com o reauthor
+    # — então o texto passa a conceder o que a política concede, e a única
+    # proibição que sobra é dita como o que é: uma regra sem mecanismo atrás.
     lines.append(
-        "- Authoring the task's tests is the Tester's stage, not yours: changes "
-        "you make to specs the TESTER authored are reverted before the commit. "
-        "Fixing production code that a spec exposes is your job."
+        "- Writing the task's NEW tests is the Tester's stage, not yours; your job "
+        "is the production code. But ANY test that your change breaks is yours to "
+        "deal with — including the ones written for this task: update the assertion "
+        "when it pins behaviour this task deliberately changed, or fix the code when "
+        "it exposes a real defect. That edit lands in the PR diff for human review — "
+        "legitimate work, not a violation."
     )
-    # A nota dizia só o que era proibido. Um ator que nunca é autorizado não
-    # exerce a permissão: desde a decisão de operador de 2026-08-10 o Coder PODE
-    # atualizar spec PRÉ-EXISTENTE do repositório, e a supervisão passou a ser o
-    # diff da PR — mas o texto não acompanhou, e o item parou três vezes num
-    # impasse que ele tinha permissão de resolver.
     lines.append(
-        "- A PRE-EXISTING spec of the repository (a customer spec) that your change "
-        "breaks IS yours to deal with: update the assertion when it pins behaviour "
-        "this task deliberately changed, or fix the code when it exposes a real "
-        "defect. That edit lands in the PR diff for human review — it is legitimate "
-        "work, not a violation. Never delete, skip or empty a test to make the suite "
-        "pass."
+        "- NEVER delete, skip or empty a test to make the suite pass, and never "
+        "weaken an assertion you cannot justify in the PR. Nothing reverts test "
+        "edits any more: what you write is exactly what the reviewer gets."
     )
     lines.append(
         "- Do NOT create documentation/report files (README, *_REPORT.md, "

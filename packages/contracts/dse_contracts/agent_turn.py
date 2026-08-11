@@ -143,7 +143,6 @@ class PostTurnResult(BaseModel, extra="forbid"):
     pruned: list[str] = Field(default_factory=list)
     kept_out_of_plan: list[str] = Field(default_factory=list)
     restored_lockfiles: list[str] = Field(default_factory=list)
-    reverted_tests: list[str] = Field(default_factory=list)
     error: str | None = None
     error_kind: str | None = None
 

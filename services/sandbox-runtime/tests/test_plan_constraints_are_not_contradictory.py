@@ -19,10 +19,11 @@ Duas coisas erradas na mesma frase:
    uma resposta curtíssima.
 
 2. **Mentira sobre a política.** "any test change you make is reverted" era
-   verdade até a decisão de operador de 2026-08-10: hoje o Coder PODE editar
-   spec de cliente (a edição entra no diff da PR); o que o pós-turno reverte é
-   só o INSTRUMENTO do Tester. Dizer ao ator que seu trabalho será desfeito é
-   pedir que ele não o faça.
+   verdade até 2026-08-10. Naquele dia o Coder ganhou spec de cliente; horas
+   depois, com a remoção do reauthor, ganhou TODAS — não existe mais revert de
+   teste nenhum. Dizer ao ator que seu trabalho será desfeito é pedir que ele
+   não o faça, e foi assim que o item parou três vezes num impasse que ele
+   podia resolver.
 """
 from __future__ import annotations
 
@@ -49,13 +50,22 @@ def test_the_only_these_files_list_never_contains_test_files():
 
 
 def test_the_policy_line_matches_the_policy_in_force():
-    """Desde 2026-08-10 o revert protege só o instrumento do TESTER."""
+    """Não existe mais revert de edição de teste — a nota não pode prometer um.
+
+    Este pin já afirmou duas políticas: "toda edição de teste é revertida" e,
+    na rc.76, "só a do instrumento do Tester". As duas foram verdade quando
+    escritas. Hoje o pós-turno não desfaz teste nenhum, e uma nota que ainda
+    fale em reversão manda o Coder não tentar o que ele pode fazer."""
     note = plan_constraints_note(_FILES)
-    assert "reverted" not in note.lower() or "tester" in note.lower(), (
-        "não afirmar que TODA edição de teste é revertida — hoje só a das "
-        "specs que o Tester autorou é"
+    low = note.lower()
+    assert "are reverted" not in low and "is reverted" not in low, (
+        f"a nota promete um revert que não existe mais. Nota: {note!r}"
     )
-    assert "Tester" in note, "o note continua nomeando de quem é a etapa"
+    assert "nothing reverts" in low, (
+        "o silêncio não basta: o Coder foi instruído por semanas de que suas "
+        "edições sumiam, então o texto tem que DESFAZER isso explicitamente"
+    )
+    assert "Tester" in note, "o note continua nomeando de quem é a ETAPA de autoria"
 
 
 def test_a_plan_with_no_production_file_still_produces_a_usable_note():
@@ -69,17 +79,31 @@ def test_a_plan_with_no_production_file_still_produces_a_usable_note():
 
 
 def test_the_note_grants_the_permission_the_policy_grants():
-    """A nota dizia só o que é PROIBIDO. Desde a decisão de operador de
-    2026-08-10 o Coder PODE atualizar spec de cliente — e um ator que nunca é
-    autorizado não exerce a permissão. Medido: o item parou três vezes num
-    impasse que ele tinha permissão de resolver."""
+    """A nota dizia só o que é PROIBIDO, e um ator que nunca é autorizado não
+    exerce permissão nenhuma. A permissão hoje é a mais ampla possível —
+    QUALQUER teste que a mudança quebra — e ela precisa estar escrita, com a
+    sua contrapartida (a PR vê) e com o julgamento que se espera dele."""
     note = plan_constraints_note(_FILES)
     low = note.lower()
-    assert "customer" in low or "pre-existing" in low, (
-        "a nota precisa NOMEAR a spec do cliente como editável — hoje ela só "
-        "fala do que é proibido"
+    assert "any test" in low, (
+        f"a permissão não está nomeada. Nota: {note!r}"
     )
     assert "pr diff" in low or "pull request" in low, (
         "a permissão vem com a sua contrapartida: a mudança fica visível na PR"
     )
-    assert "tester" in low, "a fronteira que sobrevive continua nomeada"
+    assert "update the assertion" in low and "fix the code" in low, (
+        "o que se pede é JULGAMENTO entre as duas saídas; oferecer só uma "
+        "delas é escolher pelo ator"
+    )
+
+
+def test_the_one_rule_without_a_mechanism_behind_it_is_stated_as_such():
+    """Apagar cobertura continua proibido — mas agora NADA impede. Com o revert
+    fora, essa linha deixou de ser um lembrete de mecanismo e passou a ser a
+    única defesa antes da revisão humana; ela tem que estar no imperativo."""
+    low = plan_constraints_note(_FILES).lower()
+    assert "never delete, skip or empty a test" in low
+    assert "weaken" in low, (
+        "apagar não é o único jeito de enfraquecer: afrouxar a asserção tem "
+        "que ser nomeado, porque é o que sobrou de barato para o ator fazer"
+    )

@@ -149,71 +149,13 @@ def test_unavailable_git_deletes_nothing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The Coder does NOT own the tests (found on the real run against issue #1)
+# O bloco de revert que vivia aqui SAIU em 2026-08-10 com o reauthor.
+#
+# Os três testes já haviam virado `assert reverted == []` no flip da rc.76 (a
+# edição de teste de cliente passou a sobreviver) e perderam o objeto de vez
+# quando `revert_test_edits` deixou de existir. Os invariantes que eles
+# guardavam continuam pinados, agora no nível do pós-turno inteiro, em
+# `test_no_test_edit_is_ever_reverted.py`: edição de teste sobrevive, arquivo
+# novo do Coder fica, e o prune segue isentando caminho de teste — este último
+# é o que impede o prune de virar o revert com outro nome, e está logo acima.
 # ---------------------------------------------------------------------------
-from sandbox_runtime.activities import _revert_coder_test_edits
-
-
-@pytest.fixture()
-def repo_with_test(tmp_path):
-    ws = str(tmp_path / "ws2")
-    os.makedirs(ws)
-    _git(ws, "init", "-q", "-b", "main")
-    _git(ws, "config", "user.email", "t@dse.local")
-    _git(ws, "config", "user.name", "t")
-    os.makedirs(os.path.join(ws, "test"))
-    # EXISTING test with a shared seed (like the wallet's test/api.test.js)
-    with open(os.path.join(ws, "test", "api.test.js"), "w") as fh:
-        fh.write("// seed: Market 2026-07-10\nassert(first === 'Market');\n")
-    with open(os.path.join(ws, "src.js"), "w") as fh:
-        fh.write("// base\n")
-    _git(ws, "add", "-A")
-    _git(ws, "commit", "-q", "-m", "base")
-    return ws
-
-
-def test_a_coder_edit_to_a_customer_test_now_survives(repo_with_test):
-    """FLIP da política (decisão de operador, 2026-08-10). Este teste nasceu
-    pinando o revert total do issue #1 (o Coder mudou o seed compartilhado de
-    test/api.test.js e quebrou um teste irmão). Hoje a edição de teste de
-    CLIENTE sobrevive e entra no diff da PR; a proteção contra o cenário do
-    issue #1 mudou de lugar — o teste irmão quebrado reprova o L1 no mesmo
-    turno (o Coder vê e conserta), e o diff da PR mostra a edição ao revisor.
-    O revert continua existindo SÓ para o instrumento do Tester
-    (test_client_spec_edits_survive.py cobre a fronteira)."""
-    ws = repo_with_test
-    start = _git(ws, "rev-parse", "HEAD").strip()
-    with open(os.path.join(ws, "test", "api.test.js"), "w") as fh:
-        fh.write("// seed CHANGED: Market 2026-06-10\nassert(first === 'Market');\n")
-    with open(os.path.join(ws, "src.js"), "w") as fh:
-        fh.write("// fix real\n")
-
-    reverted = _revert_coder_test_edits(ws, start)
-
-    assert reverted == []
-    assert "2026-06-10" in open(os.path.join(ws, "test", "api.test.js")).read()
-    assert "fix real" in open(os.path.join(ws, "src.js")).read()
-
-
-def test_a_new_customer_convention_test_by_the_coder_is_kept(repo_with_test):
-    """FLIP (2026-08-10): teste novo do Coder em convenção de cliente é
-    engenharia legítima e visível no diff. Forja do marcador -dse continua
-    removida (test_client_spec_edits_survive.py)."""
-    ws = repo_with_test
-    start = _git(ws, "rev-parse", "HEAD").strip()
-    _write(ws, "test/coder-invented.test.js", "// a test the Coder invented\n")
-    reverted = _revert_coder_test_edits(ws, start)
-    assert reverted == []
-    assert os.path.exists(os.path.join(ws, "test", "coder-invented.test.js"))
-
-
-def test_revert_does_not_touch_source(repo_with_test):
-    ws = repo_with_test
-    start = _git(ws, "rev-parse", "HEAD").strip()
-    _write(ws, "src/new.js", "export const x = 1;\n")
-    with open(os.path.join(ws, "src.js"), "w") as fh:
-        fh.write("// changed\n")
-    reverted = _revert_coder_test_edits(ws, start)
-    assert reverted == []  # no test was touched
-    assert os.path.exists(os.path.join(ws, "src", "new.js"))
-    assert "changed" in open(os.path.join(ws, "src.js")).read()

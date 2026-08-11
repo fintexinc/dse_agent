@@ -207,7 +207,6 @@ class FakeControlPlane:
     coder_files_changed_by_turn: list[list[str]] | None = None
     #: Por turno: caminhos de teste que o post-turn REVERTEU (instrumento do
     #: Tester). O último item repete quando a sequência esgota, como o de cima.
-    coder_reverted_test_paths_by_turn: list[list[str]] | None = None
     # "auto" = deterministic paths-filter (mirror of WS-E's FR-20);
     # "created"/"degraded" force the status; "raise" fails the whole Activity.
     preview_mode: str = "auto"
@@ -332,12 +331,6 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             return state.coder_files_changed
         return seq[min(state.coder_turn_calls - 1, len(seq) - 1)]
 
-    def _reverted_for_turn(state) -> list[str]:
-        seq = state.coder_reverted_test_paths_by_turn
-        if not seq:
-            return []
-        return seq[min(state.coder_turn_calls - 1, len(seq) - 1)]
-
     async def run_coder_turn(payload: dict) -> CoderTurnResult:
         state.coder_turn_calls += 1
         state.coder_instructions.append(str(payload.get("instruction") or ""))
@@ -351,7 +344,6 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             sandbox_id=payload["sandbox_id"],
             diff_summary="fake diff",
             files_changed=list(_files_for_turn(state)),
-            reverted_test_paths=list(_reverted_for_turn(state)),
             cost_usd=state.coder_cost_usd,
             tokens_in=10,
             tokens_out=10,

@@ -3,8 +3,9 @@
 Same deterministic sequence the worker runs on the Docker runtime
 (`_run_coder_turn_impl`), off the same source of truth (`workspace_hygiene` and
 `scoped_git`, vendored into the image): prune disposables → restore lockfile
-churn → revert test edits → scoped commit/push (fixed refspec, pre-receive hook
-on the remote). Returns the lists for the worker to audit (P8 stays in the
+churn → scoped commit/push (fixed refspec, pre-receive hook on the remote).
+O revert de edição de teste SAIU em 2026-08-10: o DSE altera qualquer teste e
+a supervisão é o diff da PR. Returns the lists for the worker to audit (P8 stays in the
 worker; there is no Postgres nor audit credential here).
 """
 from __future__ import annotations
@@ -16,14 +17,12 @@ try:  # dev/test: worker packages in the venv
     from sandbox_runtime.workspace_hygiene import (
         prune_disposable_artifacts,
         restore_lockfile_churn,
-        revert_test_edits,
     )
 except ImportError:  # image: copies vendored at build time (Dockerfile)
     from ._scoped_git import ScopedGitSession  # type: ignore[no-redef]
     from ._workspace_hygiene import (  # type: ignore[no-redef]
         prune_disposable_artifacts,
         restore_lockfile_churn,
-        revert_test_edits,
     )
 
 from .gitops import _ensure_safe_directory
@@ -48,9 +47,6 @@ def run_post_turn(req: PostTurnRequest) -> PostTurnResult:
         session.ensure_identity()
 
         restored = restore_lockfile_churn(req.workspace_dir)
-        reverted = revert_test_edits(
-            req.workspace_dir, req.turn_start_sha, req.work_item_id
-        )
         if session.has_changes():
             session.commit(req.commit_message)
         session.push()
@@ -66,7 +62,6 @@ def run_post_turn(req: PostTurnRequest) -> PostTurnResult:
             pruned=pruned,
             kept_out_of_plan=kept,
             restored_lockfiles=restored,
-            reverted_tests=reverted,
         )
     except Exception as exc:  # noqa: BLE001 — P6 (includes GitScopeViolation)
         return PostTurnResult(
