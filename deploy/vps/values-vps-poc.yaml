@@ -99,8 +99,11 @@ egressProxy:
   replicas: 1                  # POC: 1 replica (the >=2 gate is strict-profile only)
   resources:
     # Measured 1m/15Mi — it only shuttles bytes; the allowlist check is trivial.
+    # Teto subiu em 2026-08-11: é um ponto de passagem compartilhado — todo
+    # byte que sai de QUALQUER sandbox atravessa aqui (npm install, mvn,
+    # clone). Com sandboxes em paralelo, 500m estrangulava todos de uma vez.
     requests: { cpu: "50m", memory: "96Mi" }
-    limits: { cpu: "500m", memory: "384Mi" }
+    limits: { cpu: "2", memory: "1Gi" }
   # Allowlist: api.anthropic.com (the gateway calls Anthropic through HTTPS_PROXY)
   # + github (clone/PR). Without anthropic the turn dies on its first model call.
   allowlist:
@@ -125,8 +128,12 @@ modelGateway:
     # cores. The memory REQUEST goes UP — it was asking for 512Mi while holding
     # 1Gi, so the scheduler was placing it on a promise it always broke, which
     # is exactly how the earlier OOMKill happened.
+    # Teto subiu em 2026-08-11 (nó de 8 vCPU / 31 GiB, dedicado ao DSE).
+    # TODA chamada de modelo atravessa este processo — Planner, Coder, Tester,
+    # e o roteador de repositório. Com o `fairness` autorizando 8 atividades
+    # caras em paralelo, 750m era um funil no ponto por onde tudo passa.
     requests: { cpu: "100m", memory: "1280Mi" }
-    limits: { cpu: "750m", memory: "1536Mi" }
+    limits: { cpu: "3", memory: "4Gi" }
 adapters:
   # Track B (webhook): adapter-github ON — it receives the GitHub webhook
   # (issues.labeled with the `dse` label), verifies the HMAC
@@ -313,19 +320,22 @@ runtime:
   # on the testbed with the node at load 2.26 of 4 — there was nothing to
   # protect. The limit is a ceiling, not a reservation (`requests` stays at
   # 250m), so a sandbox only takes what is idle.
-  # VPS de 8 vCPU desde 2026-08-10 (era 2). O limite é teto, não reserva.
-  sandboxCpuLimit: "4"
+  # VPS de 8 vCPU, dedicada ao DSE (2026-08-11). O limite é teto, não reserva:
+  # um item sozinho usa os 6; dois em paralelo dividem pelo CFS e ficam com ~4
+  # cada, que é o que tinham antes. Só o pico do item solitário mudou.
+  sandboxCpuLimit: "6"
   # 1536Mi is under what an Angular `ng build --configuration production`
   # needs, and V8 sizes its heap from the NODE (16 GB here), not the cgroup —
   # so it happily allocates past the limit and the kernel kills it. The node
   # has ~10 GB free with everything running, so this costs nothing real and
   # removes the failure mode that already killed this repository's checkpoint
   # commits once, when husky ran the same linter on them.
-  # 8Gi com o nó em 31 GB (era 3Gi com 16). O teto do Pod deixou de ser a
-  # única defesa: desde a rc.72 o NODE_OPTIONS do sandbox deriva o heap do V8
-  # DESTE limite — antes o V8 mirava a memória do NÓ e o kernel matava o lint
-  # (exit 134), falha que o upgrade da VPS PIOROU em vez de resolver.
-  sandboxMemLimit: "8Gi"
+  # 12Gi com o nó em 31 GB (era 8Gi, e 3Gi quando o nó tinha 16). Este número
+  # tem efeito DIRETO no build: desde a rc.72 o NODE_OPTIONS do sandbox deriva
+  # o heap do V8 DESTE limite — antes o V8 mirava a memória do NÓ e o kernel
+  # matava o lint (exit 134), falha que o upgrade da VPS PIOROU em vez de
+  # resolver. Dois sandboxes a 12Gi cabem nos 31 do nó com folga.
+  sandboxMemLimit: "12Gi"
 
 networkPolicy:
   kubeApiServer:
@@ -362,8 +372,15 @@ postgres:
   enabled: true
   persistence: { enabled: true, size: 10Gi }
   resources:
+    # Teto subiu em 2026-08-11. Toda transição de status, todo evento de
+    # auditoria (28 mil linhas) e todo ledger de custo passam por aqui, e o
+    # projector do console lê por cima disso.
+    #
+    # NOTA: `persistence.size` continua 10Gi e NÃO foi mexido — o disco do nó
+    # não cresceu no upgrade (29G, ~8G livres), e é ele que os sandboxes e as
+    # imagens consomem. Memória é o que sobra; disco não.
     requests: { cpu: "100m", memory: "256Mi" }   # measured 30m / 87Mi
-    limits: { cpu: "750m", memory: "1Gi" }
+    limits: { cpu: "2", memory: "3Gi" }
 redis:
   resources:
     requests: { cpu: "50m", memory: "64Mi" }     # measured 18m / 15Mi
@@ -378,8 +395,11 @@ temporal:
   ui:
     enabled: false
   resources:
+    # Teto subiu em 2026-08-11. Ele guarda o estado de TODO workflow e serve
+    # cada poll de task do worker; com mais itens em paralelo é ele que passa a
+    # ser consultado com mais frequência.
     requests: { cpu: "100m", memory: "320Mi" }   # measured 21m / 130Mi
-    limits: { cpu: "1", memory: "1280Mi" }
+    limits: { cpu: "2", memory: "3Gi" }
 
 # Teams/model-server off (topology A, POC)
 modelServer:
