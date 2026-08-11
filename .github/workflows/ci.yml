@@ -34,8 +34,22 @@ jobs:
       - name: Verify test manifest is complete
         run: python scripts/test_matrix.py --list
 
+      # `pip-tools` chama uma API INTERNA do pip (`make_requirement_preparer`),
+      # e o pip 26.2 acrescentou a ela um argumento obrigatório
+      # (`allow_editables`). O resultado é que o `pip-compile` estoura com
+      # TypeError sem que nada no repositório tenha mudado — o CI ficou vermelho
+      # em 2026-08-11 num commit que só mexia em `services/validation`.
+      #
+      # Bisect medido: 24.3.1, 25.0–25.3, 26.0 e 26.1 passam; 26.2 quebra.
+      # `pip-tools` 7.6.0 é a última publicada e ainda não corrige.
+      #
+      # O pino é no PIP e só aqui, porque só este passo roda `pip-compile` —
+      # instalar pacote com pip 26.2 funciona normalmente nos outros jobs.
+      # Sai quando existir `pip-tools` compatível; o teste é reexecutar este
+      # passo sem a linha.
       - name: Verify dependency lock is current
         run: |
+          python -m pip install --quiet "pip<26.2"
           pip-compile --quiet --resolver=backtracking --strip-extras \
             --output-file=requirements-ci.lock requirements-ci.in
           git diff --exit-code -- requirements-ci.lock
