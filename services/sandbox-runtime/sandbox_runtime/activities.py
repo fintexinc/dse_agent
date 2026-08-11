@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 from temporalio import activity
 
 from dse_audit import emit as audit_emit
-from dse_contracts.paths import DSE_COMMIT_SUBJECT_PREFIXES, is_test_path
+from dse_contracts.paths import is_test_path
 from dse_contracts import (
     ACTIVITY_CHECKPOINT_SANDBOX,
     ACTIVITY_PROVISION_SANDBOX,
@@ -1989,9 +1989,6 @@ _SKILLS_NOTE_CHARS = 2_000
 #: Referência de spec das skills do repo: uma spec completa cabe folgada; o
 #: cap protege o prompt de um arquivo de referência acidental gigante.
 _REFERENCE_SPEC_CHARS = 4_000
-#: Fonte do sujeito na ordem de reauthor (par ts+html por spec): componentes
-#: de UI cabem folgados; o cap protege o prompt de um sujeito gigante.
-_SUBJECT_SOURCE_CHARS = 3_000
 
 
 def _run_pod_command(argv: list[str], *, timeout: int, input_text: str | None = None):
@@ -2273,17 +2270,10 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         '[ -f "$f" ] && { echo "// $f"; cat "$f"; break; }; done',
         _REFERENCE_SPEC_CHARS,
     )
-    # LIMITAÇÃO CONHECIDA, por construção: `workspace_dir` fica None aqui — no
-    # K8s o repositório vive só no Pod, e o worker não tem onde rodar `git`.
-    # Logo `_is_dse_authored` degrada para o MARCADOR DE NOME neste caminho, e
-    # a decisão de renomear para `-dse` é mais grosseira do que no Docker.
-    #
-    # Não é um vão de proteção: a guarda que impede o Tester de sobrescrever
-    # arquivo do cliente sob ordem roda DENTRO do Pod
-    # (`_pod_reauthor_partition`, que consulta o git de lá e recusa história
-    # que não seja da plataforma). Consertar isto de verdade significa
-    # perguntar ao Pod também aqui, no caminho de autoria — item próprio, não
-    # um campo esquecido.
+    # `workspace_dir` fica None aqui — no K8s o repositório vive só no Pod, e o
+    # worker não tem onde rodar `git`. Isso era uma limitação enquanto havia
+    # oráculo de autoria a consultar; desde 2026-08-10 não há posse de teste a
+    # decidir, e o campo não tem mais consequência.
     return _TesterContext(
         package_json=package_json,
         example_test=example or "(no existing tests — use the ecosystem's default runner)",
@@ -2416,31 +2406,22 @@ def _model_authored_test_script(
         return None, cost_usd
 
     script: list[dict[str, Any]] = []
-    # A ordem humana de reescrita autoriza o caminho EXATO (por caminho, não
-    # como interruptor do turno) — ver _write_paths_for_authoring.
-    ordered_now = list(getattr(inp, "reauthor_specs", None) or [])
+    # O arquivo vai ONDE O TESTER PEDIU. O guard de renomeação — que desviava
+    # escrita sobre teste existente do cliente para uma cópia `-dse` — SAIU em
+    # 2026-08-10: não há mais posse de teste no DSE, e a supervisão de toda
+    # edição é o diff da PR.
+    #
+    # O que ele custava, medido no testbed: contra a tentativa anterior do
+    # PRÓPRIO Tester ele fazia o oposto do desejado — o laço reautorava a mesma
+    # spec, o caminho estava ocupado, o arquivo caía como `...-dse-dse.spec.ts`
+    # ao lado do original quebrado, e a rodada seguinte somava um terceiro.
+    # Quatro arquivos acumulados, a suite piorando a cada rodada, o item
+    # queimando o orçamento inteiro para ficar pior.
     for f in files[:3]:
         path, content = str(f.get("path") or ""), str(f.get("content") or "")
         if not (path and content and is_test_path(path)):
             logger.warning("test path refused (outside the allowed test paths): %r", path)
             continue
-        # A file THIS work item already authored is overwritten, not renamed.
-        #
-        # The rename exists so the Tester never destroys a test the CUSTOMER
-        # wrote. Against its own previous attempt it does the opposite of what
-        # is wanted: the fix loop re-authors the same test, the path is taken,
-        # so it lands as `...-dse-dse.spec.ts` beside the broken original —
-        # and the next round adds a third. Observed on the testbed: four
-        # accumulated files, the suite failing harder each round, and the item
-        # burning its whole retry budget getting worse.
-        #
-        # `_dse` in the stem is the platform's own marker (see below), so a
-        # path carrying it is ours by construction and safe to replace. E um
-        # caminho ORDENADO por humano é escrito onde foi ordenado — a decisão
-        # de renomear é toda de `_write_paths_for_authoring`.
-        path = _write_paths_for_authoring(
-            [path], ctx, reauthor_ordered=ordered_now
-        )[0]
         script.append({"tool": "write_file", "path": path, "content": content})
     if not script:
         return None, cost_usd
@@ -2451,53 +2432,6 @@ def _model_authored_test_script(
 #: Commit subjects the platform writes for its own turns (scoped_git.commit).
 # Fonte única em dse_contracts.paths (a regra que vive em cada call site
 # diverge — ver hooksPath); o alias preserva os usos locais.
-_DSE_COMMIT_PREFIXES = DSE_COMMIT_SUBJECT_PREFIXES
-
-
-def _is_dse_authored(path: str, workspace_dir: str | None = None) -> bool:
-    """True when this path is one the DSE itself created.
-
-    ASK GIT FIRST. The naming marker below is a consequence of a rename, not a
-    cause: the FIRST spec the Tester writes has no marker, because nothing
-    collided with it yet. So on the next round its own file failed this test,
-    got renamed, and a second broken copy landed beside the first — measured on
-    the Angular testbed, where four failing specs accumulated over two rounds:
-
-        report-status-badge.component.spec.ts
-        report-status-badge.component-dse.spec.ts
-        dashboard-list.component.integration.spec.ts
-        dashboard-list.component.integration-dse.spec.ts
-
-    Each round the Tester was forbidden from repairing what it had written and
-    wrote another copy of the same mistake instead. The whole loop could not
-    converge, whatever the guidance.
-
-    Git knows the answer exactly: every commit the platform makes is subject-
-    prefixed by `scoped_git.commit`, so a file whose history contains only DSE
-    subjects is ours to rewrite. A customer file — even one touched by a DSE
-    commit — has a human commit somewhere in its history and stays protected.
-
-    The marker check remains as the fallback for the paths with no workspace in
-    hand (unit tests, the Docker driver's dry runs)."""
-    if workspace_dir:
-        import subprocess
-
-        try:
-            out = subprocess.run(
-                ["git", "log", "--format=%s", "--", path],
-                cwd=workspace_dir, capture_output=True, text=True, timeout=15,
-            )
-            subjects = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
-            if subjects:
-                return all(s.startswith(_DSE_COMMIT_PREFIXES) for s in subjects)
-            # No history at all: the file is new in the working tree, so it is
-            # this turn's own output rather than anything the customer owns.
-            return True
-        except Exception:  # noqa: BLE001 — git unavailable: fall back to the marker
-            pass
-    name = path.rsplit("/", 1)[-1]
-    stem = name.split(".", 1)[0]
-    return stem.endswith("-dse") or stem.endswith("_dse") or "-dse" in name or "_dse" in name
 
 
 def _zero_verdict_specs(output: str, owned: list[str]) -> list[str]:
@@ -2574,65 +2508,6 @@ def plan_constraints_note(expected_files: list[str]) -> str:
         "CHANGELOG…) — the change and the tests speak for themselves."
     )
     return "\n".join(lines)
-
-
-def _write_paths_for_authoring(
-    paths: list[str], ctx: "_TesterContext", *, reauthor_ordered: list[str],
-) -> list[str]:
-    """Onde cada arquivo de autoria REALMENTE vai ser escrito.
-
-    O guard de renomeação existe para o Tester nunca destruir teste do CLIENTE
-    (issue #1) e segue valendo. A exceção é por CAMINHO: quando o humano
-    ORDENOU a reescrita daquele arquivo (veredito `reauthor` no parque), a
-    ordem vale mais que a heurística de autoria — `ordem >= autoria`, a
-    invariante que o repositório já declara, mais a decisão de operador de
-    2026-08-10 que tornou spec de cliente editável.
-
-    Sem esta exceção, cada clique de Reauthor criava uma CÓPIA `-dse` e
-    deixava o arquivo quebrado no lugar: decisão humana sem efeito, medida
-    duas vezes seguidas no wi_8b083140."""
-    ordered = set(reauthor_ordered or [])
-    out: list[str] = []
-    for path in paths:
-        if (
-            path not in ordered
-            and path in ctx.existing_tests
-            and not _is_dse_authored(path, ctx.workspace_dir)
-        ):
-            renamed = _dedupe_test_path(path, ctx.existing_tests, ctx.workspace_dir)
-            logger.warning("test path ALREADY EXISTS — renamed %r → %r", path, renamed)
-            out.append(renamed)
-        else:
-            out.append(path)
-    return out
-
-
-def _dedupe_test_path(path: str, existing: set[str], workspace_dir: str | None = None) -> str:
-    """A new name in the same directory that still matches is_test_path:
-    test/api.test.js → test/api-dse.test.js; tests/test_x.py → tests/test_x_dse.py."""
-    base, name = os.path.split(path)
-    for pattern, repl in ((".test.", "-dse.test."), (".spec.", "-dse.spec.")):
-        if pattern in name:
-            candidate = name.replace(pattern, repl, 1)
-            break
-    else:
-        stem, ext = os.path.splitext(name)
-        candidate = f"{stem}_dse{ext}"
-    new_path = os.path.join(base, candidate) if base else candidate
-    n = 2
-    # `workspace_dir` is None on the K8s path, where there is no local copy of
-    # the repository — and nothing is lost: `existing` is built from a `find`
-    # over the whole tree, so any file already sitting at a path that matches
-    # `is_test_path` is already in it. The disk check only ever mattered when
-    # `existing` came from a partial listing.
-    while new_path in existing or (
-        workspace_dir is not None and os.path.exists(os.path.join(workspace_dir, new_path))
-    ):
-        new_path = new_path.replace("-dse.", f"-dse{n}.").replace("_dse.", f"_dse{n}.")
-        n += 1
-        if n > 5:
-            break
-    return new_path
 
 
 _restore_lockfile_churn = workspace_hygiene.restore_lockfile_churn
@@ -3070,121 +2945,6 @@ def _timed_out_process(argv: list[str], exc: Any, limit: int) -> Any:
     )
 
 
-def _pod_reauthor_partition(pod_sh, ordered: list[str]) -> tuple[list[str], list[str]]:
-    """Posse no git DO POD para uma ordem humana de re-autoria (beco 1,
-    veredito `reauthor`): um arquivo só é reescrevível se TODA a história dele
-    tem sujeito DSE. Mais estrito que a porta 5 em um ponto: história VAZIA
-    recusa — um arquivo ordenado atravessou um parque, logo foi commitado por
-    `tester(...)`; sem história, não é o arquivo que o humano julgou. Nenhuma
-    ordem atravessa esta guarda: R2 vale contra ordem também."""
-    import shlex as _shlex
-    owned: list[str] = []
-    refused: list[str] = []
-    for p in ordered:
-        subjects = [
-            s.strip() for s in pod_sh(
-                f"cd /workspace && git log --format=%s -- {_shlex.quote(p)}"
-            ).stdout.splitlines() if s.strip()
-        ]
-        if subjects and all(s.startswith(_DSE_COMMIT_PREFIXES) for s in subjects):
-            owned.append(p)
-        else:
-            refused.append(p)
-    return owned, refused
-
-
-def _subject_candidates_for_spec(spec_path: str) -> list[str]:
-    """Espelho determinístico do mapeamento da porta 1, do lado da ordem: a
-    spec aponta seu sujeito por convenção de nome — tira o marcador `-dse` e o
-    sufixo de teste — e o sujeito Angular vem em par (.ts + .html)."""
-    base = spec_path.replace("-dse.spec.", ".spec.").replace("-dse.test.", ".test.")
-    for suf in (".spec.ts", ".spec.js", ".test.ts", ".test.js"):
-        if base.endswith(suf):
-            stem = base[: -len(suf)]
-            return [stem + ".ts", stem + ".html"]
-    return []
-
-
-def _reauthor_order_feedback(
-    owned_ordered: list[str], reauthor_context: str, read_source
-) -> str:
-    """O prompt da ORDEM: instrução humana + evidência (reauthor_context, com
-    o comment do veredito na frente) + a FONTE do sujeito — a peça que o turno
-    de reauthor perdia: o diff do contexto é `git show HEAD`, que na ordem é o
-    commit anterior do PRÓPRIO Tester, e o modelo reescrevia a spec de um
-    componente que não podia ver (wi_53c820f1: signal input clobrado e
-    data-test inventado). `read_source` é o leitor bounded (Pod ou fs)."""
-    parts = [
-        "A human reviewed the repeated failure of your OWN spec file(s) "
-        "and ORDERED them re-authored: the failing assertions are wrong, "
-        "the production code is right. Rewrite EXACTLY these files, at "
-        "these exact paths, asserting the behaviour the production code "
-        f"actually has: {', '.join(owned_ordered)}"
-    ]
-    sources: list[str] = []
-    for spec_path in owned_ordered:
-        for sub in _subject_candidates_for_spec(spec_path):
-            body = (read_source(sub) or "").strip()
-            if body:
-                sources.append(f"// {sub}\n{body}")
-    if sources:
-        parts.append(
-            "## Source under test (READ-ONLY — the spec must match THIS: "
-            "signal inputs via fixture.componentRef.setInput, real data-test "
-            "values, rendered labels)\n" + "\n\n".join(sources)
-        )
-    parts.append((reauthor_context or "")[-1500:])
-    return "\n\n".join(parts)
-
-
-def _reauthor_missing(owned_ordered: list[str], reauthored_files: list[str]) -> list[str]:
-    """O delta da ordem: o que foi ordenado COM posse e não foi reescrito.
-    Miss total é caso particular (wi_6f00bf0a); o parcial foi medido no
-    wi_53c820f1 — ordenadas 2 specs, reescrita 1, silêncio sobre a que faltou."""
-    delivered = set(reauthored_files or [])
-    return [p for p in (owned_ordered or []) if p not in delivered]
-
-
-def _reauthor_script_writes(
-    order_script: list[dict[str, Any]] | None, owned_ordered: list[str]
-) -> tuple[list[tuple[str, str]], list[str]]:
-    """Writes do script aceitos pelo filtro determinístico da ordem de
-    re-autoria, com os prefixos do modelo normalizados: './x' e '/workspace/x'
-    SÃO o caminho exato x — foi por um prefixo assim que a primeira ordem viva
-    executou no vazio (wi_6f00bf0a: spec intacta, ordem consumida, zero
-    evidência). Devolve também os caminhos VISTOS, crus: quando nada
-    sobrevive, eles são a matéria do `tester_reauthor_missed`."""
-    def _stem_key(p: str) -> str:
-        # A deriva medida (wi_53c820f1): o modelo insere/remove o marcador
-        # `-dse` da casa antes do sufixo de teste. Stem-equivalência é SÓ isso
-        # — qualquer outra diferença continua caminho novo, recusado.
-        return p.replace("-dse.spec.", ".spec.").replace("-dse.test.", ".test.")
-
-    accepted: list[tuple[str, str]] = []
-    seen: list[str] = []
-    owned = set(owned_ordered or [])
-    by_key = {_stem_key(o): o for o in owned}
-    for s in (order_script or []):
-        if s.get("tool") != "write_file":
-            continue
-        raw = str(s.get("path") or "")
-        if not raw:
-            continue
-        seen.append(raw)
-        path = raw
-        if path.startswith("/workspace/"):
-            path = path[len("/workspace/"):]
-        if path.startswith("./"):
-            path = path[2:]
-        content = str(s.get("content") or "")
-        target = path if path in owned else by_key.get(_stem_key(path))
-        if target and content:
-            # A escrita aterrissa SEMPRE no caminho ordenado — a variante
-            # derivada nunca vira arquivo (o in-place da porta 5 é absoluto).
-            accepted.append((target, content))
-    return accepted, seen
-
-
 def _tester_pod_sync(
     inp: "RunTesterTurnInput",
     sandbox_id: str,
@@ -3398,95 +3158,13 @@ def _tester_pod_sync(
         timeout=clocks.pod_exec,
     )
 
-    # ---- Reauthor por ordem humana (beco 1, veredito `reauthor`) ----------
-    # O parque de exaustão entregou o dossiê; o HUMANO julgou que a asserção
-    # está errada e o código está certo — o julgamento nunca é daqui (a
-    # indecidibilidade das portas 2/5). Aqui só se executa a ordem, com as
-    # guardas da porta 5: in-place nos caminhos EXATOS, posse re-confirmada no
-    # git do Pod, filtro determinístico descartando qualquer caminho novo.
-    # Roda ANTES do typecheck/suíte: a régua e o veredito valem para o estado
-    # já reescrito — rodar a spec velha primeiro seria pagar minutos para
-    # reouvir o que o humano acabou de julgar.
-    reauthored_files: list[str] = []
-    reauthor_ordered = [p for p in (inp.reauthor_specs or []) if p in test_files]
-    if reauthor_ordered:
-        owned_ordered, refused_ordered = _pod_reauthor_partition(_pod_sh, reauthor_ordered)
-        if refused_ordered:
-            audit_emit(
-                actor="system:sandbox-runtime",
-                action="tester_reauthor_refused",
-                tenant_id=inp.tenant_id,
-                work_item_id=inp.work_item_id,
-                details={"files": refused_ordered,
-                         "reason": "not_dse_authored_in_pod_git"},
-            )
-        if owned_ordered:
-            order_feedback = _reauthor_order_feedback(
-                owned_ordered,
-                inp.reauthor_context or "",
-                lambda p: _pod_sh(
-                    f"cd /workspace && cat -- {_shlex.quote(p)} 2>/dev/null | "
-                    f"head -c {_SUBJECT_SOURCE_CHARS}"
-                ).stdout,
-            )
-            try:
-                order_ctx = _pod_tester_context(_pod_sh)
-            except _TesterContextUnavailable as exc:
-                order_ctx = None
-                logger.warning(
-                    "reauthor: contexto indisponível para executar a ordem: %.200s",
-                    str(exc)[:200],
-                )
-            script_paths_seen: list[str] = []
-            if order_ctx is not None:
-                order_script, order_cost = _model_authored_test_script(
-                    inp, order_ctx, headers, virtual_key, error_feedback=order_feedback
-                )
-                authoring_cost_usd += order_cost
-                accepted_writes, script_paths_seen = _reauthor_script_writes(
-                    order_script, owned_ordered
-                )
-                for path, content in accepted_writes:
-                    w = _pod_sh(
-                        f'cd /workspace && cat > {_shlex.quote(path)}',
-                        input_text=content,
-                    )
-                    if w.returncode == 0:
-                        reauthored_files.append(path)
-                    else:
-                        logger.warning(
-                            "reauthor: escrita falhou em %s: %.200s",
-                            path, (w.stderr or "")[:200],
-                        )
-                if reauthored_files:
-                    audit_emit(
-                        actor="system:sandbox-runtime",
-                        action="tester_spec_reauthored",
-                        tenant_id=inp.tenant_id,
-                        work_item_id=inp.work_item_id,
-                        # `script_write_paths` ao lado de `files` torna o
-                        # mapeamento da deriva visível: caminho visto ≠ caminho
-                        # escrito é a evidência do stem-remap.
-                        details={"files": reauthored_files, "reason": "human_order",
-                                 "script_write_paths": script_paths_seen[:10],
-                                 "cost_usd": order_cost},
-                    )
-            # O miss NUNCA é mudo — nem o PARCIAL (wi_53c820f1: ordenadas 2,
-            # reescrita 1, silêncio sobre a que faltou). O evento carrega o
-            # delta ordered − reauthored e o que o script trouxe.
-            missing = _reauthor_missing(owned_ordered, reauthored_files)
-            if missing:
-                audit_emit(
-                    actor="system:sandbox-runtime",
-                    action="tester_reauthor_missed",
-                    tenant_id=inp.tenant_id,
-                    work_item_id=inp.work_item_id,
-                    details={"ordered": owned_ordered,
-                             "missing": missing,
-                             "script_write_paths": script_paths_seen[:10],
-                             "context_available": order_ctx is not None},
-                )
-
+    # O bloco de execução da ORDEM DE REESCRITA vivia aqui e SAIU em
+    # 2026-08-10, com o reauthor inteiro. Ele existia porque o Coder não
+    # podia consertar a spec do Tester: um humano (ou, na rc.76, o próprio
+    # sistema) julgava que a asserção estava errada e mandava o TESTER
+    # reescrevê-la. Hoje o Coder edita qualquer teste e o desvio não tem
+    # razão de ser — a ordem era ceremônia para contornar uma proteção que
+    # não existe mais.
     # ---- A régua do REPO, aplicada dentro do turno ------------------------
     # As specs são transpiladas pelo jest com a config DELAS
     # (`tsconfig.spec.json`: strict:false), então um erro de tipo no que o
@@ -3529,24 +3207,19 @@ def _tester_pod_sync(
     # `build` para sempre, o Coder não pode tocá-lo (revert determinístico) e
     # cada re-run custa uma rodada inteira (medido: wi_5620d2c1 @MockBean,
     # wi_8edaef39 @ngx-translate herdado — ambos mortos no teto). Só nesse
-    # caso o Tester re-autora: IN-PLACE, POR ARQUIVO, posse confirmada no git
-    # DO POD, no máximo uma vez por turno. Asserção falhando nunca entra aqui —
+    # caso o Tester re-autora: IN-PLACE, POR ARQUIVO, no máximo uma vez por
+    # turno. Asserção falhando nunca entra aqui —
     # é veredito, e veredito é do L1/humano (deferral inalterado).
     repaired_files: list[str] = []
     if reused and run.returncode != 0:
         _suite_out = (run.stdout or "") + (run.stderr or "")
-        broken = _zero_verdict_specs(_suite_out, test_files)
-        # Posse perguntada ao git DO POD (espelho in-pod do _is_dse_authored):
-        # qualquer sujeito humano na história e o arquivo é do cliente.
-        owned_broken: list[str] = []
-        for p in broken:
-            subjects = [
-                s.strip() for s in _pod_sh(
-                    f"cd /workspace && git log --format=%s -- {_shlex.quote(p)}"
-                ).stdout.splitlines() if s.strip()
-            ]
-            if not subjects or all(s.startswith(_DSE_COMMIT_PREFIXES) for s in subjects):
-                owned_broken.append(p)
+        # A checagem de posse por git SAIU em 2026-08-10 com o oráculo de
+        # autoria. Ela perguntava "algum sujeito humano na história?" como
+        # PROXY para "este arquivo é meu" — e o escopo já era a resposta
+        # direta: `test_files` é a lista de alvos DESTE turno do Tester. Além
+        # de redundante, o proxy errava com clone raso (`--depth 50`), em que
+        # o histórico humano fica fora da janela.
+        owned_broken = _zero_verdict_specs(_suite_out, test_files)
         if owned_broken:
             try:
                 # A primitiva de evidência do defeito B: o "zero veredito" que
@@ -3668,7 +3341,7 @@ def _tester_pod_sync(
     # Reparo (porta 5) também commita: o L1 julga o estado COMMITADO — um
     # reparo só no working tree passaria no re-run do Tester e reprovaria no L1.
     # Re-autoria por ordem humana idem, pela mesma razão.
-    if (authored_new or repaired_files or reauthored_files) and test_files:
+    if (authored_new or repaired_files) and test_files:
         files_arg = " ".join(_shlex.quote(p) for p in test_files)
         msg = f"tester({inp.work_item_id}): {(inp.instruction or '')[:60]}"
         _pod_sh(
@@ -3784,14 +3457,6 @@ async def _run_tester_turn_impl(
     # por que a spec voltou intacta. (A primeira versão deste guard ficava
     # ANTES do dispatch e disparava mislabeled em turno K8s — telemetria que
     # mente custou vinte minutos de caça no wi_6f00bf0a.)
-    if getattr(inp, "reauthor_specs", None):
-        audit_emit(
-            actor="system:sandbox-runtime",
-            action="tester_reauthor_unsupported",
-            tenant_id=inp.tenant_id,
-            work_item_id=inp.work_item_id,
-            details={"runtime": "local", "files": list(inp.reauthor_specs)[:10]},
-        )
 
     # REAL authoring (same selector as the planner, P1 by config): with no
     # explicit script (tests) and a real substrate, the MODEL writes the tests.

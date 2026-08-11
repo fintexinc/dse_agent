@@ -24,15 +24,6 @@ _TEST_PATH_RES = [
 ]
 
 
-#: Subjects de commit que a PLATAFORMA escreve (scoped_git prefixa todos).
-#: É o oráculo de AUTORIA compartilhado: um arquivo cujo histórico só tem
-#: estes subjects é do DSE (reescrevível pelo reauthor do Tester; protegido
-#: contra o Coder quando é instrumento de verificação); um arquivo com commit
-#: humano na história é do CLIENTE. Vivia duplicado em activities.py — aqui é
-#: a fonte única (a regra que vive em cada call site diverge; ver hooksPath).
-DSE_COMMIT_SUBJECT_PREFIXES = ("tester(", "coder(", "checkpoint(", "chore(dse)")
-
-
 def is_test_path(path: str) -> bool:
     p = path.replace("\\", "/")
     return any(rx.search(p) for rx in _TEST_PATH_RES)

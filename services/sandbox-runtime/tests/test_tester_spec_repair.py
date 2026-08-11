@@ -201,3 +201,31 @@ def test_ngx_translate_scenario_converges(monkeypatch):
     assert result.returncode == 0 and result.tests_passed is True
     repaired = [r for r in rows if r["action"] == "tester_spec_repaired"]
     assert repaired, "o reparo é auditável no ledger"
+
+
+def test_the_repair_scope_is_this_turns_targets_not_a_git_question():
+    """A porta 5 repara o que está na PRÓPRIA lista de alvos do turno.
+
+    Até 2026-08-10 ela perguntava ao git do Pod "algum sujeito humano na
+    história deste arquivo?" como PROXY para "isto é meu". O proxy era
+    redundante — `test_files` já é a resposta direta — e errava com o clone
+    raso (`--depth 50`), em que o histórico humano do cliente fica fora da
+    janela e o arquivo dele passava por nosso. Saiu com o resto do oráculo de
+    autoria.
+
+    O escopo é o que impede a porta 5 de virar licença para reescrever
+    qualquer spec quebrada do repositório: uma spec fora da lista de alvos não
+    é reparada nem quando aparece quebrada na mesma saída."""
+    from sandbox_runtime.activities import _zero_verdict_specs
+
+    output = (
+        "FAIL src/mine.spec.ts\n  ● Test suite failed to run\n"
+        "FAIL src/theirs.spec.ts\n  ● Test suite failed to run\n"
+    )
+    assert _zero_verdict_specs(output, ["src/mine.spec.ts"]) == ["src/mine.spec.ts"], (
+        "o alvo deste turno é reparável"
+    )
+    assert "src/theirs.spec.ts" not in _zero_verdict_specs(output, ["src/mine.spec.ts"]), (
+        "spec fora da lista de alvos não entra — o escopo É a regra de posse "
+        "que sobrou"
+    )

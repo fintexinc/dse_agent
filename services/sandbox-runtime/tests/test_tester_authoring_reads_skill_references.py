@@ -78,115 +78,6 @@ _SUBJECT_SOURCES = {
 }
 
 
-def test_subject_mapping_for_ordered_spec():
-    """O mapeamento determinístico da porta 1, agora do lado da ordem: a spec
-    aponta seu sujeito por convenção de nome (tira -dse e .spec), e o sujeito
-    Angular vem em par ts+html."""
-    assert activities._subject_candidates_for_spec(_BADGE_SPEC) == [_BADGE_TS, _BADGE_HTML]
-    assert activities._subject_candidates_for_spec(
-        "src/app/x/dashboard-list.component-dse.spec.ts"
-    ) == ["src/app/x/dashboard-list.component.ts", "src/app/x/dashboard-list.component.html"]
-    assert activities._subject_candidates_for_spec("scripts/build.sh") == []
-
-
-def test_the_subject_source_in_the_prompt_is_what_fixes_the_mechanics(monkeypatch):
-    """wi_53c820f1, re-parque 2 da ordem: a reescrita clobrou o signal input
-    (`component.currentPage = 'finished'` → TypeError no componente:18) e
-    inventou `data-test="status-badge"` — porque no turno de reauthor o diff é
-    o commit anterior do PRÓPRIO Tester e a fonte do componente sumiu do
-    prompt. O fake só emite `setInput` + o data-test real se a FONTE estiver
-    no prompt — se este teste é verde, a causa era essa."""
-    def fake_chat_completion(*, messages, **_kw):
-        prompt = messages[0]["content"]
-        sees_subject = (
-            'data-test="report-status-badge"' in prompt and "input<" in prompt
-        )
-        body = (
-            "fixture.componentRef.setInput('currentPage', 'generate_report');\n"
-            "const badge = fixture.nativeElement.querySelector('[data-test=\"report-status-badge\"]');"
-            if sees_subject
-            else
-            "component.currentPage = 'finished';\n"
-            "const badge = fixture.nativeElement.querySelector('[data-test=\"status-badge\"]');"
-        )
-        return SimpleNamespace(
-            content=json.dumps({"files": [{"path": "src/app/badge-dse.spec.ts", "content": body}]}),
-            cost_usd=0.01,
-        )
-
-    gw_stub = types.ModuleType("model_gateway_client.gateway_call")
-    gw_stub.chat_completion = fake_chat_completion
-    pkg_stub = types.ModuleType("model_gateway_client")
-    pkg_stub.gateway_call = gw_stub
-    monkeypatch.setitem(sys.modules, "model_gateway_client", pkg_stub)
-    monkeypatch.setitem(sys.modules, "model_gateway_client.gateway_call", gw_stub)
-
-    feedback = activities._reauthor_order_feedback(
-        [_BADGE_SPEC],
-        "Expected: \"inline-block\"\nReceived: \"block\"",
-        lambda p: _SUBJECT_SOURCES.get(p, ""),
-    )
-    ctx = activities._pod_tester_context(_FakePodSh())
-    inp = RunTesterTurnInput(work_item_id="wi_test", tenant_id="t", instruction="badge")
-    script, _cost = activities._model_authored_test_script(
-        inp, ctx, headers=None, virtual_key="vk", error_feedback=feedback
-    )
-    contents = [s["content"] for s in (script or []) if s.get("tool") == "write_file"]
-    assert contents, "a ordem produziu um write_file"
-    assert "setInput(" in contents[0], "com a fonte no prompt, o input é signal — setInput"
-    assert '[data-test="report-status-badge"]' in contents[0], "e o data-test é o REAL do template"
-
-
-def test_the_order_prompt_is_a_superset_of_the_authoring_prompt(monkeypatch):
-    """Invariante (delta zero medido em 2026-08-08, rc.52): TUDO que a autoria
-    original vê — package.json, exemplo, testes existentes, diff, nota de
-    skills, referência — a ordem de reauthor vê também, MAIS a fonte do
-    sujeito e a instrução humana. Os três vãos da família (forma da store,
-    instrução, fonte do sujeito) nasceram de campos presentes num caminho e
-    ausentes no outro; quem tirar um campo de um dos dois caminhos quebra
-    AQUI, não em produção."""
-    prompts: list[str] = []
-
-    def fake_chat_completion(*, messages, **_kw):
-        prompts.append(messages[0]["content"])
-        return SimpleNamespace(
-            content=json.dumps({"files": [{"path": "src/app/badge-dse.spec.ts", "content": "x"}]}),
-            cost_usd=0.01,
-        )
-
-    gw_stub = types.ModuleType("model_gateway_client.gateway_call")
-    gw_stub.chat_completion = fake_chat_completion
-    pkg_stub = types.ModuleType("model_gateway_client")
-    pkg_stub.gateway_call = gw_stub
-    monkeypatch.setitem(sys.modules, "model_gateway_client", pkg_stub)
-    monkeypatch.setitem(sys.modules, "model_gateway_client.gateway_call", gw_stub)
-
-    ctx = activities._pod_tester_context(_FakePodSh())
-    inp = RunTesterTurnInput(work_item_id="wi_test", tenant_id="t", instruction="badge")
-    activities._model_authored_test_script(inp, ctx, headers=None, virtual_key="vk")
-    feedback = activities._reauthor_order_feedback(
-        [_BADGE_SPEC], "EVIDENCE-TAIL", lambda p: _SUBJECT_SOURCES.get(p, ""),
-    )
-    activities._model_authored_test_script(
-        inp, ctx, headers=None, virtual_key="vk", error_feedback=feedback
-    )
-    authoring, order = prompts
-
-    anchors = {
-        "package_json": ctx.package_json,
-        "example_test": ctx.example_test,
-        "diff": ctx.diff,
-        "skills_note": ctx.skills_note.strip(),
-        "reference_spec": ctx.reference_spec.strip(),
-    }
-    for name, anchor in anchors.items():
-        assert anchor and anchor in authoring, f"autoria perdeu o campo {name}"
-        assert anchor in order, f"a ordem perdeu o campo {name} — o delta voltou"
-    # e os extras que SÓ a ordem tem
-    assert "Source under test" in order and "EVIDENCE-TAIL" in order
-    assert "Source under test" not in authoring
-
-
 def test_the_reference_content_in_the_prompt_is_what_completes_the_authoring(monkeypatch):
     prompts: list[str] = []
 
@@ -226,3 +117,9 @@ def test_the_reference_content_in_the_prompt_is_what_completes_the_authoring(mon
         "sem o conteúdo da referência no prompt o mock sai incompleto (a doença); "
         "com ele inline, completo — a causa é o prompt, não o modelo"
     )
+
+# Os três testes da ORDEM DE REESCRITA que viviam aqui saíram em 2026-08-10 com
+# o reauthor: mapeamento sujeito↔spec ordenada, a fonte do sujeito no prompt da
+# ordem, e o prompt da ordem como superconjunto do de autoria. Eles pinavam um
+# prompt que não existe mais — o Coder edita qualquer teste, e não há ordem a
+# emitir. O que continua valendo é o prompt de AUTORIA normal, logo abaixo.
