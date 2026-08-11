@@ -55,20 +55,45 @@ def approval_blocks(body: str) -> list[dict]:
 #: Limites do Slack: 3.000 chars por bloco `section`, 100 blocos por view. Os
 #: cortes abaixo ficam MUITO abaixo disso de propósito — um modal que rola sem
 #: fim não é mais legível que a mensagem que ele veio substituir.
-_MAX_STEPS = 20
-_MAX_FILES = 30
+_MAX_ITEMS = 25
 _SECTION_CHARS = 2900
+_TRUNCATED = "\n• _…truncated_"
 
 
-def _bullets(items: list, limit: int) -> str:
-    shown = [str(i) for i in items[:limit]]
-    text = "\n".join(f"• {i}" for i in shown)
-    if len(items) > limit:
-        text += f"\n• _…and {len(items) - limit} more_"
-    return text[:_SECTION_CHARS]
+def _bullets(items: list) -> str:
+    """Bullets, cortados — e SEMPRE dizendo que foram cortados.
+
+    O corte ficava depois do marcador "…and N more", então um único item
+    gigante empurrava o marcador para fora e o plano aparecia truncado sem
+    nenhum sinal disso. Para uma tela cuja razão de existir é "o humano aprova
+    o que não pode ler", truncar em silêncio é a versão discreta do mesmo
+    problema."""
+    if isinstance(items, str):  # linha antiga no banco: string onde se espera lista
+        items = [items]
+    shown = [_escape(str(i)) for i in items[:_MAX_ITEMS]]
+    omitted = max(0, len(items) - len(shown))
+    marker = f"\n• _…and {omitted} more_" if omitted else ""
+    body = "\n".join(f"• {i}" for i in shown)
+    if len(body) + len(marker) > _SECTION_CHARS:
+        body = body[: _SECTION_CHARS - len(marker) - len(_TRUNCATED)] + _TRUNCATED
+    return body + marker
 
 
-def plan_details_view(work_item_id: str, plan: dict | None) -> dict:
+def _escape(text: str) -> str:
+    """Neutraliza a sintaxe de markup do Slack no texto que veio do MODELO.
+
+    O plano é saída de LLM sobre a descrição do requester e o repositório do
+    cliente. O Slack renderiza `<url|rótulo>` como link clicável dentro de uma
+    `section` — inclusive em modal. Um passo do plano contendo
+    `<https://evil.example/|Approve here>` viraria um link com rótulo
+    arbitrário NA TELA que o aprovador abre para decidir. É o primeiro sink do
+    repositório que renderiza saída de modelo como markup do Slack."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def plan_details_view(
+    work_item_id: str, plan: dict | None, *, effective_risk: str | None = None
+) -> dict:
     """O plano, legível, num modal.
 
     Existe porque a mensagem do gate é uma frase e dois botões: o humano
@@ -89,7 +114,18 @@ def plan_details_view(work_item_id: str, plan: dict | None) -> dict:
         blocks.append({"type": "section", "text": {"type": "mrkdwn",
                        "text": "_The plan is not available for this item._"}})
     else:
-        risk = str(plan.get("risk_class") or "unknown")
+        # O risco EFETIVO (coluna `work_items.risk_class`), não o declarado
+        # pelo Planner dentro do plano. `policy.classify_risk` só escala PARA
+        # CIMA: um plano que declara `low` e toca `.github/workflows/` é `high`
+        # de verdade, e é por isso que o gate existe. Mostrar o declarado aqui
+        # seria a tela que o humano abre PARA DECIDIR argumentando na direção
+        # de aprovar — e no mesmo commit em que a mensagem passou a dizer o
+        # efetivo.
+        # Cortado como todo o resto: `risk_class` é `str` livre no contrato e
+        # vem do Planner. Sem teto, um valor patológico estoura o limite de 3k
+        # do bloco e o Slack recusa a view inteira — o modal simplesmente não
+        # abre, e o retry nunca funciona.
+        risk = str(effective_risk or plan.get("risk_class") or "unknown")[:80]
         budget = plan.get("diff_budget_lines")
         header = f"*Risk:* `{risk}`"
         if budget:
@@ -97,20 +133,20 @@ def plan_details_view(work_item_id: str, plan: dict | None) -> dict:
         if plan.get("no_code_change"):
             header += "\n_This plan declares NO code change._"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
-        for title, key, limit in (
-            ("Steps", "steps", _MAX_STEPS),
-            ("Files it expects to touch", "expected_files", _MAX_FILES),
-            ("Paths it must not touch", "forbidden_paths", _MAX_FILES),
+        for title, key in (
+            ("Steps", "steps"),
+            ("Files it expects to touch", "expected_files"),
+            ("Paths it must not touch", "forbidden_paths"),
         ):
             items = plan.get(key) or []
             if items:
                 blocks.append({"type": "divider"})
                 blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                               "text": f"*{title}*\n{_bullets(items, limit)}"}})
+                               "text": f"*{title}*\n{_bullets(items)}"}})
         if plan.get("test_plan"):
             blocks.append({"type": "divider"})
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                           "text": f"*Test plan*\n{str(plan['test_plan'])[:_SECTION_CHARS]}"}})
+                           "text": f"*Test plan*\n{_escape(str(plan['test_plan']))[:_SECTION_CHARS]}"}})
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": f"Work item `{work_item_id}`"}]})
     return {

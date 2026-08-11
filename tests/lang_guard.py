@@ -15,15 +15,16 @@ Como ele decide: duas evidências independentes, porque cada uma sozinha erra.
   - PALAVRAS funcionais do português que não são palavras inglesas ("não",
     "para", "você", "está"). Prova mais fraca por palavra, forte no conjunto.
 
-Falsos positivos que já foram vistos e estão tratados:
-  - `para` também é inglês em nada, mas aparece em identificadores e URLs →
-    a busca é por palavra inteira, minúscula, fora de identificador.
-  - Nomes próprios e siglas (Fintex, DSE, PR) não têm acento e não casam.
-  - Trechos de código dentro de mensagem (ex.: `git push`) não casam.
+  - TERMINAÇÕES que o inglês não produz (-ção, -mente, -ável, -ado). Existem
+    porque a lista de palavras tem recall ruim contra português sem acento, e
+    exigir que alguém preveja o vocabulário não escala.
+
+Medido contra o corpus real (os 1.727 literais dos 9 módulos varridos), e é
+assim que ele deve continuar sendo calibrado: palavra nova entra depois de
+rodar contra o corpus, nunca por intuição.
 """
 from __future__ import annotations
 
-import ast
 import re
 import unicodedata
 
@@ -35,20 +36,30 @@ _PT_CHARS = re.compile(r"[ãõçáàâêíóôúÃÕÇÁÀÂÊÍÓÔÚ]")
 #: Palavras funcionais do português que NÃO são palavras do inglês. Escolhidas
 #: por serem impossíveis de aparecer por acaso num texto inglês correto.
 _PT_WORDS = frozenset({
-    "não", "nao", "você", "voce", "está", "esta", "são", "sao", "já", "jah",
-    "com", "uma", "que", "por", "para", "pelo", "pela", "isso", "este", "esta",
-    "aqui", "quando", "porque", "então", "entao", "também", "tambem",
+    "não", "nao", "você", "voce", "está", "são", "sao", "já",
+    "que", "isso", "quando", "porque", "então", "entao", "também", "tambem",
     "arquivo", "arquivos", "erro", "erros", "falhou", "falha", "mensagem",
     "precisa", "precisam", "tarefa", "revisão", "revisao", "aprovado",
     "rejeitado", "enviado", "registrado", "escalado", "aguardando",
-    "permissão", "permissao", "decidir", "destino", "consegui", "tente",
-    "novo", "nenhum", "nenhuma", "todos", "todas", "seu", "sua", "dele",
-    "plano", "veredito", "rodada", "laço", "laco", "conserta", "conserte",
+    "decidir", "consegui", "tente", "nenhum", "nenhuma",
+    "plano", "veredito", "rodada", "conserta", "conserte", "encontrei",
+    "invalido", "inválido", "limite", "tentativas", "atingido", "encerrada",
 })
+#: Palavras que existem nas DUAS línguas ficam FORA de `_PT_WORDS` de
+#: propósito: "final", "total", "local", "base", "item", "status". E `com` foi
+#: REMOVIDA depois de medir: ela casa em `https://github.com/` e em
+#: `src/main/java/com/…`, dois literais que já existem no repositório — a um
+#: passo de derrubar a build com "traduza isto" sobre uma URL.
 
-#: Palavras que existem nas DUAS línguas e por isso nunca condenam sozinhas.
-#: Mantidas fora de `_PT_WORDS` de propósito: "final", "total", "local",
-#: "base", "item", "status", "no", "a", "e", "de" (nomes de branch/campo).
+#: Terminações que o inglês não produz. Existem porque a lista de palavras
+#: sozinha tem recall ruim: "Repositorio invalido" e "Limite de tentativas
+#: atingido" — português real, sem acento — passavam com zero evidências.
+#: Sufixo pega a MORFOLOGIA em vez de exigir que alguém preveja o vocabulário.
+_PT_SUFFIXES = re.compile(
+    r"\b\w{3,}(?:ção|çao|cao|ções|coes|mente|ável|avel|ível|ivel|"
+    r"ório|orio|ária|aria|ado|ados|ida|idas|indo|ando)\b",
+    re.IGNORECASE,
+)
 
 _WORD = re.compile(r"[a-zà-öø-ÿ]+", re.IGNORECASE)
 
@@ -69,48 +80,9 @@ def portuguese_score(text: str) -> tuple[int, list[str]]:
         low = unicodedata.normalize("NFC", word.lower())
         if low in _PT_WORDS:
             hits.append(f"palavra: {low!r}")
+    for m in _PT_SUFFIXES.finditer(text or ""):
+        hits.append(f"terminação: {m.group(0).lower()!r}")
     # dedup preservando ordem, para a mensagem não repetir a mesma evidência
     seen: set[str] = set()
     unique = [h for h in hits if not (h in seen or seen.add(h))]
     return len(unique), unique
-
-
-def string_literals_of(module_path: str, symbols: set[str]) -> list[tuple[str, str]]:
-    """Todas as strings literais dentro dos SÍMBOLOS pedidos de um módulo.
-
-    Por AST e não por regex: uma constante de mensagem pode ser um dict, uma
-    f-string, uma concatenação implícita em várias linhas — e regex sobre isso
-    erra nos dois sentidos. Devolve `(símbolo, literal)`.
-
-    Docstrings ficam de FORA: elas são documentação interna, e o repositório
-    escreve documentação em português por decisão."""
-    src = open(module_path, encoding="utf-8").read()
-    tree = ast.parse(src)
-    out: list[tuple[str, str]] = []
-
-    def literals(node: ast.AST) -> list[str]:
-        found: list[str] = []
-        docstrings = set()
-        for sub in ast.walk(node):
-            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
-                doc = ast.get_docstring(sub, clean=False)
-                if doc:
-                    docstrings.add(doc)
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                if sub.value not in docstrings:
-                    found.append(sub.value)
-        return found
-
-    for node in tree.body:
-        name = None
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            name = node.name
-        elif isinstance(node, ast.Assign) and node.targets:
-            t = node.targets[0]
-            name = t.id if isinstance(t, ast.Name) else None
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            name = node.target.id
-        if name in symbols:
-            out.extend((name, lit) for lit in literals(node))
-    return out

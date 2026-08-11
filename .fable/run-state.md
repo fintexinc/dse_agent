@@ -43,6 +43,8 @@ If the run is interrupted, this file — not the conversation — is what carrie
 | A frota roda rc.78; todos os pods de pé | `kubectl get deploy -o jsonpath` + `helm list` em 2026-08-11 03:31 | helm rev 92 |
 | O crédito da Anthropic AINDA está esgotado | log do model-gateway em 07:58 + `repo_routing_decided {"repos": [], "reason": "router unavailable: HTTPStatusError"}` | `wi_8d729b92` |
 | Fila do Temporal vazia (0 Running) | `temporal workflow count --query "ExecutionStatus='Running'"` | 2026-08-11 |
+| Há 1 workflow vivo (`wi_8d729b92`), em `needs_clarification` — fase de INTAKE | `workflow list` + SELECT no banco | 2026-08-11 09:0x |
+| O deploy desta rc é seguro para ele: TODA mudança de workflow desta PR (payload do gate, 4 call sites do preview) fica DEPOIS da clarificação, em código que a história dele ainda não executou. Nenhum comando foi adicionado nem removido, então não há patch guard a considerar | leitura do diff + posição do item | `git diff main...HEAD -- services/orchestrator` |
 
 ## Interface contracts
 

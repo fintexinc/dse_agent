@@ -3658,16 +3658,15 @@ class WorkItemLifecycleWorkflow:
                 input.ci_wait_started_at_epoch = None
                 # ADR-26: fix cycle = new commit that changes behavior -> 1 refresh
                 input.last_files_changed = list(fix_result.files_changed)
-                # Acumula o commit do fix e classifica pela PR INTEIRA — o fix
-                # de CI costuma tocar um arquivo só, e sozinho ele reclassifica
-                # a PR para o tipo errado (ou para tipo nenhum).
-                input.cumulative_files_changed = sorted(
-                    set(input.cumulative_files_changed) | set(fix_result.files_changed or [])
-                )
-                await self._run_evidence_pipeline(
-                    list(input.cumulative_files_changed or fix_result.files_changed),
-                    reason="fix_cycle_ci_red",
-                )
+                # NÃO acumula: os dois `fix_cycle` seguem classificando pelo
+                # diff do turno. Provavelmente têm o mesmo defeito do preview
+                # inicial — mas isso não foi MEDIDO em run nenhum, e acumular
+                # aqui muta `cumulative_files_changed`, que alimenta o aviso de
+                # edição de teste no corpo da PR. Mudar o corpo da PR de
+                # carona, sem teste, não é o que este item pediu. Registrado
+                # como item aberto no run-state.
+                await self._run_evidence_pipeline(fix_result.files_changed,
+                                                  reason="fix_cycle_ci_red")
                 continue
 
             if ci.status == "no_ci":
@@ -3804,13 +3803,9 @@ class WorkItemLifecycleWorkflow:
                 # evidence refresh (the refresh is triggered by the fix COMMIT,
                 # never by the comments themselves).
                 input.last_files_changed = list(fix_result.files_changed)
-                input.cumulative_files_changed = sorted(
-                    set(input.cumulative_files_changed) | set(fix_result.files_changed or [])
-                )
-                await self._run_evidence_pipeline(
-                    list(input.cumulative_files_changed or fix_result.files_changed),
-                    reason="fix_cycle",
-                )
+                # idem ao ramo de CI vermelho acima: não medido, não testado,
+                # e mutar o acumulado mexeria no corpo da PR.
+                await self._run_evidence_pipeline(fix_result.files_changed, reason="fix_cycle")
                 continue
 
             if "approved" in verdicts:

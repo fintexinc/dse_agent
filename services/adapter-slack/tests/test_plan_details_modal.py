@@ -1,4 +1,7 @@
-"""O plano tem que ser LEGÍVEL antes de ser aprovado.
+"""O plano tem que ser LEGÍVEL antes de ser aprovado — e só por quem pode.
+
+(A presença do botão nos blocks é pinada em `test_outbound.py`, junto do
+conjunto completo de botões do gate; aqui o assunto é o COMPORTAMENTO dele.)
 
 Hoje a mensagem do gate é uma frase e dois botões:
 
@@ -163,13 +166,6 @@ def _signals(work_item_id: str) -> int:
         conn.close()
 
 
-def test_the_gate_message_offers_a_details_button(fake_slack):
-    _, post = _item_at_the_plan_gate(fake_slack, ts="7001.000100")
-    actions = [b for b in post["blocks"] if b["type"] == "actions"][0]
-    ids = {e["action_id"] for e in actions["elements"]}
-    assert ids == {"dse_plan_approve", "dse_plan_reject", "dse_plan_details"}
-
-
 def test_clicking_details_opens_a_modal_with_the_plan(fake_slack):
     """O conteúdo tem que vir do BANCO. Um modal que mostra a mesma frase da
     mensagem não resolve nada — o que falta ao humano são os passos e os
@@ -261,3 +257,90 @@ def test_a_missing_plan_does_not_break_the_button(fake_slack):
     assert result.get("path") == "plan_details_opened"
     rendered = json.dumps(fake_slack.views_open_calls[-1]["view"], ensure_ascii=False)
     assert "not available" in rendered.lower() or "no plan" in rendered.lower()
+
+
+def test_an_unauthorized_click_reads_nothing(fake_slack):
+    """A pergunta que os outros testes NÃO faziam.
+
+    Eles provavam que o autorizado consegue ler o plano; nenhum perguntava se o
+    NÃO autorizado também consegue — e a resposta, na primeira versão deste
+    botão, era sim. O argumento era "ler não injeta direção": verdadeiro sobre
+    integridade, irrelevante aqui, porque a questão é confidencialidade.
+
+    O que o modal mostra e a mensagem do canal não mostra: caminhos reais do
+    repositório do cliente, o teto de diff e `forbidden_paths` — o mapa das
+    guardas. Um convidado de canal único sairia sabendo quais caminhos evitar
+    para não escalar o risco e cair no gate."""
+    _, post = _item_at_the_plan_gate(fake_slack, ts="7006.000100")
+    before = len(fake_slack.views_open_calls)
+
+    result = _click_details(post, user="U_STRANGER")
+
+    assert result.get("path") == "unauthorized", result
+    assert len(fake_slack.views_open_calls) == before, (
+        "o modal abriu para quem não pode dirigir a tarefa — e ele carrega o "
+        "mapa das guardas do repositório do cliente"
+    )
+    assert fake_slack.ephemeral_calls, "quem clicou merece saber por que nada aconteceu"
+
+
+def test_the_modal_shows_the_EFFECTIVE_risk_not_the_declared_one(fake_slack):
+    """`policy.classify_risk` só escala PARA CIMA: um plano que declara `low` e
+    toca `.github/workflows/` é `high` de verdade, e é por isso que o gate
+    existe. O modal lê a COLUNA `work_items.risk_class` (o efetivo), não o
+    campo dentro do plano (o declarado pelo Planner).
+
+    Sem isto, a tela que o humano abre PARA DECIDIR argumentaria na direção de
+    aprovar — e no mesmo commit em que a mensagem do gate passou a dizer o
+    risco certo."""
+    from dse_identity import resolve_principal
+
+    work_item_id = _post_event({
+        "type": "app_mention", "channel": _CH, "ts": "7007.000100",
+        "user": "U_PLAN_REQ", "text": "declared low, effective high",
+    })["work_item_id"]
+    declarado_low = dict(_PLAN, risk_class="low")
+    conn = psycopg2.connect(DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE work_items SET status='awaiting_plan_approval', "
+                "plan=%s::jsonb, risk_class='high' WHERE id=%s",
+                (json.dumps(declarado_low), work_item_id),
+            )
+            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
+            cur.execute(
+                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
+                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                (cur.fetchone()[0], resolve_principal("slack", "U_PLAN_REQ")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    client.post("/internal/status-comment", json={
+        "work_item_id": work_item_id, "channel": _CH, "body": "📋 Plan ready.",
+        "actor": "system:orchestrator", "status": "awaiting_plan_approval",
+    })
+    _click_details(fake_slack.post_calls[-1])
+
+    rendered = json.dumps(fake_slack.views_open_calls[-1]["view"], ensure_ascii=False)
+    assert "`high`" in rendered, (
+        "o modal mostrou o risco DECLARADO pelo Planner; a política já havia "
+        "escalado para high, e é o efetivo que decide quem aprova"
+    )
+
+
+def test_slack_markup_in_the_plan_is_neutralised(fake_slack):
+    """O plano é saída de LLM sobre a descrição do requester e o repositório do
+    cliente. O Slack renderiza `<url|rótulo>` como link clicável dentro de uma
+    section — um passo contendo `<https://evil/|Approve here>` viraria um link
+    de phishing NA TELA de decisão."""
+    from adapter_slack.backend import plan_details_view
+
+    view = plan_details_view("wi_x", {
+        "steps": ["<https://evil.example/|Approve here>"],
+        "risk_class": "low",
+    })
+    rendered = json.dumps(view, ensure_ascii=False)
+    assert "<https://evil.example/" not in rendered, "markup do Slack não neutralizado"
+    assert "&lt;https://evil.example/" in rendered
