@@ -95,6 +95,66 @@ def test_the_sentence_survives_a_detail_that_is_missing_or_huge():
     )
 
 
+def test_the_pods_words_survive_the_truncation():
+    """O corte de 300 chars comia exatamente a parte que importa.
+
+    Medido na PR #6 (bmo-test-dse-fe, wi_a8b760de…, 2026-08-11): o namespace tem
+    63 chars, então SÓ o boilerplate do `kubectl wait` («preview degraded:
+    RuntimeError: kubectl wait -n <63> --for=condition=Available … timed out …»)
+    ocupa ~254 dos 300. As palavras do pod entram DEPOIS dele no detail — e o
+    erro real vive no FIM do log («Error: Could not find the
+    '@angular-devkit/build-angular:dev-server' builder's node package»). Um
+    corte pela cabeça garante que a PR mostre só o relógio, nunca a causa, e o
+    humano volta ao kubectl — o mesmo silêncio de sempre, agora com a
+    informação JÁ CAPTURADA e descartada a um passo da PR.
+
+    O que se fixa: quando o detail não cabe, a frase guarda o COMEÇO (que
+    identifica o desfecho) e o FIM (que identifica a causa), e o meio é o que
+    se perde."""
+    ns = "preview-wi-a8b760de4750daad43152d1fcbe415124462f2b6ec72f24b124d"
+    reason = (
+        f"preview degraded: RuntimeError: kubectl wait -n {ns} "
+        "--for=condition=Available deployment/preview --timeout=900s failed "
+        "(exit=1): error: timed out waiting for the condition on deployments/preview"
+    )
+    pod_words = (
+        "Cloning into '/srv/app'... added 731 packages in 11s npm notice "
+        "New major version of npm available! 10.9.8 -> 12.0.2 "
+        "> angular-login-app@1.0.0 start "
+        f"> ng serve --host 0.0.0.0 --port 3000 --allowed-hosts {ns}.preview.notas.api.br "
+        "Error: Could not find the '@angular-devkit/build-angular:dev-server' "
+        "builder's node package."
+    )
+    linha = preview_body_line("degraded", url=None, namespace=None,
+                              detail=f"{reason} — the pod said: {pod_words}")
+
+    assert "builder's node package" in linha, (
+        f"a causa (o FIM do log do pod) não sobreviveu ao corte: {linha!r}. "
+        "Foi ela que exigiu SSH + kubectl na PR #6"
+    )
+    assert "preview degraded" in linha, "o começo ainda identifica o desfecho"
+    assert len(linha) < 1000 and "\n" not in linha, (
+        "guardar o fim não é licença para despejar o log: continua UMA linha curta"
+    )
+
+
+def test_a_created_preview_carries_its_note_when_there_is_one():
+    """`created` com detail não pode engolir o detail. O caso concreto: o
+    preview subiu SERVINDO O BUILD porque o dev server do repo está quebrado —
+    se a linha mostrar só a URL, a PR afirma que está tudo bem e o defeito do
+    `npm start` some da supervisão."""
+    linha = preview_body_line(
+        "created", url="https://p.example/", namespace="preview-wi-x",
+        detail="served from the repo's production build (`npm run build`) — "
+               "the declared dev server failed to start; its error is in the pod log",
+    )
+    assert linha and "https://p.example/" in linha
+    assert "production build" in linha, (
+        f"o detail do created sumiu da frase: {linha!r} — o preview servido de "
+        "fallback fica indistinguível de um dev server saudável"
+    )
+
+
 def test_an_unknown_status_is_loud_rather_than_silent():
     """PIN da decisão inteira. O modo de falha que custou o dia foi silêncio, não
     erro — então um status que ninguém previu tem de produzir texto, não None."""

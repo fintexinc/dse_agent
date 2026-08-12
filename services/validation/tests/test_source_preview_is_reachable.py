@@ -163,6 +163,124 @@ def test_a_repo_with_no_way_to_serve_says_so(cfg):
     )
 
 
+def _serve_chain(cfg) -> str:
+    """A cadeia de serve do script (de `PORT=` em diante) — a parte que dá para
+    executar num teste: o que vem antes (apk/clone/install) precisa de rede e
+    de um repo, e é exatamente o que os shims substituem."""
+    import json
+
+    deployment = _source_container_command(cfg)
+    linha = next(ln.strip() for ln in deployment.splitlines()
+                 if ln.strip().startswith("- \"") and "npm" in ln)
+    script = json.loads(linha[2:].strip())
+    assert "PORT=" in script, "o script de fonte perdeu o prefixo `PORT=` — o teste precisa dele para cortar"
+    return "set -eu; " + script[script.index("PORT="):]
+
+
+_SHIM_NPM = """#!/bin/sh
+echo "npm $*" >> "$CALLS"
+case "$1" in
+  start)
+    # o caso literal da PR #6: o script EXISTE e morre no arranque, porque o
+    # angular.json aponta o serve para um builder fora das devDependencies
+    echo "Error: Could not find the '@angular-devkit/build-angular:dev-server' builder's node package."
+    exit 1 ;;
+  run)
+    case "$2" in
+      build) mkdir -p dist/app/browser; echo '<html>ok</html>' > dist/app/browser/index.html; exit 0 ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+exit 0
+"""
+
+#: O check de existência de script é `node -e "…scripts….<nome>?0:1"`; o shim
+#: decide como o node real decidiria — pela presença do nome no package.json.
+_SHIM_NODE = """#!/bin/sh
+case "$*" in
+  *".start?"*) grep -q '"start"' package.json ;;
+  *".dev?"*)   grep -q '"dev"'   package.json ;;
+  *".build?"*) grep -q '"build"' package.json ;;
+  *) exit 1 ;;
+esac
+"""
+
+_SHIM_NPX = """#!/bin/sh
+echo "npx $*" >> "$CALLS"
+exit 0
+"""
+
+
+def test_a_dev_server_that_dies_hands_over_to_the_built_app(cfg, tmp_path):
+    """Quarta forma da mesma família, medida na PR #6 (bmo-test-dse-fe,
+    wi_a8b760de…, 2026-08-11): `npm start` EXISTE — então a cadeia o escolhe —
+    e morre no arranque, porque o angular.json gerado aponta o serve para
+    `@angular-devkit/build-angular:dev-server`, que não está nas
+    devDependencies. CrashLoop ×9, 900s de espera, degraded.
+
+    A cadeia tratava script AUSENTE (PR #5); escolhido-e-quebrado não tinha
+    degrau nenhum. O degrau que falta é o único contrato que o L1 acabou de
+    provar verde no MESMO item: `npm run build`. Quando o dev server morre — ou
+    nem existe — a receita builda e serve o artefato estático; o preview deixa
+    de depender de o repo declarar um dev server são.
+
+    Executa a cadeia de verdade (sh + shims), não substrings: a lição do escape
+    triplo — dois testes de substring passaram com um script que o sh recusava."""
+    import os
+    import subprocess
+
+    (tmp_path / "package.json").write_text(
+        '{"name":"x","scripts":{"start":"ng serve","build":"ng build"}}'
+    )
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    calls = tmp_path / "calls.log"
+    calls.write_text("")
+    for nome, corpo in (("npm", _SHIM_NPM), ("node", _SHIM_NODE), ("npx", _SHIM_NPX)):
+        p = shims / nome
+        p.write_text(corpo)
+        p.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{shims}:{os.environ['PATH']}", CALLS=str(calls))
+    proc = subprocess.run(["sh", "-c", _serve_chain(cfg)], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=30)
+
+    registro = calls.read_text()
+    assert "npm start" in registro, "o caminho normal (`npm start`) tem de ser tentado primeiro"
+    assert "npm run build" in registro, (
+        f"o dev server morreu e a receita não buildou (exit={proc.returncode}, "
+        f"stderr={proc.stderr.strip()!r}): sem o degrau do build, o container "
+        "morre junto com o `npm start` e o pod volta ao CrashLoop da PR #6"
+    )
+    serve = [ln for ln in registro.splitlines() if ln.startswith("npx ")]
+    assert serve and "dist/app/browser" in serve[-1], (
+        f"o artefato buildado não foi servido (chamadas: {registro!r}) — buildar "
+        "sem servir continua sendo um preview morto"
+    )
+    assert proc.returncode == 0, (
+        f"a cadeia saiu com {proc.returncode}: {proc.stderr.strip()!r} — o "
+        "container morreria e o fallback nunca aconteceria"
+    )
+
+
+def test_the_handover_is_visible_and_the_static_server_is_pinned(cfg):
+    """Duas fronteiras do degrau novo. (1) A entrega tem de se ANUNCIAR no log:
+    é a linha que separa «o dev server do repo está quebrado e estamos servindo
+    o build» de um preview saudável — sem ela, o defeito do `npm start` some da
+    supervisão. (2) O servidor estático é dependência de runtime baixada no
+    boot: sem versão pinada (P7), o preview de amanhã roda o que o registry
+    mandar."""
+    command = _source_container_command(cfg)
+    assert "production build" in command, (
+        "a receita entrega ao build sem dizer isso no log — o fallback fica "
+        "indistinguível de um dev server são, na PR e no kubectl logs"
+    )
+    assert "serve@" in command, (
+        "o servidor estático não está pinado: `npx serve` sem versão é uma "
+        "dependência flutuante baixada em todo boot de preview"
+    )
+
+
 def test_the_generated_command_is_valid_shell(cfg, tmp_path):
     """Os testes acima procuram SUBSTRINGS, e substring não prova que o `sh`
     aceita o comando. A primeira versão da cadeia de fallback passou nos dois e
