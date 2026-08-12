@@ -4261,6 +4261,20 @@ class WorkItemLifecycleWorkflow:
             except ActivityError:
                 logger.warning("preview_enabled_for_repo failed; fail-open (preview never blocks)")
 
+        opts_tp: dict[str, Any] = {
+            "start_to_close_timeout": timedelta(seconds=900),
+            "retry_policy": RetryPolicy(maximum_attempts=2),
+        }
+        if workflow.patched("preview-trigger-timeout-headroom-v1"):
+            # 900s era IGUAL ao orçamento interno da espera (medido 2×,
+            # 2026-08-12): a attempt estourava o prazo NO FIO, o desfecho —
+            # com as palavras do pod — era descartado, a attempt 2 repetia
+            # 900s inteiros e o degrade chegava ~15 min atrasado com o
+            # boilerplate do relógio no lugar da causa. A folga cobre a
+            # captura de log, o upsert e a escrita na PR; o heartbeat (a
+            # activity bate a cada 15s) é quem detecta worker morto.
+            opts_tp["start_to_close_timeout"] = timedelta(seconds=1200)
+            opts_tp["heartbeat_timeout"] = timedelta(seconds=120)
         try:
             preview: PreviewRef = await workflow.execute_activity(
                 ACTIVITY_TRIGGER_PREVIEW,
@@ -4273,8 +4287,7 @@ class WorkItemLifecycleWorkflow:
                     "preview_enabled": preview_enabled,
                 },
                 result_type=PreviewRef,
-                start_to_close_timeout=timedelta(seconds=900),
-                retry_policy=RetryPolicy(maximum_attempts=2),
+                **opts_tp,
             )
         except ActivityError as exc:
             input.preview_status = "degraded"

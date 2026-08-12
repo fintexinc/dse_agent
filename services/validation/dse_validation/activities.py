@@ -767,7 +767,17 @@ if _HAS_TEMPORAL:
 
     @activity.defn(name=ACTIVITY_TRIGGER_PREVIEW)
     async def trigger_preview(inp: TriggerPreviewInput) -> PreviewRef:
-        return await asyncio.to_thread(_trigger_preview, inp)
+        # Batimento enxuto (padrão do update_base_branch): a espera interna
+        # chega a 900s e o call site agora declara heartbeat_timeout=120s —
+        # sem bater, a activity morre no meio da espera; batendo, o prazo
+        # start_to_close pode ter folga sem perder a detecção de worker morto.
+        call = asyncio.create_task(asyncio.to_thread(_trigger_preview, inp))
+        call.add_done_callback(_drain_abandoned)
+        while True:
+            done, _pending = await asyncio.wait({call}, timeout=15.0)
+            if call in done:
+                return await call
+            activity.heartbeat({"work_item_id": inp.work_item_id, "state": "waiting"})
 
     @activity.defn(name=ACTIVITY_RUN_VISUAL_DIFF)
     async def run_visual_diff(inp: RunVisualDiffInput) -> VisualDiffResult:
