@@ -229,6 +229,10 @@ class FakeControlPlane:
 
     # --- Phase 4: merge-base / base-drift (WS-E boundary, WSE-E6-T16) ---
     update_base_calls: int = 0
+    # >0: a activity LEVANTA (retryable) nesse número de chamadas — 99 simula a
+    # falha PERMANENTE medida no wi_a8b760de (workspace inexistente no pod):
+    # sem cap ela retentava até o schedule_to_close e o workflow morria MUDO.
+    update_base_fail_times: int = 0
     # controls the fake's return: is there drift? a conflict? orphaned threads?
     base_has_drift: bool = True
     base_conflict: bool = False
@@ -542,6 +546,9 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         state.calls_log.append("update_base_branch")
         state.last_update_base_payload = dict(payload)
         inp = UpdateBaseBranchInput(**payload)  # REAL contract decode (WSE-E6-T16)
+        if state.update_base_fail_times > 0:
+            state.update_base_fail_times -= 1
+            raise RuntimeError("fake: merge-base workspace unavailable on this pod")
         if state.base_conflict:
             # unresolvable conflict: the workflow must escalate (never force a resolution)
             return UpdateBaseBranchResult(

@@ -42,8 +42,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from dse_contracts import UpdateBaseBranchResult
 
@@ -75,7 +78,8 @@ NO_CUSTOMER_HOOKS = ("-c", "core.hooksPath=/nonexistent/dse-no-hooks")
 
 
 def _git(
-    workspace_dir: str, *args: str, check: bool = True, timeout: int = 120
+    workspace_dir: str, *args: str, check: bool = True, timeout: int = 120,
+    redact: Sequence[str] = (),
 ) -> subprocess.CompletedProcess:
     proc = subprocess.run(
         ["git", *NO_CUSTOMER_HOOKS, *args],
@@ -85,7 +89,18 @@ def _git(
         timeout=timeout,
     )
     if check and proc.returncode != 0:
-        raise GitError(list(args), proc.returncode, proc.stderr)
+        # `redact` carrega a URL autenticada (x-access-token:…) quando o comando
+        # fala com o remoto por URL. A mensagem do GitError vai para o log do
+        # Temporal e para o ledger — e o git ecoa a URL inteira no stderr de um
+        # fetch falho, então argv E stderr passam pela redação.
+        shown = list(args)
+        stderr = proc.stderr
+        for secret in redact:
+            if not secret:
+                continue
+            shown = [a.replace(secret, "<redacted-remote>") for a in shown]
+            stderr = stderr.replace(secret, "<redacted-remote>")
+        raise GitError(shown, proc.returncode, stderr)
     return proc
 
 
@@ -127,9 +142,12 @@ def count_orphaned_threads(
     return orphaned
 
 
-def _fetch_base(workspace_dir: str, base_branch: str) -> str:
-    """Fetches the base's current tip from origin and returns the sha (via FETCH_HEAD)."""
-    _git(workspace_dir, "fetch", "--quiet", "origin", base_branch)
+def _fetch_base(workspace_dir: str, base_branch: str, remote: str = "origin") -> str:
+    """Fetches the base's current tip and returns the sha (via FETCH_HEAD).
+    `remote` aceita a URL autenticada (produção, pod sem remote configurado
+    para o GitHub) ou o nome `origin` (workspace do sandbox e testes)."""
+    _git(workspace_dir, "fetch", "--quiet", remote, base_branch,
+         redact=(remote,) if remote != "origin" else ())
     return _current_sha(workspace_dir, "FETCH_HEAD")
 
 
@@ -168,6 +186,126 @@ class MergeBaseConfig:
         return os.path.join(base, "origin.git"), os.path.join(base, "workspace")
 
 
+@dataclass
+class ProvisionedWorkspace:
+    """O workspace que `update_base_branch` vai usar, e como falar com o remoto.
+
+    `remote_url` é a URL AUTENTICADA para fetch/push quando a GitHub App está
+    configurada (passada por comando, nunca gravada — ver `ensure_workspace`);
+    `None` significa "use o remote nomeado `origin`", que é o contrato dos
+    testes e do workspace do sandbox. `provisioned=True` marca que ESTA chamada
+    criou o diretório — e portanto o descarta no fim: o /tmp do pod tem 256Mi
+    para todas as réplicas, e workspace de merge-base é descartável por
+    construção."""
+
+    workspace_dir: str
+    remote_url: str | None
+    provisioned: bool
+
+
+def _resolve_origin(repo: str, origin_dir: str) -> tuple[str, str, str | None]:
+    """De onde clonar: `(fetch_url, clean_url, remote_url)`.
+
+    Com a GitHub App configurada, `fetch_url` é a URL autenticada e `clean_url`
+    é a mesma URL SEM token — é a limpa que vira `remote.origin.url`, então o
+    token nunca toca disco, nem por uma janela (o desenho "clona e troca a URL
+    depois" deixaria o token gravado em .git/config entre os dois comandos).
+
+    O seletor é `GitHubConfig().is_configured`, deliberadamente — o
+    FakeGitHubClient também implementa `authenticated_remote_url`, então
+    `hasattr` mandaria o modo dev clonar de github.com com token de mentira.
+
+    Sem App (dev/teste): o bare local de `locations()` é a origem, como sempre.
+    Sem App E sem bare: erro NOSSO e nomeado — foi um FileNotFoundError mudo
+    daqui que segurou o wi_a8b760de por horas em produção (2026-08-12)."""
+    from dse_validation.config import GitHubConfig
+
+    gh = GitHubConfig()
+    if gh.is_configured:
+        from dse_validation.github.client import build_github_client
+
+        auth = build_github_client(gh).authenticated_remote_url(repo)
+        return auth, f"https://github.com/{repo}.git", auth
+    if os.path.isdir(origin_dir):
+        return origin_dir, origin_dir, None
+    raise RuntimeError(
+        f"merge-base: no workspace exists for this item and there is no origin "
+        f"to provision one from ({repo}: GitHub App not configured and "
+        f"{origin_dir} does not exist)"
+    )
+
+
+def ensure_workspace(
+    *, work_item_id: str, repo: str, branch: str,
+    config: MergeBaseConfig | None = None,
+) -> ProvisionedWorkspace:
+    """O workspace do merge-base, provisionado sob demanda quando não existe.
+
+    Em produção (driver k8s) NENHUM dos caminhos de `locations()` existe no pod
+    do orchestrator: o workspace real vive dentro do pod do SANDBOX, e a raiz
+    legada aponta para dentro da imagem, que roda read-only. Medido no
+    wi_a8b760de (2026-08-12): FileNotFoundError em loop por horas, com o review
+    `changes_requested` na mão — o caminho inteiro nunca tinha funcionado na
+    VPS.
+
+    Regras, na ordem:
+      1. workspace existente (o do sandbox, driver local) é usado como está e
+         NUNCA é apagado por esta camada;
+      2. raiz configurada não-gravável (imagem read-only) → o clone nasce sob
+         o tmp do pod, que é o único chão gravável;
+      3. o clone é `init + fetch <URL-autenticada> refspec-da-branch +
+         checkout -B` — SEM `--depth`: `_has_drift` (rev-list), `merge-base
+         --is-ancestor` e o próprio merge precisam da history completa, e o
+         fetch por refspec já limita às refs que interessam. Não "otimize"
+         isto para shallow: quebra a detecção de drift.
+    """
+    cfg = config or MergeBaseConfig()
+    origin_dir, workspace_dir = cfg.locations(work_item_id)
+    if os.path.isdir(os.path.join(workspace_dir, ".git")):
+        # o workspace do sandbox (ou um legado válido): usa, não recria. A URL
+        # autenticada vai junto mesmo assim — fetch/push por URL não dependem
+        # do que o remote `origin` desse clone aponta.
+        from dse_validation.config import GitHubConfig
+
+        remote = None
+        if GitHubConfig().is_configured:
+            from dse_validation.github.client import build_github_client
+
+            remote = build_github_client(GitHubConfig()).authenticated_remote_url(repo)
+        return ProvisionedWorkspace(workspace_dir, remote, False)
+
+    ws = workspace_dir
+    try:
+        os.makedirs(os.path.dirname(ws), exist_ok=True)
+    except OSError as exc:
+        raiz = os.path.join(tempfile.gettempdir(), "dse-merge-base")
+        ws = os.path.join(raiz, work_item_id, "workspace")
+        os.makedirs(os.path.dirname(ws), exist_ok=True)
+        logger.warning(
+            "merge-base: configured root is not writable (%s); provisioning "
+            "under %s instead", exc, raiz,
+        )
+    if os.path.exists(ws):
+        # meio-provisionado por um crash anterior: descartável por construção.
+        shutil.rmtree(ws)
+    os.makedirs(ws)
+    fetch_url, clean_url, remote_url = _resolve_origin(repo, origin_dir)
+    _git(ws, "init", "-q")
+    _git(ws, "remote", "add", "origin", clean_url)
+    _git(ws, "fetch", "--quiet", fetch_url,
+         f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+         timeout=300, redact=(fetch_url,))
+    # `_ensure_on_branch` só faz checkout de branch LOCAL — num clone fresco a
+    # task branch não existe localmente, e sem o -B o core rodaria em cima da
+    # default branch.
+    _git(ws, "checkout", "-q", "-B", branch, f"origin/{branch}")
+    # merge/rebase precisam de identidade; a mesma que os commits de preview
+    # do DSE já usam.
+    _git(ws, "config", "user.email", "dse-validation@dse.local")
+    _git(ws, "config", "user.name", "DSE Validation")
+    return ProvisionedWorkspace(ws, remote_url, True)
+
+
 def update_base_branch_core(
     *,
     work_item_id: str,
@@ -181,14 +319,18 @@ def update_base_branch_core(
     actor: str = "system:validation",
     push: bool = True,
     record: bool = True,
+    remote_url: str | None = None,
 ) -> UpdateBaseBranchResult:
     """Updates `branch` with `base_branch`'s drift WITHOUT rewriting history when
     there is (or has been) a human review. `workspace_dir` is a clone/checkout of
-    the repo with the `origin` remote configured. See the module docstring."""
+    the repo. `remote_url=None` fala com o remote nomeado `origin` (o contrato
+    de sempre); com URL (autenticada), fetch e push falam direto com ela — por
+    comando, nunca gravada no clone. See the module docstring."""
     anchored = [s for s in anchored_review_shas if s]
+    remote = remote_url or "origin"
     _ensure_on_branch(workspace_dir, branch)
     old_tip = _current_sha(workspace_dir, "HEAD")
-    base_tip = _fetch_base(workspace_dir, base_branch)
+    base_tip = _fetch_base(workspace_dir, base_branch, remote=remote)
 
     # 1) No drift → noop. Nothing to merge, nothing to orphan.
     if not _has_drift(workspace_dir, branch):
@@ -246,8 +388,9 @@ def update_base_branch_core(
         push_args = ["push", "--quiet"]
         if force:
             push_args.append("--force-with-lease")
-        push_args += ["origin", f"{branch}:refs/heads/{branch}"]
-        _git(workspace_dir, *push_args)
+        push_args += [remote, f"{branch}:refs/heads/{branch}"]
+        _git(workspace_dir, *push_args,
+             redact=(remote,) if remote != "origin" else ())
 
     return _finish(
         work_item_id=work_item_id, tenant_id=tenant_id, repo=repo, branch=branch,

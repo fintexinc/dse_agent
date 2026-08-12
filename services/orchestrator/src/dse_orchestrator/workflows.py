@@ -3384,19 +3384,36 @@ class WorkItemLifecycleWorkflow:
             await self._audit("base_branch_update_skipped_no_branch", {})
             return
         await self._boundary_gate()
-        result: UpdateBaseBranchResult = await workflow.execute_activity(
-            ACTIVITY_UPDATE_BASE_BRANCH,
-            {
-                "work_item_id": input.work_item_id,
-                "tenant_id": input.tenant_id,
-                "repo": input.repo,
-                "branch": input.branch,
-                "base_branch": input.base_branch,
-                "first_human_review_done": True,
-            },
-            result_type=UpdateBaseBranchResult,
-            **self._activity_timeouts(),
-        )
+        opts = self._activity_timeouts()
+        if workflow.patched("bounded-update-base-branch-retries-v1"):
+            # Sem cap, uma falha PERMANENTE aqui (medido no wi_a8b760de,
+            # 2026-08-12: workspace inexistente no pod) retenta até o
+            # schedule_to_close estourar — e o estouro vira workflow Failed
+            # MUDO: ActivityError não é _EscalateNow/_FailClosed, então o
+            # except do run() não o vê, nada chega ao ledger e o status
+            # congela em review_feedback. Com o cap, a falha vira
+            # _ActivityRetriesExhausted → _finish_failed auditado.
+            opts["retry_policy"] = RetryPolicy(
+                maximum_attempts=max(1, int(input.activity_retry_cap))
+            )
+        try:
+            result: UpdateBaseBranchResult = await workflow.execute_activity(
+                ACTIVITY_UPDATE_BASE_BRANCH,
+                {
+                    "work_item_id": input.work_item_id,
+                    "tenant_id": input.tenant_id,
+                    "repo": input.repo,
+                    "branch": input.branch,
+                    "base_branch": input.base_branch,
+                    "first_human_review_done": True,
+                },
+                result_type=UpdateBaseBranchResult,
+                **opts,
+            )
+        except ActivityError as exc:
+            raise _ActivityRetriesExhausted(
+                ACTIVITY_UPDATE_BASE_BRANCH, str(exc.cause or exc)[:300]
+            )
         await self._audit(
             "base_branch_updated",
             {"strategy": result.strategy, "conflict": result.conflict,

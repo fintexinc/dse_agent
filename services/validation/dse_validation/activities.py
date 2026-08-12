@@ -489,11 +489,21 @@ def _update_base_branch(inp: UpdateBaseBranchInput) -> UpdateBaseBranchResult:
     (via the tracked PR + GitHub client) and calls the deterministic core. Like
     LocalFakeSandbox for L1, the TESTS call `update_base_branch_core` directly with
     a real local bare repo — this wrapper is the integration seam with the real
-    WS-C (sandbox workspace) + GitHub App."""
-    from dse_validation.github.client import build_github_client
-    from dse_validation.merge_base import MergeBaseConfig, update_base_branch_core
+    WS-C (sandbox workspace) + GitHub App.
 
-    _origin, workspace_dir = MergeBaseConfig().locations(inp.work_item_id)
+    O workspace é PROVISIONADO sob demanda quando não existe (o caso de
+    produção no driver k8s — medido no wi_a8b760de, 2026-08-12: nenhum dos
+    caminhos de `locations()` existe no pod do orchestrator e a activity
+    retentou FileNotFoundError por horas). Provisionado aqui = descartado aqui:
+    o /tmp do pod é um emptyDir de 256Mi partilhado por todas as chamadas."""
+    import shutil as _shutil
+
+    from dse_validation.github.client import build_github_client
+    from dse_validation.merge_base import ensure_workspace, update_base_branch_core
+
+    ws = ensure_workspace(
+        work_item_id=inp.work_item_id, repo=inp.repo, branch=inp.branch,
+    )
 
     # review threads anchored to commits — resolved via the tracked PR.
     anchored: list[str] = []
@@ -510,16 +520,23 @@ def _update_base_branch(inp: UpdateBaseBranchInput) -> UpdateBaseBranchResult:
             if sha:
                 anchored.append(sha)
 
-    return update_base_branch_core(
-        work_item_id=inp.work_item_id,
-        tenant_id=inp.tenant_id,
-        repo=inp.repo,
-        branch=inp.branch,
-        base_branch=inp.base_branch,
-        workspace_dir=workspace_dir,
-        first_human_review_done=inp.first_human_review_done,
-        anchored_review_shas=anchored,
-    )
+    try:
+        return update_base_branch_core(
+            work_item_id=inp.work_item_id,
+            tenant_id=inp.tenant_id,
+            repo=inp.repo,
+            branch=inp.branch,
+            base_branch=inp.base_branch,
+            workspace_dir=ws.workspace_dir,
+            first_human_review_done=inp.first_human_review_done,
+            anchored_review_shas=anchored,
+            remote_url=ws.remote_url,
+        )
+    finally:
+        # Só o que ESTA chamada criou — nunca o workspace do sandbox, e nunca
+        # o diretório-pai (em dev ele guarda o origin.git dos testes).
+        if ws.provisioned:
+            _shutil.rmtree(ws.workspace_dir, ignore_errors=True)
 
 
 def _record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:
@@ -765,7 +782,17 @@ if _HAS_TEMPORAL:
     # --- Phase 4: merge-base (contract) + review-feedback episode (helper) ---
     @activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)
     async def update_base_branch(inp: UpdateBaseBranchInput) -> UpdateBaseBranchResult:
-        return await asyncio.to_thread(_update_base_branch, inp)
+        # Batimento enxuto no padrão do L1: o call site declara
+        # heartbeat_timeout=600s e ninguém batia — o provisionamento on-demand
+        # (fetch de repo real, até 300s) somado ao merge/push pode passar do
+        # prazo, e a activity morreria MUDA no meio do trabalho.
+        call = asyncio.create_task(asyncio.to_thread(_update_base_branch, inp))
+        call.add_done_callback(_drain_abandoned)
+        while True:
+            done, _pending = await asyncio.wait({call}, timeout=15.0)
+            if call in done:
+                return await call
+            activity.heartbeat({"work_item_id": inp.work_item_id, "state": "running"})
 
     @activity.defn(name=WSE_ACTIVITY_RECORD_REVIEW_EPISODE)
     async def wse_record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:

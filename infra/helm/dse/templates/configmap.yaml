@@ -50,6 +50,12 @@ data:
   DSE_ADAPTER_JIRA_URL: "http://{{ include "dse.fullname" . }}-adapter-jira.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.adapters.jira.port }}"
   {{- end }}
   DSE_SANDBOX_INPROCESS: {{ ternary "1" "0" .Values.runtime.inProcess | quote }}
+  # merge-base (WSE-E6-T16): a raiz onde o update_base_branch provisiona o
+  # workspace on-demand. O default de código aponta para dentro da imagem, que
+  # roda com readOnlyRootFilesystem — /tmp é o único chão gravável do pod
+  # (emptyDir dse-runtime-tmp). O código ainda cai para o tmp sozinho se esta
+  # env faltar; declará-la aqui é intenção, não mecanismo.
+  DSE_WSE_GIT_ROOT: "/tmp/dse-merge-base"
   DSE_SANDBOX_LOCAL_FALLBACK_ALLOWED: {{ ternary "1" "0" .Values.runtime.localFallbackAllowed | quote }}
   DSE_SANDBOX_RUNTIME_CLASS: {{ .Values.runtime.sandboxRuntimeClassName | quote }}
   DSE_CODER_SUBSTRATE: {{ .Values.runtime.agentSubstrate | quote }}

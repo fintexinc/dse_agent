@@ -144,6 +144,47 @@ async def test_merge_base_conflict_escalates_and_does_not_rerun_coder(time_skipp
 
 
 @pytest.mark.asyncio
+async def test_update_base_branch_failure_is_bounded_and_lands_in_the_ledger(time_skipping_env):
+    """Medido em produção (wi_a8b760de, 2026-08-12): uma falha PERMANENTE do
+    update_base_branch (workspace inexistente no pod) retentou por HORAS — o
+    call site não tinha retry_policy, então valia o retry infinito default do
+    Temporal até o schedule_to_close estourar. E o estouro é o pior desfecho
+    possível: ActivityError não é capturado pelo run(), o workflow morre
+    Failed no Temporal SEM linha no ledger e o status congela em
+    review_feedback — para quem olha, o item simplesmente parou.
+
+    Com o cap: a falha vira _ActivityRetriesExhausted → _finish_failed
+    auditado. Item que não anda termina DIZENDO POR QUÊ."""
+    work_item_id = new_work_item_id("mbboom")
+    insert_work_item(work_item_id)
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    state = FakeControlPlane(update_base_fail_times=99)  # falha permanente
+    activities = list(LOCAL_ACTIVITIES) + build_fake_activities(state)
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow], activities=activities):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
+            id=work_item_id, task_queue=task_queue)
+        await wait_for_status(handle, {"review_ready"})
+        await handle.signal("review_comment", {"verdict": "changes_requested", "comment": "fix"})
+        result = await handle.result()
+
+    assert result.status == WorkItemStatus.failed.value, (
+        f"a falha permanente tem de terminar o item, não pendurá-lo: {result.status!r}"
+    )
+    assert "activity_retries_exhausted" in (result.detail or "")
+    assert "update_base_branch" in (result.detail or "")
+    assert state.update_base_calls == 3, (
+        f"o cap (activity_retry_cap=3) limita as tentativas — houve "
+        f"{state.update_base_calls}, e infinito era exatamente o defeito"
+    )
+    actions = read_audit_actions(work_item_id)
+    assert "activity_retries_exhausted" in actions, "o desfecho chega ao ledger"
+    assert "coder_fix_applied" not in actions, "o fix do Coder nunca chegou a rodar"
+
+
+@pytest.mark.asyncio
 async def test_merge_base_orphaned_threads_violation_escalates(time_skipping_env):
     """Phase 4 exit invariant: merge-base NEVER orphans threads. If the owner
     (WS-E) reports orphaned_threads>0, the workflow escalates (it never proceeds

@@ -200,6 +200,75 @@ def test_unwritable_git_root_falls_back_to_tmp(tmp_path, monkeypatch, ids, reque
     assert "drift.py" in _bare_files(origin, branch)
 
 
+def test_provisioned_workspace_checks_out_the_task_branch(isolado, ids):
+    """Num clone fresco a task branch não existe LOCALMENTE, e o
+    `_ensure_on_branch` do core só troca para branch local que já resolve —
+    sem o `checkout -B` do provisionamento, o merge rodaria em cima da default
+    branch e empurraria a base para a branch errada."""
+    from dse_validation.merge_base import ensure_workspace
+
+    tenant, wi = ids
+    _origin, branch = _make_origin_only(isolado, wi)
+
+    ws = ensure_workspace(work_item_id=wi, repo="acme/repo", branch=branch)
+
+    assert ws.provisioned is True
+    head = _git(Path(ws.workspace_dir), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert head == branch, (
+        f"o workspace provisionado está em {head!r}, não na task branch {branch!r}"
+    )
+
+
+def test_provisioning_never_persists_a_credentialed_url(isolado, ids, monkeypatch):
+    """O mecanismo de credencial: o fetch fala com a URL AUTENTICADA por
+    comando, e o que fica gravado como `remote.origin.url` é a URL LIMPA.
+    Clonar-da-autenticada-e-trocar-depois deixaria o token em .git/config por
+    uma janela — aqui ele nunca toca disco."""
+    import dse_validation.merge_base as mb
+
+    tenant, wi = ids
+    origin, branch = _make_origin_only(isolado, wi)
+    com_credencial = str(origin)  # faz as vezes da URL autenticada: o fetch é real
+    limpa = "https://github.com/acme/repo.git"
+    monkeypatch.setattr(
+        mb, "_resolve_origin", lambda repo, od: (com_credencial, limpa, com_credencial)
+    )
+
+    ws = mb.ensure_workspace(work_item_id=wi, repo="acme/repo", branch=branch)
+
+    config = (Path(ws.workspace_dir) / ".git" / "config").read_text()
+    assert limpa in config, "o remote gravado é a URL limpa"
+    assert com_credencial not in config, (
+        "a URL 'autenticada' (a que carrega credencial em produção) foi parar "
+        "no .git/config — `kubectl exec` + cat exporia o token"
+    )
+    assert ws.remote_url == com_credencial, (
+        "o core precisa receber a URL autenticada para fetch/push por comando"
+    )
+
+
+def test_git_error_redacts_the_secret_remote(isolado, ids):
+    """A mensagem do GitError vai para o log do Temporal e para o ledger — e o
+    git ecoa a URL do remoto no stderr de um fetch falho. Com a URL autenticada
+    em uso, isso seria o installation token em texto plano no log."""
+    import subprocess as sp
+
+    from dse_validation.merge_base import GitError, _git
+
+    ws = isolado / "ws-redact"
+    ws.mkdir()
+    sp.run(["git", "init", "-q", str(ws)], check=True)
+    segredo = str(isolado / "x-access-token-SEGREDO123.git")  # não existe: falha rápida, sem rede
+
+    with pytest.raises(GitError) as ei:
+        _git(ws, "fetch", "--quiet", segredo, redact=(segredo,))
+
+    assert "SEGREDO123" not in str(ei.value), (
+        f"o segredo sobreviveu à redação: {ei.value}"
+    )
+    assert "<redacted-remote>" in str(ei.value)
+
+
 def test_missing_workspace_and_no_origin_fails_with_named_error(isolado, ids):
     """Sem workspace, sem GitHub App e sem bare local não há de onde clonar.
     A falha tem de ser NOSSA e dizer isso — o FileNotFoundError cru de hoje
