@@ -48,6 +48,26 @@ spec:
               value: {{ .Values.secrets.vaultAddr | quote }}
             - name: NO_PROXY
               value: ".svc,.cluster.local"
+            # LiteLLM: /key/generate (virtual keys) EXIGE Postgres — sem
+            # DATABASE_URL o endpoint responde 500 "DB not connected" e todo
+            # caminho que minta chave real (L2/triage via model_gateway_client)
+            # morre, enquanto o shim do sandbox cai para fixture e mascara.
+            # Medido em produção 2026-08-12 (wi_9580d984: preview_triage_failed
+            # no primeiro disparo do laço de autofix). O database `litellm` é
+            # criado pelo operador (uma vez): CREATE DATABASE litellm OWNER dse;
+            # as tabelas o próprio LiteLLM migra no boot.
+            - name: LITELLM_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dse.postgresSecretName" . }}
+                  key: POSTGRES_USER
+            - name: LITELLM_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dse.postgresSecretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://$(LITELLM_DB_USER):$(LITELLM_DB_PASSWORD)@{{ include "dse.fullname" . }}-postgres:5432/litellm"
           resources:
             {{- toYaml .Values.modelGateway.resources | nindent 12 }}
           volumeMounts:
