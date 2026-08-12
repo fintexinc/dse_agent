@@ -3733,7 +3733,14 @@ class WorkItemLifecycleWorkflow:
                 # edição de teste no corpo da PR. Mudar o corpo da PR de
                 # carona, sem teste, não é o que este item pediu. Registrado
                 # como item aberto no run-state.
-                await self._run_evidence_pipeline(fix_result.files_changed,
+                # Diff ACUMULADO, como o human_request já faz: o paths-filter
+                # classifica a PR inteira, não o último turno (wi_a8b760de).
+                files_ci = (
+                    list(input.cumulative_files_changed or fix_result.files_changed)
+                    if workflow.patched("fix-cycle-cumulative-diff-v1")
+                    else fix_result.files_changed
+                )
+                await self._run_evidence_pipeline(files_ci,
                                                   reason="fix_cycle_ci_red")
                 continue
 
@@ -3873,7 +3880,16 @@ class WorkItemLifecycleWorkflow:
                 input.last_files_changed = list(fix_result.files_changed)
                 # idem ao ramo de CI vermelho acima: não medido, não testado,
                 # e mutar o acumulado mexeria no corpo da PR.
-                await self._run_evidence_pipeline(fix_result.files_changed, reason="fix_cycle")
+                # Diff ACUMULADO, como o human_request já faz: o paths-filter
+                # classifica a PR inteira, não o último turno. Medido no
+                # wi_a8b760de (2026-08-12): fix só de package.json rebaixou o
+                # FE Angular para deployable — receita Java, `npm: not found`.
+                files_fix = (
+                    list(input.cumulative_files_changed or fix_result.files_changed)
+                    if workflow.patched("fix-cycle-cumulative-diff-v1")
+                    else fix_result.files_changed
+                )
+                await self._run_evidence_pipeline(files_fix, reason="fix_cycle")
                 continue
 
             if "approved" in verdicts:
@@ -3985,6 +4001,14 @@ class WorkItemLifecycleWorkflow:
         )
         await self._consume_cost(coder_result.cost_usd, source="coder_fix")
         await self._audit("coder_fix_applied", {"files_changed": coder_result.files_changed})
+        # O diff ACUMULADO da PR inclui os turnos de fix — o paths-filter do
+        # refresh classifica a PR inteira, e um fix que só toca package.json
+        # não pode rebaixar um FE Angular para a receita deployable (medido:
+        # wi_cc72b204 e wi_a8b760de — `npm: not found` na imagem JDK).
+        if workflow.patched("fix-cycle-cumulative-diff-v1"):
+            input.cumulative_files_changed = sorted(
+                set(input.cumulative_files_changed) | set(coder_result.files_changed or [])
+            )
 
         await self._boundary_gate()
         await self._checkpoint_or_rebuild("review_feedback")
