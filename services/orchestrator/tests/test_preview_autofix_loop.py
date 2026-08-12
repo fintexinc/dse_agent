@@ -176,6 +176,33 @@ async def test_double_noop_fix_stops_the_loop_below_the_cap(time_skipping_env):
 
 
 @pytest.mark.asyncio
+async def test_trigger_preview_deadline_has_headroom_over_the_internal_wait(time_skipping_env):
+    """Medido duas vezes (PR #6 12:28Z e wi_9580d984 13:54Z, 2026-08-12): o
+    call site declarava start_to_close=900s — IGUAL ao orçamento interno de
+    espera da activity. Toda espera esgotada estourava o prazo do Temporal um
+    segundo antes de completar: o desfecho da attempt 1 (com as palavras do
+    pod!) era descartado, a attempt 2 repetia 900s inteiros, e o workflow via
+    o degrade ~30 min depois do fato — com o boilerplate do RELÓGIO no lugar
+    da causa ("Activity StartToClose timeout"), que envenenou o primeiro
+    veredito da triage em produção.
+
+    O prazo do chamador tem de cobrir o orçamento interno (900s) MAIS a
+    captura de log, upsert e escrita na PR."""
+    work_item_id = new_work_item_id("pafdl")
+    insert_work_item(work_item_id)
+    state = FakeControlPlane()
+
+    result = await _run_to_review_ready(time_skipping_env, state, work_item_id)
+
+    assert result.status == WorkItemStatus.done.value
+    assert state.last_preview_start_to_close_s is not None
+    assert state.last_preview_start_to_close_s >= 1100, (
+        f"start_to_close={state.last_preview_start_to_close_s}s não dá folga "
+        "sobre os 900s internos — a attempt morre no fio de novo"
+    )
+
+
+@pytest.mark.asyncio
 async def test_triage_activity_failure_never_blocks_the_pr(time_skipping_env):
     """A triage é um BÔNUS sobre o caminho degradado: se o modelo/gateway
     falhar, o item degrada exatamente como hoje — com o rastro

@@ -229,6 +229,7 @@ class FakeControlPlane:
     triage_raise: bool = False
     triage_calls: int = 0
     last_triage_payload: dict | None = None
+    last_preview_start_to_close_s: float | None = None
     # §F F1 — merge verification via the GitHub API (fake): "verified" (default,
     # PR actually merged), "not_merged" (forged -> refuted), "unavailable" (API
     # down -> degrades to the envelope).
@@ -505,6 +506,10 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         state.trigger_preview_calls += 1
         state.calls_log.append("trigger_preview")
         state.last_preview_payload = dict(payload)
+        # O prazo que o call site declarou — o teste do headroom lê daqui.
+        info = activity.info()
+        if info.start_to_close_timeout is not None:
+            state.last_preview_start_to_close_s = info.start_to_close_timeout.total_seconds()
         inp = TriggerPreviewInput(**payload)  # REAL contract decode
         if state.preview_modes_by_call:
             state.preview_mode = state.preview_modes_by_call.pop(0)
