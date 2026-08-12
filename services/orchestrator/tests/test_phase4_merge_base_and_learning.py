@@ -144,6 +144,52 @@ async def test_merge_base_conflict_escalates_and_does_not_rerun_coder(time_skipp
 
 
 @pytest.mark.asyncio
+async def test_fix_cycle_refresh_classifies_by_the_whole_pr_diff(time_skipping_env):
+    """Medido DUAS vezes, nos dois call sites irmãos do mesmo bug: wi_cc72b204
+    (a lição ficou escrita SÓ no caminho human_request) e wi_a8b760de
+    (2026-08-12, caminho changes_requested): a PR do FE tocou src/app/*.html no
+    turno inicial, o fix mexeu só em package.json, e o refresh classificou o
+    Angular como `deployable` — receita Java, `npm: not found`, CrashLoop.
+
+    O paths-filter classifica a PR INTEIRA: o refresh pós-fix recebe o diff
+    ACUMULADO, nunca o do último turno. É a mesma regra que o human_request já
+    aplica — regra que vive num call site só não é regra, é sorte (a lição do
+    hooksPath, de novo)."""
+    work_item_id = new_work_item_id("mbdiff")
+    insert_work_item(work_item_id)
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    state = FakeControlPlane(
+        coder_files_changed_by_turn=[
+            ["src/app/login/login.component.html"],  # turno inicial: UI
+            ["package.json"],                        # fix: só metadado
+        ],
+    )
+    activities = list(LOCAL_ACTIVITIES) + build_fake_activities(state)
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow], activities=activities):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
+            id=work_item_id, task_queue=task_queue)
+        await wait_for_status(handle, {"review_ready"})
+        await handle.signal("review_comment",
+                            {"verdict": "changes_requested", "comment": "add the dep"})
+        await _wait_until(lambda: state.trigger_preview_calls >= 2,
+                          msg="o refresh pós-fix nunca re-disparou o preview")
+        await wait_for_status(handle, {"review_ready"})
+        await handle.signal("review_comment", {"verdict": "approved"})
+        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        await handle.result()
+
+    payload = state.last_preview_payload or {}
+    assert "src/app/login/login.component.html" in (payload.get("files_changed") or []), (
+        f"o refresh pós-fix classificou só pelo último turno "
+        f"({payload.get('files_changed')!r}) — foi assim que um fix de "
+        "package.json virou receita Java com `npm: not found` no wi_a8b760de"
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_base_branch_failure_is_bounded_and_lands_in_the_ledger(time_skipping_env):
     """Medido em produção (wi_a8b760de, 2026-08-12): uma falha PERMANENTE do
     update_base_branch (workspace inexistente no pod) retentou por HORAS — o
