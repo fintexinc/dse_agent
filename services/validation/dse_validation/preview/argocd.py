@@ -122,6 +122,36 @@ def pod_failure_detail(cfg: PreviewConfig, namespace: str, reason: str) -> str:
     return f"{reason} — the pod said: {log[-_POD_LOG_CHARS:]}"
 
 
+#: O anúncio que a receita imprime ao entregar o serve para o build — contrato
+#: entre o script do pod e a nota da PR. Mudou lá, muda aqui.
+_BUILD_HANDOVER_MARKER = "serving the production build"
+
+
+def built_fallback_note(cfg: PreviewConfig, namespace: str) -> str | None:
+    """O preview subiu — mas subiu servindo o BUILD? A resposta vem do log.
+
+    A receita anuncia a entrega com `_BUILD_HANDOVER_MARKER` antes de buildar.
+    Sem a nota, um `npm start` quebrado se disfarça de dev server são atrás de
+    um preview verde: a PR mostraria só a URL, e o defeito que causou o
+    CrashLoop da PR #6 sumiria da supervisão exatamente no momento em que o
+    fallback o torna invisível.
+
+    Bônus, nunca piora (mesma regra da captura de falha): log ilegível = None =
+    a linha fica como sempre foi.
+    """
+    try:
+        proc = _kubectl(cfg, ["logs", "-n", namespace, "-l", "app=preview",
+                              "--tail=200", "--all-containers=true"], timeout=25)
+    except Exception as exc:  # noqa: BLE001 — bônus, nunca piora o sucesso
+        logger.warning("preview: could not check the serve mode in %s: %s",
+                       namespace, exc)
+        return None
+    if _BUILD_HANDOVER_MARKER in ((getattr(proc, "stdout", "") or "")):
+        return ("served from the repo's production build (`npm run build`) — "
+                "the declared dev server failed to start; its error is in the pod log")
+    return None
+
+
 def namespace_exists(cfg: PreviewConfig, namespace: str) -> bool:
     """O namespace ainda está lá? Levanta se o cluster não responder.
 
@@ -414,17 +444,24 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             }})
             proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
             flags += " --proxy-config proxy.preview.json"
-        # TENTA o que o repositório tem, em vez de exigir um nome. Terceira vez
+        # TENTA o que o repositório tem, em vez de exigir um nome. Quarta vez
         # que a receita morre por assumir uma forma: `ng serve` em `::1` (PR
-        # #19), `browserTarget` no angular.json (PRs #2 e #3), e agora
-        # `npm error Missing script: "start"` (PR #5) — o projeto gerado chamou
-        # o script de outra coisa.
+        # #19), `browserTarget` no angular.json (PRs #2 e #3), `npm error
+        # Missing script: "start"` (PR #5) — e agora o script que EXISTE e
+        # morre no arranque (PR #6: o angular.json gerado aponta o serve para
+        # `@angular-devkit/build-angular:dev-server`, fora das devDependencies;
+        # CrashLoop ×9 até o timeout de 900s).
         #
-        # A ordem é de mais específico para mais genérico, e o último degrau é
-        # o CLI local, que funciona mesmo sem script declarado. Se nada servir,
-        # a mensagem é NOSSA: o erro cru do npm manda o humano depurar a
-        # ferramenta, quando o problema é o repositório não declarar como se
-        # serve.
+        # A ordem é de mais específico para mais genérico. Os degraus de dev
+        # server NÃO usam `exec` de propósito: se o servidor escolhido morrer —
+        # ou nem existir — a cadeia cai no único contrato que o L1 acabou de
+        # provar verde no MESMO item, `npm run build`, e serve o artefato
+        # estático (`serve -s` = SPA fallback; versão pinada, P7). A entrega se
+        # ANUNCIA no log: é o que separa "o dev server do repo está quebrado"
+        # de um preview saudável, e é o marker que `built_fallback_note` leva
+        # até a linha da PR. Se nem o build existir, a mensagem é NOSSA: o erro
+        # cru do npm manda o humano depurar a ferramenta, quando o problema é o
+        # repositório não declarar como se serve.
         # Aspas duplas SIMPLES aqui: o script inteiro vai para o YAML via
         # `json.dumps`, que faz o escape. Escapar à mão aqui escaparia duas
         # vezes e o `sh` receberia barras literais.
@@ -432,12 +469,19 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                '.%s?0:1)" 2>/dev/null')
         start = (
             f"PORT={port}; "
-            f"if {tem % 'start'}; then exec npm start -- {flags}; "
-            f"elif {tem % 'dev'}; then exec npm run dev -- {flags}; "
-            f"elif [ -x node_modules/.bin/ng ]; then exec node_modules/.bin/ng serve {flags}; "
-            f"else echo 'DSE preview: this repository declares no start or dev "
-            f"script and has no local Angular CLI, so there is no way to serve "
-            f"it'; exit 1; fi"
+            f"if {tem % 'start'}; then npm start -- {flags} || true; "
+            f"elif {tem % 'dev'}; then npm run dev -- {flags} || true; "
+            f"elif [ -x node_modules/.bin/ng ]; then node_modules/.bin/ng serve {flags} || true; fi; "
+            "echo 'DSE preview: the dev server is missing or exited; "
+            "serving the production build instead'; "
+            f"if ! {tem % 'build'}; then echo 'DSE preview: no way to serve this "
+            "repository - the dev server (start/dev/local Angular CLI) is missing "
+            "or broken, and there is no build script to fall back to'; exit 1; fi; "
+            "npm run build; "
+            "DIST=$(find dist build -name index.html 2>/dev/null | head -1); "
+            "if [ -z \"$DIST\" ]; then echo 'DSE preview: npm run build succeeded "
+            "but produced no index.html under dist/ or build/'; exit 1; fi; "
+            f"exec npx --yes serve@14 -s \"$(dirname \"$DIST\")\" -l tcp://0.0.0.0:{port}"
         )
         script = (
             "set -eu; "
@@ -777,9 +821,24 @@ def _preview_body_with_line(body: str, sentence: str) -> str:
 
 
 #: Quanto do `detail` do runtime cabe na frase. O detail pode ser um dump de
-#: log inteiro; o corpo da PR não é lugar para ele, mas as primeiras linhas são
-#: exatamente o que identifica a causa (foi assim que `buildTarget` apareceu).
+#: log inteiro; o corpo da PR não é lugar para ele.
 _PREVIEW_DETAIL_CHARS = 300
+#: Quando não cabe, guarda-se o COMEÇO e o FIM, e o meio é o que se perde.
+#: Cortar só pela cabeça foi medido falhando na PR #6 (2026-08-11): o namespace
+#: tem 63 chars, então o boilerplate do `kubectl wait` sozinho ocupa ~254 dos
+#: 300 — e as palavras do pod, que vêm depois e carregam a causa no FIM do log
+#: (`Error: Could not find … dev-server …`), nunca chegavam à PR. A informação
+#: já estava capturada e era descartada a um passo do humano.
+_DETAIL_HEAD_CHARS = 150
+
+
+def _fit_detail(cause: str) -> str:
+    """`cause` na medida da frase: inteira quando cabe; senão começo (que
+    identifica o desfecho) + fim (onde o erro mora), com o meio elidido."""
+    if len(cause) <= _PREVIEW_DETAIL_CHARS:
+        return cause
+    tail = _PREVIEW_DETAIL_CHARS - _DETAIL_HEAD_CHARS - 5  # 5 = " […] "
+    return f"{cause[:_DETAIL_HEAD_CHARS]} […] {cause[-tail:]}"
 
 
 def preview_body_line(
@@ -810,24 +869,28 @@ def preview_body_line(
         # linha "não se aplica" em toda PR de backend é ruído, não informação.
         return None
 
+    cause = (detail or "").strip()
     if status == "created":
         target = url or "(no URL)"
         extra = f" (namespace `{namespace}`)" if namespace else ""
-        return _sentence(f"{target}{extra}")
+        # `created` com detail não engole o detail: é o caso do preview que
+        # subiu SERVINDO O BUILD porque o dev server do repo está quebrado —
+        # só a URL na frase disfarçaria o defeito de dev server são.
+        nota = f" — {_fit_detail(cause)}" if cause else ""
+        return _sentence(f"{target}{extra}{nota}")
 
     if status == "reaped":
         return _sentence(
             "expired (TTL) — the environment was reaped and the link no longer resolves")
 
-    cause = (detail or "").strip()
     if status == "degraded":
         if cause:
-            return _sentence(f"did not come up — {cause[:_PREVIEW_DETAIL_CHARS]}")
+            return _sentence(f"did not come up — {_fit_detail(cause)}")
         return _sentence(
             "did not come up, and the runtime gave no reason (see the item's audit ledger)")
 
     # Desconhecido: fala mesmo assim, com o status cru.
-    rest = f" — {cause[:_PREVIEW_DETAIL_CHARS]}" if cause else ""
+    rest = f" — {_fit_detail(cause)}" if cause else ""
     return _sentence(f"state `{status}`{rest}")
 
 
@@ -1292,11 +1355,18 @@ def _trigger_preview(
     # otherwise the cluster-internal DNS (the link shows up on the PR either
     # way — D1).
     url = cfg.preview_url_for(namespace)
+    # Available ≠ dev server são: pode ser o degrau do build servindo no lugar
+    # de um `npm start` quebrado. A nota viaja no PreviewRef.detail até a frase
+    # da PR — sem ela o fallback esconderia o defeito que acabou de contornar.
+    nota = built_fallback_note(cfg, namespace) if kind == "ui" else None
+    detail_row = f"{kind} files: {', '.join(ui_files[:10])} | image={image_reason}"
+    if nota:
+        detail_row += f" | {nota}"
     db.upsert_preview(
         work_item_id=inp.work_item_id, tenant_id=inp.tenant_id,
         pr_number=inp.pr_number, repo=inp.repo, status="created",
         namespace=namespace, url=url, ttl_seconds=ttl, expires_at=expires_at,
-        detail=f"{kind} files: {', '.join(ui_files[:10])} | image={image_reason}",
+        detail=detail_row,
     )
     if audit_emit is not None:
         audit_emit(
@@ -1305,11 +1375,12 @@ def _trigger_preview(
             details={"pr_number": inp.pr_number, "namespace": namespace, "url": url,
                      "kind": kind, "ttl_seconds": ttl, "expires_at": expires_at.isoformat(),
                      "image": pr_image or cfg.preview_image, "image_source": image_reason,
-                     "files": ui_files[:20]},
+                     "served_from_build": bool(nota), "files": ui_files[:20]},
         )
     return PreviewRef(
         work_item_id=inp.work_item_id, pr_number=inp.pr_number,
         status="created", namespace=namespace, url=url, kind=kind,
+        detail=nota or "",
     )
 
 

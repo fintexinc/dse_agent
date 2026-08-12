@@ -65,10 +65,19 @@ rules:
     resourceNames: ["dse-preview-deploy-key"]
     verbs: ["get", "update", "patch", "delete"]
   # Read-only: `kubectl wait` watches the Deployment, and reading pod status is
-  # how a stuck preview gets diagnosed. No exec, no logs, no delete.
+  # how a stuck preview gets diagnosed. No exec, no delete.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # `pods/log` é o que alimenta a captura de `pod_failure_detail` (rc.83/84):
+  # o motivo de um preview morto mora no stdout do pod. Sem este grant a
+  # feature inteira morre em Forbidden — medido em produção (PR #6,
+  # wi_a8b760de…, 2026-08-11): duas tentativas, dois Forbidden, e a PR ficou
+  # com o timeout pelado. É leitura do stdout de código que o próprio DSE
+  # gerou, num role que já lê o pod inteiro; exec segue proibido.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
