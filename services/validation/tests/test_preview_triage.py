@@ -115,6 +115,42 @@ def test_triage_survives_a_client_without_get_file_text():
     )
 
 
+def test_triage_reads_the_pods_words_from_the_ledger_when_the_detail_is_clockwork(monkeypatch):
+    """O primeiro veredito de produção (wi_9580d984, 2026-08-12 14:09Z) saiu
+    ERRADO por causa do input: no caminho em que a activity de preview estoura
+    o prazo, o workflow só tem o boilerplate do Temporal ("StartToClose
+    timeout") — e o agente diagnosticou "build lento, otimize o angular.json"
+    quando a causa real ("Could not find '@angular/build'") estava gravada em
+    wse_previews.detail pela attempt anterior.
+
+    A triage passa a mesclar o detail do banco ao contexto SEMPRE: o banco é
+    onde as palavras do pod moram, qualquer que seja o caminho da exceção."""
+    from dse_validation.preview import triage as triage_mod
+
+    monkeypatch.setattr(
+        triage_mod, "_ledger_detail",
+        lambda wi: ("preview degraded: kubectl wait timed out — the pod said: "
+                    "Error: Could not find the '@angular/build:dev-server' "
+                    "builder's node package."),
+        raising=False,
+    )
+    session = FakePreviewTriageSession()
+
+    triage_preview_failure_core(
+        _inp(pr_number=0,
+             detail="ActivityError: Activity task timed out (type: StartToClose)"),
+        github_client=_FilesClient(), session=session,
+    )
+
+    prompt = session.prompts[0]
+    assert "@angular/build" in prompt, (
+        "as palavras do pod (no ledger) não chegaram ao agente — foi assim que "
+        "o primeiro veredito de produção diagnosticou 'build lento' para uma "
+        "dependência ausente"
+    )
+    assert "StartToClose" in prompt, "o erro recebido também fica (contexto do caminho)"
+
+
 def test_a_fixable_verdict_writes_the_autofix_line_in_the_pr_body(monkeypatch):
     """Quem abre a PR no meio do auto-fix vê o que está acontecendo. Mesmo
     marker de sempre: o desfecho do re-preview substitui, não empilha."""
