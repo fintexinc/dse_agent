@@ -123,3 +123,41 @@ def test_without_a_hostname_template_the_command_is_still_valid(cfg):
         "`--allowed-hosts` sem valor engole a flag seguinte (é `array` no "
         "schema do Angular) — sem hostname a flag não deve existir"
     )
+
+
+def test_the_start_command_does_not_require_one_exact_script(cfg):
+    """A receita não pode depender de o repo ter EXATAMENTE `npm start`.
+
+    Medido na PR #5 (2026-08-11), terceiro modo de falha da mesma família:
+
+        npm error Missing script: "start"
+
+    Antes disso já tinham sido `browserTarget` (PRs #2 e #3) e o `ng serve` em
+    `::1` (PR #19). O padrão é sempre o mesmo — a receita assume uma forma de
+    repositório, o repositório tem outra, e o preview morre em CrashLoop.
+
+    O comando passa a TENTAR o que existe, em ordem, em vez de exigir um nome:
+    `start`, depois `dev`, depois o Angular CLI local. E se não houver nenhum,
+    diz isso em vez de deixar o npm reclamar de script faltando."""
+    command = _source_container_command(cfg)
+
+    assert "npm start" in command, "o caminho normal continua sendo `npm start`"
+    assert "run dev" in command, (
+        "sem alternativa, um repo que chama o script de `dev` morre em "
+        "CrashLoop — e é a mesma classe do `Missing script: start` da PR #5"
+    )
+    assert "node_modules/.bin/ng" in command, (
+        "sem o CLI local como último degrau, um repo Angular sem script "
+        "nenhum não tem como subir"
+    )
+
+
+def test_a_repo_with_no_way_to_serve_says_so(cfg):
+    """Quando nenhum degrau serve, a mensagem tem de ser NOSSA e explicar. O
+    `npm error Missing script` manda o humano procurar no lugar errado: o
+    problema não é o npm, é o repositório não declarar como se serve."""
+    command = _source_container_command(cfg)
+    assert "DSE preview:" in command, (
+        "o comando termina sem mensagem própria; o humano recebe o erro cru do "
+        "npm e vai depurar a ferramenta em vez do repositório"
+    )

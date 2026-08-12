@@ -833,6 +833,28 @@ def _put_preview_in_pr_body(
         _preview_body_failed(inp, actor, f"{type(exc).__name__}: {exc}")
 
 
+def _announce_preview_provisioning(
+    inp: TriggerPreviewInput, url: str, *, actor: str
+) -> None:
+    """Diz na PR que o ambiente ESTÁ SUBINDO, assim que ele começa a subir.
+
+    Medido na PR #5 (2026-08-11): a PR finalizou e ficou sem linha nenhuma
+    durante todo o provisionamento — o `trigger_preview_core` estava dentro do
+    `_wait_deployment_available`, que espera até 900s, e a frase só era escrita
+    no `return`. Para quem abriu a PR nesse intervalo, quinze minutos de
+    silêncio e "falhou de novo" são a mesma coisa; foi essa a leitura.
+
+    A URL já é conhecida aqui — ela sai do namespace, não do pod — então
+    escondê-la até o container ficar Ready não protege de nada. A linha é
+    substituída pelo desfecho quando ele chega, via o mesmo marker.
+    """
+    _put_preview_in_pr_body(
+        inp,
+        f"- **Preview**: {url} (environment is starting — this can take a few minutes)",
+        actor=actor,
+    )
+
+
 def _preview_body_failed(inp: TriggerPreviewInput, actor: str, why: str) -> None:
     """Todo caminho que NÃO escreveu deixa rastro. Sem isto, a ausência da linha
     na PR tem duas explicações indistinguíveis: o preview não rodou, ou rodou e
@@ -1198,6 +1220,11 @@ def _trigger_preview(
         else:
             gitops.write_preview_dir(cfg.repo_dir, namespace, manifests)
             ensure_applicationset(cfg)
+        # A PR fala ANTES da espera, não depois. `_wait_deployment_available`
+        # segura por até `ready_timeout` (900s em produção), e enquanto isso a
+        # PR ficava sem uma palavra sobre o preview — indistinguível de falha
+        # para quem a abrisse no intervalo. Foi o que aconteceu na PR #5.
+        _announce_preview_provisioning(inp, cfg.preview_url_for(namespace), actor=actor)
         _wait_deployment_available(cfg, namespace, ready_timeout)
     except Exception as exc:  # degraded, never blocks (failure mode 9)
         # As palavras do POD, não as do relógio. `kubectl wait` só sabe dizer

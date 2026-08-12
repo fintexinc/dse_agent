@@ -209,3 +209,60 @@ def test_a_failed_write_is_audited_instead_of_swallowed(monkeypatch):
         f"nenhum evento de falha no ledger (emitidos: {emitidos}). A escrita na "
         "PR pode falhar por token, 4xx ou PR inexistente, e hoje isso some"
     )
+
+
+def test_the_pr_is_not_silent_while_the_preview_is_still_coming_up(monkeypatch):
+    """A janela de provisionamento também é silêncio.
+
+    Medido na PR #5 (2026-08-11 20:58): a PR finalizou, o operador abriu, e não
+    havia linha de preview nenhuma. Não era defeito de escrita — o
+    `trigger_preview_core` estava DENTRO do `_wait_deployment_available`, que
+    espera até 900s. A frase só era escrita no `return`, ou seja, até 15 minutos
+    depois.
+
+    Quinze minutos de silêncio são indistinguíveis de falha para quem abriu a
+    PR, e foi exatamente essa a leitura. A linha tem de existir assim que o
+    ambiente COMEÇA a subir, e ser reescrita quando ele termina — o marker de
+    idempotência já garante substituição, não acúmulo."""
+    import dse_validation.preview.argocd as arg
+
+    fake = _FakePr(_CORPO)
+    monkeypatch.setattr("dse_validation.github.client.build_github_client",
+                        lambda cfg=None: fake)
+    inp = TriggerPreviewInput(
+        work_item_id="wi_553d907d", tenant_id="fintex-poc", repo="a/b", pr_number=5,
+        files_changed=["src/app/login/login.component.ts"],
+    )
+
+    arg._announce_preview_provisioning(inp, "https://p.example/", actor="system:test")
+
+    assert "**Preview**" in fake.body, (
+        "a PR fica muda enquanto o ambiente sobe — para quem a abre, isso é "
+        "indistinguível de não ter preview nenhum"
+    )
+    assert "https://p.example/" in fake.body, (
+        "a URL já é conhecida quando o namespace é aplicado; escondê-la até o "
+        "pod ficar Ready não protege de nada"
+    )
+
+
+def test_the_provisioning_line_is_replaced_by_the_outcome(monkeypatch):
+    """PIN: o aviso de 'subindo' não pode sobreviver ao desfecho. Uma PR que diz
+    'provisioning' para sempre é pior que uma muda — ela afirma algo falso."""
+    import dse_validation.preview.argocd as arg
+
+    fake = _FakePr(_CORPO)
+    monkeypatch.setattr("dse_validation.github.client.build_github_client",
+                        lambda cfg=None: fake)
+    inp = TriggerPreviewInput(
+        work_item_id="wi_x", tenant_id="t", repo="a/b", pr_number=5,
+        files_changed=["src/x.ts"],
+    )
+
+    arg._announce_preview_provisioning(inp, "https://p.example/", actor="t")
+    arg._put_preview_in_pr_body(
+        inp, arg.preview_body_line("degraded", detail="npm error Missing script: start"),
+        actor="t")
+
+    assert fake.body.count("- **Preview**:") == 1
+    assert "Missing script" in fake.body
