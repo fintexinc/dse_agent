@@ -71,6 +71,7 @@ from dse_contracts.activities import (
     ACTIVITY_RUN_TESTER_TURN,
     ACTIVITY_RUN_VISUAL_DIFF,
     ACTIVITY_TEARDOWN_SANDBOX,
+    ACTIVITY_TRIAGE_PREVIEW_FAILURE,
     ACTIVITY_TRIGGER_PREVIEW,
     ACTIVITY_UPDATE_BASE_BRANCH,
     ACTIVITY_VERIFY_MERGE_STATE,
@@ -87,6 +88,7 @@ from dse_contracts.activities import (
     L2Verdict,
     MergeVerification,
     PreviewRef,
+    PreviewTriageVerdict,
     PrRef,
     ProvisionSandboxInput,
     RebuildSandboxInput,
@@ -97,6 +99,7 @@ from dse_contracts.activities import (
     SandboxHandle,
     TeardownSandboxInput,
     TesterTurnResult,
+    TriagePreviewFailureInput,
     TriggerPreviewInput,
     UpdateBaseBranchInput,
     UpdateBaseBranchResult,
@@ -215,6 +218,17 @@ class FakeControlPlane:
     # "auto" = deterministic paths-filter (mirror of WS-E's FR-20);
     # "created"/"degraded" force the status; "raise" fails the whole Activity.
     preview_mode: str = "auto"
+    # Modos POR CHAMADA (consumidos em ordem; esgotados → preview_mode). É o
+    # que permite o cenário do autofix: degraded na 1ª, created na 2ª.
+    preview_modes_by_call: list | None = None
+    # --- preview autofix (triage por agente, 2026-08-12) ---
+    # default False DE PROPÓSITO: os testes de degradado existentes continuam
+    # medindo o comportamento de sempre (degrada e segue) sem turno extra.
+    triage_fixable: bool = False
+    triage_instruction: str = "add the missing devDependency"
+    triage_raise: bool = False
+    triage_calls: int = 0
+    last_triage_payload: dict | None = None
     # §F F1 — merge verification via the GitHub API (fake): "verified" (default,
     # PR actually merged), "not_merged" (forged -> refuted), "unavailable" (API
     # down -> degrades to the envelope).
@@ -492,6 +506,8 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         state.calls_log.append("trigger_preview")
         state.last_preview_payload = dict(payload)
         inp = TriggerPreviewInput(**payload)  # REAL contract decode
+        if state.preview_modes_by_call:
+            state.preview_mode = state.preview_modes_by_call.pop(0)
         if state.preview_mode == "raise":
             raise ApplicationError("argocd unreachable (fake)",
                                    type="PreviewProvisionError", non_retryable=True)
@@ -514,6 +530,22 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         return PreviewRef(work_item_id=inp.work_item_id, pr_number=inp.pr_number,
                           status="skipped_backend_only",
                           detail="paths-filter: no previewable change (§D)")
+
+    async def triage_preview_failure(payload: dict) -> PreviewTriageVerdict:
+        state.triage_calls += 1
+        state.calls_log.append("triage_preview_failure")
+        state.last_triage_payload = dict(payload)
+        inp = TriagePreviewFailureInput(**payload)  # REAL contract decode
+        if state.triage_raise:
+            raise ApplicationError("triage model unreachable (fake)",
+                                   type="TriageError", non_retryable=True)
+        return PreviewTriageVerdict(
+            work_item_id=inp.work_item_id,
+            fixable=state.triage_fixable,
+            reason="app-caused (fake)" if state.triage_fixable else "infra-caused (fake)",
+            instruction=state.triage_instruction if state.triage_fixable else "",
+            cost_usd=0.01,
+        )
 
     async def run_demo_evidence(payload: dict) -> DemoEvidenceResult:
         state.demo_evidence_calls += 1
@@ -570,6 +602,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         )
 
     return [
+        activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)(triage_preview_failure),
         activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)(update_base_branch),
         activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)(run_planner_turn),
         activity.defn(name=ACTIVITY_RUN_TESTER_TURN)(run_tester_turn),

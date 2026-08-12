@@ -306,6 +306,15 @@ class WorkItemLifecycleInput:
     # "stale".
     evidence_refresh_cap: int = 5
     evidence_refreshes: int = 0
+    # Preview autofix (decisão de operador, 2026-08-12): preview degradado por
+    # causa de APP volta ao coding sozinho — um agente classifica (conteúdo),
+    # o workflow decide (política). Teto DEDICADO além dos existentes; o
+    # evidence_refresh_cap continua valendo por cima do re-preview.
+    preview_autofix_cap: int = 2
+    preview_autofix_rounds: int = 0
+    # Freio de no-op: dois fixes seguidos sem files_changed param o laço
+    # (espelho do _noop_coder_turns do laço de implementação).
+    preview_autofix_noop_turns: int = 0
 
     # Evidence pipeline state (also projected into work_item_evidence,
     # migration 0014, via the local Activity record_evidence_state).

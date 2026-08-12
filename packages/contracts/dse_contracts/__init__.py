@@ -58,6 +58,7 @@ from .activities import (
     ACTIVITY_RUN_TESTER_TURN,
     ACTIVITY_RUN_VISUAL_DIFF,
     ACTIVITY_TEARDOWN_SANDBOX,
+    ACTIVITY_TRIAGE_PREVIEW_FAILURE,
     ACTIVITY_TRIGGER_PREVIEW,
     ACTIVITY_UPDATE_BASE_BRANCH,
     ACTIVITY_EVAL_SKILL_CANDIDATE,
@@ -82,6 +83,7 @@ from .activities import (
     L2Verdict,
     MergeVerification,
     PreviewRef,
+    PreviewTriageVerdict,
     PrRef,
     ProvisionSandboxInput,
     PersistWorkItemStateInput,
@@ -98,6 +100,7 @@ from .activities import (
     SandboxHandle,
     TeardownSandboxInput,
     TesterTurnResult,
+    TriagePreviewFailureInput,
     TriggerPreviewInput,
     VisualDiffResult,
 )

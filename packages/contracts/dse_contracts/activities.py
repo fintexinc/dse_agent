@@ -54,6 +54,10 @@ ACTIVITY_RUN_L2_REVIEW = "run_l2_review"
 ACTIVITY_RUN_DEMO_EVIDENCE = "run_demo_evidence"
 ACTIVITY_PUBLISH_ARTIFACT = "publish_artifact"
 ACTIVITY_TRIGGER_PREVIEW = "trigger_preview"
+# Preview degradado → um agente decide se uma MUDANÇA DE CÓDIGO conserta
+# (decisão de operador, 2026-08-12: o laço fecha sem humano; política —
+# tetos, no-op, gasto — continua determinística no workflow).
+ACTIVITY_TRIAGE_PREVIEW_FAILURE = "triage_preview_failure"
 ACTIVITY_RUN_VISUAL_DIFF = "run_visual_diff"
 
 # --- Phase 4 (loop hardening & learning) ---
@@ -687,6 +691,45 @@ class PreviewRef(BaseModel):
     # preview (evidence in the PR/console for why this PR did or did not get
     # a preview).
     kind: str = ""
+
+
+class TriagePreviewFailureInput(BaseModel):
+    """Preview degradado: o agente recebe o ERRO (as palavras do pod, que a
+    rc.85 passou a capturar em `PreviewRef.detail`) e o CÓDIGO (arquivos-chave
+    lidos na branch da task) e decide se uma mudança de código conserta. A
+    decisão de DESPACHAR o fix — e todos os freios — é do workflow, em código."""
+
+    work_item_id: str
+    tenant_id: str
+    repo: str
+    pr_number: int
+    branch: str  # dse/<wi> — a ref onde os arquivos-chave são lidos
+    head_sha: str | None = None
+    detail: str = ""  # PreviewRef.detail do preview degradado
+    kind: str = ""  # "ui" | "deployable" | "" (paths-filter)
+    autofix_round: int = 0  # informacional: rodada que ESTE veredito autoriza
+    autofix_cap: int = 0  # informacional: teto configurado (nota da PR/ledger)
+
+
+class PreviewTriageVerdict(BaseModel):
+    """`fixable=True` autoriza gastar UM turno de Coder com `instruction` —
+    então instruction não pode vir vazia (validador). `fixable=False` significa
+    causa de infra/plataforma: degrada como sempre, sem gastar turno."""
+
+    work_item_id: str
+    fixable: bool
+    reason: str = Field(default="", max_length=1000)
+    instruction: str = Field(default="", max_length=4000)
+    cost_usd: float = 0.0
+
+    @model_validator(mode="after")
+    def _fixable_requires_instruction(self) -> "PreviewTriageVerdict":
+        if self.fixable and not self.instruction.strip():
+            raise ValueError(
+                "fixable=True sem instruction: o veredito autoriza um turno de "
+                "Coder e não diz o que fazer nele"
+            )
+        return self
 
 
 class RunVisualDiffInput(BaseModel):
