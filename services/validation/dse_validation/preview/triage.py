@@ -123,6 +123,23 @@ def build_triage_session(tenant_id: str = "", work_item_id: str = "") -> Preview
     return FakePreviewTriageSession()
 
 
+def _ledger_detail(work_item_id: str) -> str:
+    """As palavras do pod, do ledger (`wse_previews.detail`) — a fonte que
+    sobrevive a QUALQUER caminho de exceção. Medido no primeiro veredito de
+    produção (wi_9580d984, 2026-08-12): o workflow só tinha o boilerplate do
+    relógio ('StartToClose timeout') e o agente diagnosticou 'build lento'
+    para uma dependência ausente; a causa real estava gravada aqui pela
+    attempt anterior. Bônus, nunca piora: ilegível → string vazia."""
+    try:
+        from dse_validation import db
+
+        row = db.get_preview(work_item_id)
+    except Exception as exc:  # noqa: BLE001 — contexto extra, nunca derruba a triage
+        logger.warning("triage: could not read the preview ledger row: %s", exc)
+        return ""
+    return str((row or {}).get("detail") or "")
+
+
 def triage_preview_failure_core(
     inp: TriagePreviewFailureInput,
     *,
@@ -152,8 +169,17 @@ def triage_preview_failure_core(
                 logger.warning("triage: could not read %s@%s: %s", path, inp.branch, exc)
         partes.append(f"### {path}\n{(texto or '(unavailable)')[:_FILE_CHARS]}")
 
+    # O detail recebido pode ser só o relógio (caminho do timeout). O ledger é
+    # onde as palavras do pod moram — mescla SEMPRE que trouxer algo novo.
+    detalhe = (inp.detail or "(no detail was captured)")[:_DETAIL_CHARS]
+    do_ledger = _ledger_detail(inp.work_item_id)
+    if do_ledger and do_ledger[:200] not in detalhe:
+        detalhe += (
+            "\n\n### Last recorded preview outcome (platform ledger)\n"
+            + do_ledger[:_DETAIL_CHARS]
+        )
     prompt = _PROMPT.format(
-        detail=(inp.detail or "(no detail was captured)")[:_DETAIL_CHARS],
+        detail=detalhe,
         files="\n\n".join(partes),
     )
     session = session or build_triage_session(inp.tenant_id, inp.work_item_id)
