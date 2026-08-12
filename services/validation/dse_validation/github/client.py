@@ -410,6 +410,9 @@ class FakeGitHubClient:
     _prs: dict[tuple[str, str], dict] = field(default_factory=dict)  # (repo, branch) -> pr dict
     _pr_by_number: dict[tuple[str, int], dict] = field(default_factory=dict)
     _comments: dict[str, str] = field(default_factory=dict)  # comment_id -> body
+    # (repo, path, ref) -> texto; semeado pelos testes via set_file_text (a
+    # triage do preview lê arquivos-chave na branch da task).
+    _files: dict[tuple[str, str, str], str] = field(default_factory=dict)
     _check_runs: dict[tuple[str, str], list[dict]] = field(default_factory=dict)
     _combined: dict[tuple[str, str], dict] = field(default_factory=dict)
     _comment_id_seq: itertools.count = field(default_factory=lambda: itertools.count(1))
@@ -448,6 +451,14 @@ class FakeGitHubClient:
         if pr is None:
             return None
         return {"number": pr["number"], "state": pr["state"], "body": pr.get("body") or ""}
+
+    def set_file_text(self, repo: str, path: str, ref: str, text: str) -> None:
+        """Semente de teste para `get_file_text` (a triage do preview lê os
+        arquivos-chave na branch da task)."""
+        self._files[(repo, path, ref)] = text
+
+    def get_file_text(self, repo: str, path: str, ref: str) -> str | None:
+        return self._files.get((repo, path, ref))
 
     def post_issue_comment(self, repo: str, issue_number: int, body: str) -> str:
         comment_id = str(next(self._comment_id_seq))

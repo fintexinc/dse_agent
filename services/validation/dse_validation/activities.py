@@ -38,14 +38,17 @@ from dse_contracts.activities import (
     ACTIVITY_PUBLISH_ARTIFACT,
     ACTIVITY_RUN_DEMO_EVIDENCE,
     ACTIVITY_RUN_VISUAL_DIFF,
+    ACTIVITY_TRIAGE_PREVIEW_FAILURE,
     ACTIVITY_TRIGGER_PREVIEW,
     ACTIVITY_UPDATE_BASE_BRANCH,
     ArtifactRef,
     DemoEvidenceResult,
     PreviewRef,
+    PreviewTriageVerdict,
     PublishArtifactInput,
     RunDemoEvidenceInput,
     RunVisualDiffInput,
+    TriagePreviewFailureInput,
     TriggerPreviewInput,
     UpdateBaseBranchInput,
     UpdateBaseBranchResult,
@@ -539,6 +542,14 @@ def _update_base_branch(inp: UpdateBaseBranchInput) -> UpdateBaseBranchResult:
             _shutil.rmtree(ws.workspace_dir, ignore_errors=True)
 
 
+def _triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerdict:
+    """Preview degradado → o agente decide se mudança de código conserta
+    (conteúdo); o workflow decide o que fazer com o veredito (política)."""
+    from dse_validation.preview.triage import triage_preview_failure_core
+
+    return triage_preview_failure_core(inp)
+
+
 def _record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:
     from dse_validation.review_learning import record_review_feedback_episode
 
@@ -798,6 +809,10 @@ if _HAS_TEMPORAL:
     async def wse_record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:
         return await asyncio.to_thread(_record_review_episode, inp)
 
+    @activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)
+    async def triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerdict:
+        return await asyncio.to_thread(_triage_preview_failure, inp)
+
     ALL_ACTIVITIES = [
         run_l1_pipeline,
         finalize_pr,
@@ -818,6 +833,8 @@ if _HAS_TEMPORAL:
         # Phase 4
         update_base_branch,
         wse_record_review_episode,
+        # Preview autofix (2026-08-12)
+        triage_preview_failure,
     ]
 else:  # pragma: no cover
     ALL_ACTIVITIES = []

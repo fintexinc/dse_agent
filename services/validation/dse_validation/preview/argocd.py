@@ -894,6 +894,19 @@ def preview_body_line(
     return _sentence(f"state `{status}`{rest}")
 
 
+def preview_autofix_line(cause: str, round_: int, cap: int) -> str:
+    """A frase da PR ENQUANTO o auto-fix corre: o degradado + o que está sendo
+    feito a respeito. Sem ela, quem abre a PR no meio do laço vê um degradado
+    parado — e "parado" e "sendo consertado" são estados diferentes. O mesmo
+    marker de sempre: o announce/desfecho do re-preview a substitui."""
+    causa = " ".join((cause or "").split())
+    meio = f"did not come up — {_fit_detail(causa)} — " if causa else "did not come up — "
+    return (
+        f"- **Preview**: {meio}automatic fix attempt {round_}/{cap} is running; "
+        f"a new preview will follow"
+    )
+
+
 def _put_preview_in_pr_body(
     inp: TriggerPreviewInput, line: str | None, *, actor: str
 ) -> None:

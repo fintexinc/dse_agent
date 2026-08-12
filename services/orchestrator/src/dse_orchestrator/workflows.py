@@ -46,6 +46,7 @@ with workflow.unsafe.imports_passed_through():
         ACTIVITY_RUN_TESTER_TURN,
         ACTIVITY_RUN_VISUAL_DIFF,
         ACTIVITY_TEARDOWN_SANDBOX,
+        ACTIVITY_TRIAGE_PREVIEW_FAILURE,
         ACTIVITY_TRIGGER_PREVIEW,
         ACTIVITY_UPDATE_BASE_BRANCH,
         ACTIVITY_VERIFY_MERGE_STATE,
@@ -58,6 +59,7 @@ with workflow.unsafe.imports_passed_through():
         GateStatus,
         MergeVerification,
         PreviewRef,
+        PreviewTriageVerdict,
         PrRef,
         SandboxHandle,
         TesterTurnResult,
@@ -4093,6 +4095,109 @@ class WorkItemLifecycleWorkflow:
     # Failure mode 9: a degraded preview/demo NEVER blocks the PR — degraded
     # evidence is recorded (audit + projection 0014) and the flow moves on to
     # human review.
+    async def _maybe_autofix_degraded_preview(
+        self, *, reason: str, detail: str, kind: str = ""
+    ) -> None:
+        """Preview degradado → agente decide → (talvez) volta ao coding.
+
+        Decisão de operador (2026-08-12, caso do wi_a8b760de/PR #6): o laço
+        fecha sem humano. O AGENTE (activity de triage) recebe o erro — as
+        palavras do pod, que a rc.85 passou a capturar — e os arquivos-chave do
+        repo, e decide SÓ conteúdo: {fixable, reason, instruction}. Toda
+        política é código, aqui, ANTES do modelo: teto dedicado, no-op duplo,
+        gasto. Veredito infra (cluster, quota, TLS) não compra turno — a lição
+        dos US$ 18,90 do L1: gastar turno exige separar defeito do app de infra
+        que não respondeu.
+
+        Nunca bloqueia (failure mode 9): qualquer declínio ou falha da triage
+        degrada exatamente como hoje, auditado. O re-preview passa pelo
+        `evidence_refresh_cap` de sempre, então a recursão morre no teto dele
+        mesmo se este cap for mal configurado."""
+        input = self._input
+        if not workflow.patched("preview-autofix-v1"):
+            return
+        if input.pr_number is None or not input.repo or not input.branch:
+            return
+        if input.preview_autofix_rounds >= input.preview_autofix_cap:
+            await self._audit(
+                "preview_autofix_declined_cap",
+                {"rounds": input.preview_autofix_rounds,
+                 "cap": input.preview_autofix_cap, "reason": reason},
+            )
+            return
+        if input.preview_autofix_noop_turns >= 2:
+            await self._audit(
+                "preview_autofix_declined_noop",
+                {"noop_turns": input.preview_autofix_noop_turns, "reason": reason},
+            )
+            return
+        cap_usd = input.budget_max_usd
+        if cap_usd is not None and input.spent_usd >= cap_usd:
+            # Declínio SUAVE de propósito: _budget_boundary falharia o item, e
+            # preview nunca derruba item — sem verba, só não se tenta o fix.
+            await self._audit(
+                "preview_autofix_declined_budget",
+                {"spent_usd": round(input.spent_usd, 6), "cap": cap_usd},
+            )
+            return
+        try:
+            triage: PreviewTriageVerdict = await workflow.execute_activity(
+                ACTIVITY_TRIAGE_PREVIEW_FAILURE,
+                {
+                    "work_item_id": input.work_item_id,
+                    "tenant_id": input.tenant_id,
+                    "repo": input.repo,
+                    "pr_number": input.pr_number,
+                    "branch": input.branch,
+                    "head_sha": input.head_sha,
+                    "detail": (detail or "")[:2000],
+                    "kind": kind,
+                    "autofix_round": input.preview_autofix_rounds + 1,
+                    "autofix_cap": input.preview_autofix_cap,
+                },
+                result_type=PreviewTriageVerdict,
+                start_to_close_timeout=timedelta(seconds=180),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except ActivityError as exc:
+            # A triage é um bônus sobre o caminho degradado — falha dela deixa
+            # rastro e o item segue como sempre. Sem o rastro, "não tentou" e
+            # "tentou e quebrou" seriam o mesmo silêncio.
+            await self._audit(
+                "preview_triage_failed",
+                {"error": str(exc.cause or exc)[:300], "reason": reason},
+            )
+            return
+        await self._consume_cost(triage.cost_usd, source="preview_triage")
+        await self._audit(
+            "preview_triage_verdict",
+            {"fixable": triage.fixable, "reason": triage.reason[:300],
+             "round": input.preview_autofix_rounds + 1},
+        )
+        if not triage.fixable:
+            return
+        input.preview_autofix_rounds += 1
+        await self._audit(
+            "preview_autofix_dispatched",
+            {"round": input.preview_autofix_rounds,
+             "instruction": triage.instruction[:300]},
+        )
+        # A MESMA máquina do changes_requested: coder no mesmo branch/PR,
+        # re-valida L1, re-finaliza. Sem merge-base antes: não houve janela
+        # humana para drift, e o push do finalizer já recusa clobber.
+        fix_result = await self._apply_coder_fix_cycle(
+            [f"preview degraded: {triage.instruction}"]
+        )
+        files = list(getattr(fix_result, "files_changed", None) or [])
+        input.preview_autofix_noop_turns = (
+            0 if files else input.preview_autofix_noop_turns + 1
+        )
+        if files:
+            input.last_files_changed = files
+        await self._run_evidence_pipeline(
+            list(input.cumulative_files_changed or files), reason="preview_autofix"
+        )
+
     # ------------------------------------------------------------------
     async def _run_evidence_pipeline(self, files_changed: list[str], *, reason: str) -> None:
         input = self._input
@@ -4155,6 +4260,9 @@ class WorkItemLifecycleWorkflow:
                  "error": str(exc.cause or exc)[:300]},
             )
             await self._record_evidence(reason=reason, detail="trigger_preview_failed")
+            await self._maybe_autofix_degraded_preview(
+                reason=reason, detail=str(exc.cause or exc)[:2000]
+            )
             return
 
         input.preview_status = preview.status
@@ -4186,6 +4294,10 @@ class WorkItemLifecycleWorkflow:
                  "status": preview.status, "detail": (preview.detail or "")[:300]},
             )
             await self._record_evidence(reason=reason, detail=(preview.detail or "")[:300])
+            await self._maybe_autofix_degraded_preview(
+                reason=reason, detail=preview.detail or "",
+                kind=getattr(preview, "kind", ""),
+            )
             return
 
         # Plan 08 §D (D1) — the user's goal: the preview LINK shows up on the
