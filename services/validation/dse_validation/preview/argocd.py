@@ -400,7 +400,31 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             }})
             proxy_step = f"printf '%s' {json.dumps(proxy_conf)} > proxy.preview.json; "
             flags += " --proxy-config proxy.preview.json"
-        start = f"PORT={port} exec npm start -- {flags}"
+        # TENTA o que o repositório tem, em vez de exigir um nome. Terceira vez
+        # que a receita morre por assumir uma forma: `ng serve` em `::1` (PR
+        # #19), `browserTarget` no angular.json (PRs #2 e #3), e agora
+        # `npm error Missing script: "start"` (PR #5) — o projeto gerado chamou
+        # o script de outra coisa.
+        #
+        # A ordem é de mais específico para mais genérico, e o último degrau é
+        # o CLI local, que funciona mesmo sem script declarado. Se nada servir,
+        # a mensagem é NOSSA: o erro cru do npm manda o humano depurar a
+        # ferramenta, quando o problema é o repositório não declarar como se
+        # serve.
+        # Aspas duplas SIMPLES aqui: o script inteiro vai para o YAML via
+        # `json.dumps`, que faz o escape. Escapar à mão aqui escaparia duas
+        # vezes e o `sh` receberia barras literais.
+        tem = ('node -e "process.exit(((require(\'./package.json\').scripts)||{})'
+               '.%s?0:1)" 2>/dev/null')
+        start = (
+            f"PORT={port}; "
+            f"if {tem % 'start'}; then exec npm start -- {flags}; "
+            f"elif {tem % 'dev'}; then exec npm run dev -- {flags}; "
+            f"elif [ -x node_modules/.bin/ng ]; then exec node_modules/.bin/ng serve {flags}; "
+            f"else echo 'DSE preview: this repository declares no start or dev "
+            f"script and has no local Angular CLI, so there is no way to serve "
+            f"it'; exit 1; fi"
+        )
         script = (
             "set -eu; "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "

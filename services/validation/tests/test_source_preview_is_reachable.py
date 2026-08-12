@@ -161,3 +161,32 @@ def test_a_repo_with_no_way_to_serve_says_so(cfg):
         "o comando termina sem mensagem própria; o humano recebe o erro cru do "
         "npm e vai depurar a ferramenta em vez do repositório"
     )
+
+
+def test_the_generated_command_is_valid_shell(cfg, tmp_path):
+    """Os testes acima procuram SUBSTRINGS, e substring não prova que o `sh`
+    aceita o comando. A primeira versão da cadeia de fallback passou nos dois e
+    gerava `\\\\\\"` — escape duplo, porque o script já é escapado uma vez pelo
+    `json.dumps` que o põe no YAML. O container teria morrido no arranque com
+    erro de sintaxe, e o sintoma seria mais um CrashLoop indistinguível dos
+    outros três.
+
+    `sh -n` analisa sem executar: é a diferença entre "o texto contém o que eu
+    esperava" e "isto roda"."""
+    import json
+    import subprocess
+
+    deployment = _source_container_command(cfg)
+    # o script vive numa linha `- "<json>"` dentro de args
+    linha = next(ln.strip() for ln in deployment.splitlines()
+                 if ln.strip().startswith("- \"") and "npm" in ln)
+    script = json.loads(linha[2:].strip())
+
+    proc = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        f"o `sh` recusa o comando gerado: {proc.stderr.strip()}\n\n{script[:400]}"
+    )
+    assert "\\\"" not in script, (
+        "o script carrega barras de escape literais — sinal de escape duplo: "
+        "`json.dumps` já escapa quando põe o script no YAML"
+    )
