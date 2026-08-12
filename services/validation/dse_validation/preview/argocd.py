@@ -92,16 +92,30 @@ def pod_failure_detail(cfg: PreviewConfig, namespace: str, reason: str) -> str:
     (pod já apagado, RBAC, cluster fora do ar) não pode transformar um erro ruim
     em nenhum erro.
     """
-    try:
-        proc = _kubectl(
-            cfg,
-            ["logs", "-n", namespace, "-l", "app=preview", "--tail=40",
-             "--all-containers=true"],
-            timeout=25,
-        )
+    # DUAS tentativas, e a segunda é a que importa. Em CrashLoopBackOff o
+    # container está *waiting*, e `kubectl logs` sem `--previous` falha com
+    # "container is waiting to start" — ou seja, a captura morria exatamente no
+    # caso em que ela seria mais útil, porque só o pod que ESTÁ reiniciando tem
+    # algo a dizer. Medido na PR #5: a linha chegou à PR com o timeout pelado,
+    # sem log e sem o sufixo de "log vazio", que é a assinatura da exceção.
+    base = ["logs", "-n", namespace, "-l", "app=preview", "--tail=40",
+            "--all-containers=true"]
+    log = ""
+    respondeu = False
+    for args in (base, [*base, "--previous"]):
+        try:
+            proc = _kubectl(cfg, args, timeout=25)
+        except Exception as exc:  # noqa: BLE001 — bônus, nunca piora
+            logger.warning("preview: could not read pod logs in %s (%s): %s",
+                           namespace, args[-1], exc)
+            continue
+        respondeu = True
         log = (getattr(proc, "stdout", "") or "").strip()
-    except Exception as exc:  # noqa: BLE001 — bônus, nunca piora
-        logger.warning("preview: could not read pod logs in %s: %s", namespace, exc)
+        if log:
+            break
+    # As duas tentativas falharam: o motivo original é tudo o que temos, e é
+    # melhor que nada. Distinto de "respondeu e veio vazio", que é informação.
+    if not respondeu:
         return reason
     if not log:
         return f"{reason} (the pod wrote no log at all — it died before starting)"

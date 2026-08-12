@@ -113,3 +113,48 @@ def test_an_empty_log_says_so_instead_of_pretending(monkeypatch):
     detalhe = pod_failure_detail(PreviewConfig(), "preview-x", "timed out")
     assert "timed out" in detalhe
     assert "log" in detalhe.lower()
+
+
+def test_a_crashlooping_pod_still_gives_up_its_log(monkeypatch):
+    """CrashLoopBackOff é EXATAMENTE o caso que nos interessa, e é o caso em que
+    `kubectl logs` sem `--previous` falha.
+
+    Medido na PR #5 (2026-08-11 21:13): o pod morria com
+    `npm error Missing script: "start"`, e a linha que chegou à PR trazia só o
+    timeout do `kubectl wait` — sem o log e sem o sufixo de "log vazio", ou
+    seja, a captura tinha levantado. Em backoff o container está *waiting*, e o
+    log do processo que morreu só sai com `--previous`.
+
+    O sintoma é traiçoeiro: a captura falha justamente quando ela seria mais
+    útil, porque só o pod que ESTÁ reiniciando tem algo a dizer."""
+    import dse_validation.preview.argocd as arg
+
+    tentativas: list[bool] = []
+
+    def _kubectl(cfg, args, **kw):
+        anterior = "--previous" in args
+        tentativas.append(anterior)
+        if not anterior:
+            raise RuntimeError(
+                "error: container preview is waiting to start: CrashLoopBackOff")
+        return type("P", (), {"stdout": 'npm error Missing script: "start"'})()
+
+    monkeypatch.setattr(arg, "_kubectl", _kubectl)
+
+    detalhe = pod_failure_detail(PreviewConfig(), "preview-x", "timed out")
+
+    assert any(tentativas), "nunca tentou `--previous`, que é o log do container morto"
+    assert "Missing script" in detalhe, (
+        f"o log do container em backoff não chegou ao detail: {detalhe!r}"
+    )
+
+
+def test_when_both_attempts_fail_the_reason_still_survives(monkeypatch):
+    """PIN: duas tentativas falhando continua sendo melhor que apagar o motivo."""
+    import dse_validation.preview.argocd as arg
+
+    def _sempre_falha(cfg, args, **kw):
+        raise RuntimeError("Forbidden")
+
+    monkeypatch.setattr(arg, "_kubectl", _sempre_falha)
+    assert pod_failure_detail(PreviewConfig(), "preview-x", "timed out") == "timed out"
