@@ -88,6 +88,8 @@ LOCAL_ACTIVITY_PREVIEW_ENABLED = "preview_enabled_for_repo"
 # the ConfigMap changes between worker versions (P1).
 LOCAL_ACTIVITY_RESOLVE_BUDGET_CAP = "resolve_budget_cap"
 LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS = "resolve_retry_caps"
+# rc.89: previsão de custo do plano no gate de aprovação (mediana histórica).
+LOCAL_ACTIVITY_ESTIMATE_PLAN_COST = "estimate_plan_cost"
 
 _DSN = os.environ.get(
     "DSE_DATABASE_URL", "postgresql://dse_app:dse_app_dev_only@localhost:5432/dse"
@@ -1032,6 +1034,83 @@ async def resolve_budget_cap(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_COST_ESTIMATE_MIN_ITEMS = 3
+
+_COST_ESTIMATE_SQL = """
+WITH per_item AS (
+    SELECT r.work_item_id, SUM(r.cost_usd)::float AS total_usd
+      FROM console_rm.runs_view r
+      JOIN work_items w ON w.id = r.work_item_id
+     WHERE w.status = 'done'
+       AND w.tenant_id = %(tenant_id)s
+       AND (%(task_class)s::text IS NULL OR w.task_class = %(task_class)s)
+     GROUP BY r.work_item_id
+)
+SELECT COUNT(*)::int,
+       percentile_cont(0.25) WITHIN GROUP (ORDER BY total_usd),
+       percentile_cont(0.50) WITHIN GROUP (ORDER BY total_usd),
+       percentile_cont(0.75) WITHIN GROUP (ORDER BY total_usd)
+  FROM per_item
+"""
+
+
+@activity.defn(name=LOCAL_ACTIVITY_ESTIMATE_PLAN_COST)
+async def estimate_plan_cost(payload: dict[str, Any]) -> dict[str, Any]:
+    """rc.89 — quanto este plano DEVE custar, do custo REAL de itens iguais.
+
+    Mediana + p25-p75 de `cost_usd` por item CONCLUÍDO da mesma `task_class`
+    (fallback global; com menos de 3 itens em qualquer degrau devolve
+    indisponível — número de 1 amostra é número inventado, o defeito do 400).
+    Fonte: `console_rm.runs_view ⋈ work_items` — ledger ∪ audit, a superfície
+    que NÃO subconta (F0/migração 0022). Régua em `cost_usd`, nunca tokens
+    (tokens_in não lê cache — BACKLOG-REVIEW §ledger). Mediana e não média:
+    um item outlier não arrasta a previsão.
+
+    Best-effort: sem Postgres/linha → {"available": False}; o gate degrada
+    para o template de sempre (fail-open audível no workflow)."""
+    work_item_id = payload["work_item_id"]
+    try:
+        conn = _get_connection()
+    except Exception as exc:  # noqa: BLE001 — sem banco, sem previsão; nunca trava o gate
+        logger.warning("estimate_plan_cost: no database (%s)", exc)
+        return {"available": False, "reason": "no_database"}
+    try:
+        with conn.cursor() as cur:
+            # tenant_id vem do WORK ITEM, não do payload: a estimativa é
+            # escopada ao histórico do PRÓPRIO tenant — o custo de um cliente
+            # não precifica o plano de outro.
+            cur.execute(
+                "SELECT tenant_id, task_class FROM work_items WHERE id = %s",
+                (work_item_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {"available": False, "reason": "work_item_not_found"}
+            tenant_id, task_class = row
+            cur.execute(_COST_ESTIMATE_SQL,
+                        {"tenant_id": tenant_id, "task_class": task_class})
+            n, p25, p50, p75 = cur.fetchone()
+            scope = "task_class"
+            if n < _COST_ESTIMATE_MIN_ITEMS:
+                cur.execute(_COST_ESTIMATE_SQL,
+                            {"tenant_id": tenant_id, "task_class": None})
+                n, p25, p50, p75 = cur.fetchone()
+                scope = "global"
+            if n < _COST_ESTIMATE_MIN_ITEMS or p50 is None:
+                return {"available": False, "n": int(n or 0)}
+            return {
+                "available": True,
+                "n": int(n),
+                "scope": scope,
+                "task_class": task_class or "default",
+                "p25_usd": round(float(p25), 2),
+                "p50_usd": round(float(p50), 2),
+                "p75_usd": round(float(p75), 2),
+            }
+    finally:
+        conn.close()
+
+
 @activity.defn(name=LOCAL_ACTIVITY_POST_STATUS_TRANSITION)
 async def post_status_transition(payload: dict[str, Any]) -> dict[str, Any]:
     """Phase B (report 07): reflects the WorkItem status on the Jira board by
@@ -1386,6 +1465,7 @@ LOCAL_ACTIVITIES = [
     preview_enabled_for_repo,
     resolve_budget_cap,
     resolve_retry_caps,
+    estimate_plan_cost,
     fan_out_sibling_work_items,
     route_repos,
 ]

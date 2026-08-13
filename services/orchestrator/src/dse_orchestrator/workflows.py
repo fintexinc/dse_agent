@@ -85,6 +85,7 @@ with workflow.unsafe.imports_passed_through():
         LOCAL_ACTIVITY_RECORD_RUN_EPISODE,
         LOCAL_ACTIVITY_RECORD_SKILL_EPISODE,
         LOCAL_ACTIVITY_RESOLVE_APPROVER,
+        LOCAL_ACTIVITY_ESTIMATE_PLAN_COST,
         LOCAL_ACTIVITY_RESOLVE_BUDGET_CAP,
         LOCAL_ACTIVITY_RESOLVE_RETRY_CAPS,
         LOCAL_ACTIVITY_ROUTE_REPOS,
@@ -2990,6 +2991,30 @@ class WorkItemLifecycleWorkflow:
                 f"plan_approval_cascade_empty:no CODEOWNERS/designated approver for tenant={input.tenant_id}"
             )
 
+        # rc.89 — o aprovador deixa de decidir às cegas: antes de parquear, o
+        # gate consulta quanto itens IGUAIS custaram (mediana de cost_usd de
+        # concluídos da mesma task_class — a activity documenta as fronteiras).
+        # Fail-open e AUDÍVEL: sem previsão, o gate fica como sempre foi.
+        gate_cost_patched = workflow.patched("plan-gate-cost-estimate-v1")
+        if gate_cost_patched:
+            try:
+                estimate = await workflow.execute_activity(
+                    LOCAL_ACTIVITY_ESTIMATE_PLAN_COST,
+                    {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id},
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=5),
+                )
+            except ActivityError:
+                estimate = None
+                await self._audit("plan_cost_estimate_unavailable", {})
+            if isinstance(estimate, dict) and estimate.get("available"):
+                input.cost_estimate = estimate
+                await self._audit("plan_cost_estimated", {
+                    "p50_usd": estimate["p50_usd"], "p25_usd": estimate["p25_usd"],
+                    "p75_usd": estimate["p75_usd"], "n": estimate["n"],
+                    "scope": estimate["scope"], "cap_usd": input.budget_max_usd,
+                })
+
         # Park on a DURABLE wait (new awaiting_plan_approval state).
         # ORDER (fixed during the Phase 3 integration): write the gate
         # projection BEFORE flipping the status to awaiting_plan_approval.
@@ -3010,16 +3035,28 @@ class WorkItemLifecycleWorkflow:
         # Render the approval request via the adapters (WS-A edits the single
         # status message in-place; here we only ask it to reflect the gate).
         try:
-            await workflow.execute_activity(
-                ACTIVITY_POST_TRACKING_COMMENT,
+            gate_payload: dict[str, Any] = {
                 # `detail` preenche o `{detail}` do template de status, que
                 # neste caso é literalmente "(risk: {detail})". Sem ele a
                 # mensagem do gate dizia "(risk: —)": prometia o risco e
                 # mostrava um travessão, justo no texto que decide QUEM pode
                 # aprovar.
-                {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
-                 "pr_number": None, "status": "awaiting_plan_approval",
-                 "detail": input.risk_class},
+                "work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
+                "pr_number": None, "status": "awaiting_plan_approval",
+                "detail": input.risk_class,
+            }
+            # rc.89: com previsão/estimativa, o corpo é NOSSO (body > template
+            # no servidor — o precedente é o reminder). Sem extras, payload
+            # idêntico ao de sempre: o template do servidor segue dono do texto.
+            extra_lines = self._plan_gate_extra_lines() if gate_cost_patched else []
+            if extra_lines:
+                gate_payload["body"] = "\n".join(
+                    [f"📋 Plan ready — awaiting human approval (risk: {input.risk_class})."]
+                    + extra_lines
+                )
+            await workflow.execute_activity(
+                ACTIVITY_POST_TRACKING_COMMENT,
+                gate_payload,
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )
@@ -3113,6 +3150,27 @@ class WorkItemLifecycleWorkflow:
 
         raise _EscalateNow(f"unknown_plan_verdict:{verdict!r}")
 
+    def _plan_gate_extra_lines(self) -> list[str]:
+        """rc.89 — as linhas extras da mensagem do gate (custo previsto + diff
+        estimado). Determinístico a partir do input: replay-safe por
+        construção, e runs antigos (sem `cost_estimate`/`estimated_lines`)
+        produzem lista vazia — corpo idêntico ao de sempre."""
+        lines: list[str] = []
+        est = self._input.cost_estimate or {}
+        if est.get("available"):
+            cap = self._input.budget_max_usd
+            cap_txt = f" · cap ${cap:.0f}" if cap else ""
+            scope_txt = " in this task class" if est.get("scope") == "task_class" else ""
+            lines.append(
+                f"💵 Estimated cost: ~${est['p50_usd']:.2f} "
+                f"(range ${est['p25_usd']:.2f}–${est['p75_usd']:.2f}, "
+                f"based on {est['n']} similar completed item(s){scope_txt}){cap_txt}"
+            )
+        el = (self._input.plan_json or {}).get("estimated_lines")
+        if isinstance(el, int) and el > 0:
+            lines.append(f"📏 Estimated diff: ~{el} lines (planner's estimate)")
+        return lines
+
     async def _post_plan_approval_reminder(self) -> None:
         """Rewrites the body of the ONE mutable gate message when the reminder
         window elapses, KEEPING the status at `awaiting_plan_approval`.
@@ -3157,9 +3215,17 @@ class WorkItemLifecycleWorkflow:
         who = ", ".join(input.approvers) or "the resolved approvers"
         # The body has to repeat the ask, because on Slack it REPLACES the plan
         # text inside the same Block Kit message (the buttons sit under it).
+        # rc.89: o lembrete repete a previsão de custo e a estimativa de diff —
+        # quem ignora a primeira mensagem lê a segunda INTEIRA. Deriva do input
+        # (determinístico), então runs antigos sem estimativa produzem [] e o
+        # corpo fica byte a byte como era; por isso fica fora de patch marker
+        # (payload de activity não é comando).
+        extra = self._plan_gate_extra_lines()
+        extra_block = ("\n".join(extra) + "\n") if extra else ""
         body = (
             "⏰ **Reminder — this plan is still waiting for a decision.**\n\n"
             f"📋 Plan ready — awaiting human approval (risk: {input.risk_class}).\n"
+            f"{extra_block}"
             f"Approvers: {who}.\n\n"
             f"Approve or reject it within ~{remaining_hours:.0f}h. After that the DSE "
             "stops and hands the task to a human owner (`escalated`) — it never "

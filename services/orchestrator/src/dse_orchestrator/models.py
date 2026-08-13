@@ -152,6 +152,10 @@ class WorkItemLifecycleInput:
     # the resolution is retried at the next boundary instead of failing open for
     # the rest of the run.
     budget_default_resolved: bool = False
+    # rc.89: resultado de estimate_plan_cost no gate de aprovação (mediana
+    # histórica em USD). None = indisponível/não estimado. Vive no input para
+    # o lembrete re-renderizar o MESMO número após continue_as_new.
+    cost_estimate: dict | None = None
 
     # ------------------------------------------------------------------
     # Configurable caps/timers (WSB-E3-T1 / E2-T3 / E5-T1). They are part of the
