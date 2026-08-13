@@ -64,17 +64,24 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 
 def classify_risk_class(
     expected_files: list[str],
-    diff_budget_lines: int,
+    estimated_lines: int | None,
     forbidden_paths: list[str] | None = None,
 ) -> str:
     """Derive risk_class ('low'|'medium'|'high') DETERMINISTICALLY from the
     declared blast radius. Rules (a floor — WS-B's gate decides what to do with
     each level):
-      - high  : touches any forbidden_path OR any _HIGH_RISK_GLOB, OR
-                diff_budget > 800 lines;
-      - medium: touches any _MEDIUM_RISK_GLOB OR diff_budget > 300 lines OR
+      - high  : touches any forbidden_path OR any _HIGH_RISK_GLOB, OR the
+                Planner's estimate > 800 lines;
+      - medium: touches any _MEDIUM_RISK_GLOB OR estimate > 300 lines OR
                 > 15 files;
       - low   : otherwise.
+
+    `estimated_lines` é a estimativa DECLARADA pelo Planner (rc.89). `None` =
+    sem estimativa: os critérios de linhas são PULADOS e o risco vem só de
+    arquivos/globs — não se inventa um número para classificar. Antes daqui, o
+    parâmetro era `diff_budget_lines`, a constante 400 do contrato: `400 > 300`
+    era sempre verdadeiro, todo plano saía >= medium, e os ramos `> 800 → high`
+    e `return "low"` eram código morto.
     """
     forbidden = forbidden_paths or []
     for f in expected_files:
@@ -83,9 +90,9 @@ def classify_risk_class(
             return "high"
         if _matches_any(fp, _HIGH_RISK_GLOBS):
             return "high"
-    if diff_budget_lines > 800:
+    if estimated_lines is not None and estimated_lines > 800:
         return "high"
-    if diff_budget_lines > 300 or len(expected_files) > 15:
+    if (estimated_lines is not None and estimated_lines > 300) or len(expected_files) > 15:
         return "medium"
     for f in expected_files:
         if _matches_any(f, _MEDIUM_RISK_GLOBS):
@@ -370,12 +377,23 @@ class ReviewerContext:
     diff: str
 
     def render(self) -> str:
+        # rc.89: `diff_budget_lines` saiu daqui — era a constante 400 do
+        # contrato apresentada ao Reviewer sob "must adhere to", um teto FALSO
+        # (nunca dimensionado; o gate L1 de diff já é informativo). A estimativa
+        # do Planner entra como INFORMAÇÃO quando existe; sem ela, nenhuma
+        # linha sobre tamanho.
+        est = (
+            f"planner_estimated_lines: {self.plan.estimated_lines} "
+            "(informational estimate, not a limit)\n"
+            if getattr(self.plan, "estimated_lines", None)
+            else ""
+        )
         return (
             f"# L2 review — work_item {self.work_item_id}\n\n"
             f"## Plan the diff must adhere to\n"
             f"steps: {self.plan.steps}\n"
             f"expected_files (declared blast radius): {self.plan.expected_files}\n"
-            f"diff_budget_lines: {self.plan.diff_budget_lines}\n"
+            f"{est}"
             f"test_plan: {self.plan.test_plan}\n"
             f"risk_class: {self.plan.risk_class}\n"
             f"forbidden_paths: {self.plan.forbidden_paths}\n\n"

@@ -126,10 +126,15 @@ def plan_details_view(
         # do bloco e o Slack recusa a view inteira — o modal simplesmente não
         # abre, e o retry nunca funciona.
         risk = str(effective_risk or plan.get("risk_class") or "unknown")[:80]
-        budget = plan.get("diff_budget_lines")
+        # rc.89: o header mostra a ESTIMATIVA do Planner — nunca mais o
+        # "Diff budget", que era a constante 400 do contrato (teto de um gate
+        # desativado) sendo lida como previsão. Plano sem estimativa (todo o
+        # histórico) não mostra nada sobre tamanho; `isinstance` porque o valor
+        # vem de JSONB e tipo não é garantia.
+        est = plan.get("estimated_lines")
         header = f"*Risk:* `{risk}`"
-        if budget:
-            header += f"    *Diff budget:* `{budget}` lines"
+        if isinstance(est, int) and est > 0:
+            header += f"    *Estimated diff:* ~`{est}` lines _(planner's estimate)_"
         if plan.get("no_code_change"):
             header += "\n_This plan declares NO code change._"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})

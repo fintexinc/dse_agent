@@ -43,11 +43,26 @@ change to the public surface.
 
 | Package | Version | Owner | Consumed by |
 |---|---|---|---|
-| `dse_contracts` (`packages/contracts`) | 0.3.0 | Foundation | WS-A, WS-B, WS-C, WS-D, WS-E, WS-F |
+| `dse_contracts` (`packages/contracts`) | 0.4.0 | Foundation | WS-A, WS-B, WS-C, WS-D, WS-E, WS-F |
 | `dse_audit` (`packages/dse_audit`) | 0.1.0 | Foundation (minimal) → **extended by WS-F in Phase 1** | Everyone (via `emit`); `dse_audit.queries` (reconstruction/export) consumed by any compliance service/report |
 | `dse_identity` (`packages/dse_identity`) | 0.1.0 | Foundation (minimal) | WS-A (adapters resolve `platform_user_id` before writing `actor`) |
 
 ## Entries
+
+### `dse_contracts` 0.3.0 → 0.4.0 — `PlanArtifact` gains optional `estimated_lines` (rc.89)
+
+- **What:** `PlanArtifact.estimated_lines: int | None = None` — the Planner's
+  order-of-magnitude estimate of the diff (added+removed lines), parsed from
+  the model's response with a sane clamp. `None` = no estimate (fixture,
+  absent, garbage). Shown to the human approver in the plan-details modal and
+  fed to `classify_risk_class`; `diff_budget_lines` stays as a LEGACY field for
+  historical payload compatibility only (it was a hardcoded 400 that no caller
+  ever sized — it is no longer rendered, no longer injected into the L2
+  context and no longer drives risk).
+- **Change type:** additive (rule 1 — MINOR bump, no prior approval needed).
+  Historical payloads without the key revalidate with `None`; new plans carry
+  the key in `model_dump()`, so `plan_hash` changes for NEW plans only (no
+  consumer compares hashes across plan versions).
 
 ### `dse_contracts` 0.2.0 → 0.3.0 — `CoderTurnResult` gains optional `ledger_id`
 

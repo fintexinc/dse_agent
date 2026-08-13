@@ -978,12 +978,33 @@ def _default_plan_proposer(ctx: PlannerContext, inp: "RunPlannerTurnInput") -> d
     }
 
 
+#: Clamp são da estimativa do Planner: lixo/ausente/não-positivo → None (nunca
+#: se inventa um número — foi um default nunca dimensionado, o 400, que passou
+#: anos na tela como se fosse previsão); acima do teto → teto (um modal não
+#: exibe "3 milhões de linhas" como fato).
+_ESTIMATED_LINES_MIN = 1
+_ESTIMATED_LINES_MAX = 20_000
+
+
+def _coerce_estimated_lines(raw: object) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(float(str(raw)))
+    except (TypeError, ValueError):
+        return None
+    if value < _ESTIMATED_LINES_MIN:
+        return None
+    return min(value, _ESTIMATED_LINES_MAX)
+
+
 _PLAN_PROMPT = """You are the Planner of Fintex DSE (an autonomous software engineer).
 Based on the task below, produce a MINIMAL, verifiable implementation plan.
 
 Respond ONLY with a valid JSON object (no markdown, no comments), in the format:
 {{"steps": ["step 1", "step 2", ...],
   "expected_files": ["relative/path/1", "path/2", ...],
+  "estimated_lines": 120,
   "test_plan": "how to verify the change",
   "needs_paths": ["directory/you/could/not/see/", ...]}}
 
@@ -997,6 +1018,9 @@ Rules:
   The implementation diff will be validated AGAINST this list (test files
   are exempt) — include ALL production files that may change. NEVER
   empty.
+- "estimated_lines": integer, your order-of-magnitude estimate of the TOTAL
+  lines the diff will change (added+removed, production and test files). An
+  honest rough number — it is shown to the human approver; it is not a cap.
 - 2 to 6 steps, specific and executable.
 - The plan must solve EXACTLY the task in the "Task" section — nothing beyond it
   (no extra feature/refactor, however useful it may seem).
@@ -1609,6 +1633,7 @@ def _model_plan_proposer(
         return {
             "steps": steps[:10],
             "expected_files": files[:30],
+            "estimated_lines": _coerce_estimated_lines(proposal.get("estimated_lines")),
             "test_plan": str(proposal.get("test_plan") or "Cover the change with tests (Tester turn)."),
         }
     except (json.JSONDecodeError, ValueError) as exc:
@@ -1765,13 +1790,18 @@ async def _run_planner_turn_impl(
     )
     expected_files = list(proposal.get("expected_files", []))
     forbidden = PlanArtifact.model_fields["forbidden_paths"].default_factory()
-    risk_class = classify_risk_class(expected_files, inp.diff_budget_lines, forbidden)
+    # rc.89: o risco é classificado pela ESTIMATIVA do Planner (None quando não
+    # há — fixture nunca finge), não pela constante 400 do input, que fazia
+    # todo plano sair >= medium e mantinha o ramo high-por-tamanho morto.
+    estimated_lines = proposal.get("estimated_lines")
+    risk_class = classify_risk_class(expected_files, estimated_lines, forbidden)
 
     plan = PlanArtifact(
         work_item_id=inp.work_item_id,
         steps=list(proposal.get("steps", [])),
         expected_files=expected_files,
         diff_budget_lines=inp.diff_budget_lines,
+        estimated_lines=estimated_lines,
         test_plan=proposal.get("test_plan", ""),
         risk_class=risk_class,
         forbidden_paths=forbidden,
@@ -1855,7 +1885,9 @@ async def _run_planner_turn_impl(
             "steps": plan.steps,
             "expected_files": plan.expected_files,
             "risk_class": plan.risk_class,
-            "diff_budget_lines": plan.diff_budget_lines,
+            # rc.89: audita o número DECLARADO (ou None, honesto) — o campo
+            # antigo era a constante 400, um número de ninguém.
+            "estimated_lines": plan.estimated_lines,
             # `skills_hydrated` keeps its meaning (RESOLVED into the context)
             # and stops implying delivery: `skills_delivered`/`skills_dropped`
             # carry that, by name. It used to record 21 while 16 reached the
