@@ -191,9 +191,11 @@ def test_status_message_shows_repo_and_stage_bar(tenant_id, monkeypatch):
     assert "Build" in rendered and "Plan" in rendered, (
         "a barra de etapas não aparece"
     )
-    # implementing = Build é a etapa ATUAL; Plan já concluída
-    assert "✅ Plan" in rendered and "🔷 Build" in rendered, (
-        f"a barra não marca a etapa atual: {rendered[:400]}"
+    # implementing = Build é a etapa ATUAL; Plan já concluída. O marcador da
+    # etapa atual é ⏳ (pedido do operador: "loading", não um losango parado —
+    # a etapa Build dura muitos minutos e o 🔷 lia como travado).
+    assert "✅ Plan" in rendered and "⏳ Build" in rendered, (
+        f"a barra não marca a etapa atual como em andamento: {rendered[:400]}"
     )
 
 
@@ -211,7 +213,7 @@ def test_terminal_status_and_missing_repo_stay_honest(tenant_id, monkeypatch):
               "actor": "system:orchestrator", "status": "failed"},
     )
     rendered = json.dumps(fake_client.post_calls[0]["blocks"] or [], ensure_ascii=False)
-    assert "🔷" not in rendered, "item terminal com etapa 'atual' — a barra mente"
+    assert "⏳" not in rendered, "item terminal com etapa 'atual' — a barra mente"
 
     sem_repo = _make_work_item(tenant_id)
     client.post(

@@ -54,7 +54,7 @@ def _progress_line(status: str) -> str | None:
     idx = _STAGES.index(stage)
     partes = []
     for i, nome in enumerate(_STAGES):
-        marcador = "✅" if i < idx else ("🔷" if i == idx else "▫️")
+        marcador = "✅" if i < idx else ("⏳" if i == idx else "▫️")
         partes.append(f"{marcador} {nome}")
     return "   ".join(partes)
 
