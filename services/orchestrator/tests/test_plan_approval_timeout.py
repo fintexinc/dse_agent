@@ -99,6 +99,9 @@ class _Ledger:
 
     audit: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     gate_writes: list[dict[str, Any]] = field(default_factory=list)
+    # rc.89: o que o fake estimate_plan_cost devolve ao gate. Default honesto:
+    # indisponível (sem histórico) — os testes do custo setam o dict cheio.
+    cost_estimate: dict[str, Any] = field(default_factory=lambda: {"available": False})
     # (status, rendered text) per outbound call. `status` is what adapter-slack
     # keys the Approve/Reject Block Kit off, so the tests below assert on it.
     comments: list[tuple[str, str]] = field(default_factory=list)
@@ -143,12 +146,20 @@ def build_db_free_activities(ledger: _Ledger, state: FakeControlPlane) -> list[A
     async def post_status_transition(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "target_status": None}
 
+    async def estimate_plan_cost(payload: dict[str, Any]) -> dict[str, Any]:
+        # rc.89: o gate consulta a estimativa; aqui ela é scriptável. Registrar
+        # o fake é OBRIGATÓRIO mesmo nos testes que não a usam — activity não
+        # registrada morre em NotFoundError retry storm dentro do time-skipping
+        # (a lição documentada logo abaixo, em resolve_budget_cap).
+        return dict(ledger.cost_estimate)
+
     return [
         activity.defn(name=ACTIVITY_EMIT_AUDIT)(emit_audit_event),
         activity.defn(name=ACTIVITY_POST_TRACKING_COMMENT)(post_tracking_comment),
         activity.defn(name=LOCAL_ACTIVITY_UPDATE_STATUS)(update_work_item_status),
         activity.defn(name=LOCAL_ACTIVITY_RECORD_GATE)(record_plan_approval),
         activity.defn(name=LOCAL_ACTIVITY_POST_STATUS_TRANSITION)(post_status_transition),
+        activity.defn(name="estimate_plan_cost")(estimate_plan_cost),
         # Real ones: the checklist is pure, resolve_plan_approver short-circuits
         # on the CODEOWNERS reader before touching the DB, and the history
         # metric is OTel-only.
@@ -289,6 +300,84 @@ async def test_gate_timeout_reminds_then_escalates_without_self_approving(time_s
     assert "@alice" in gate_comments[1] and "escalated" in gate_comments[1]
     # and NOTHING was ever posted under a reminder pseudo-status
     assert not [s for s in ledger.comment_statuses if "reminder" in s]
+
+
+@pytest.mark.asyncio
+async def test_gate_message_carries_cost_estimate_and_reminder_repeats_it(time_skipping_env):
+    """rc.89: o aprovador decide às cegas — a mensagem do gate mostra uma
+    palavra de risco e nada mais. Com histórico de itens concluídos, o gate
+    passa a dizer QUANTO deve custar (mediana + faixa p25-p75 do custo REAL de
+    itens da mesma classe, em USD — tokens são régua quebrada, BACKLOG-REVIEW
+    §ledger) e QUANTO deve mudar (a estimativa do Planner). O lembrete repete
+    as mesmas linhas: quem ignora a primeira mensagem lê a segunda inteira."""
+    work_item_id = new_work_item_id("gate-cost")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    state = FakeControlPlane(plan_risk_class="high", plan_estimated_lines=380)
+    ledger = _Ledger()
+    ledger.cost_estimate = {
+        "available": True, "n": 4, "scope": "task_class", "task_class": "feature_small",
+        "p25_usd": 1.10, "p50_usd": 2.40, "p75_usd": 5.20,
+    }
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id,
+                        plan_approval_reminder_hours=1.0,
+                        plan_approval_timeout_hours=2.0),
+            id=work_item_id, task_queue=task_queue)
+        await handle.result()
+
+    gate_comments = [b for s, b in ledger.comments if s == STATUS_AWAITING_PLAN_APPROVAL]
+    assert len(gate_comments) == 2, ledger.comments
+    assert "Estimated cost: ~$2.40" in gate_comments[0], (
+        f"a mensagem do gate não diz quanto deve custar: {gate_comments[0]!r}"
+    )
+    assert "$1.10" in gate_comments[0] and "$5.20" in gate_comments[0]
+    assert "4 similar" in gate_comments[0]
+    assert "~380 lines" in gate_comments[0], (
+        "a estimativa de diff do Planner não chegou à mensagem do gate"
+    )
+    # o lembrete repete o número — não é um segundo texto pela metade
+    assert "Estimated cost: ~$2.40" in gate_comments[1]
+    assert "~380 lines" in gate_comments[1]
+    assert "Reminder" in gate_comments[1]
+    # e os botões continuam vivos: nenhum pseudo-status novo
+    assert set(ledger.comment_statuses) <= {STATUS_AWAITING_PLAN_APPROVAL, "escalated"}
+
+
+@pytest.mark.asyncio
+async def test_gate_message_without_estimate_keeps_the_template(time_skipping_env):
+    """PIN: sem histórico suficiente (available=False) e sem estimativa do
+    Planner, o payload NÃO carrega `body` — o template do servidor segue dono
+    do texto, e nada de número inventado aparece."""
+    work_item_id = new_work_item_id("gate-nocost")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    state = FakeControlPlane(plan_risk_class="high")  # sem plan_estimated_lines
+    ledger = _Ledger()  # cost_estimate default: {"available": False}
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id,
+                        plan_approval_reminder_hours=1.0,
+                        plan_approval_timeout_hours=2.0),
+            id=work_item_id, task_queue=task_queue)
+        await handle.result()
+
+    gate_comments = [b for s, b in ledger.comments if s == STATUS_AWAITING_PLAN_APPROVAL]
+    assert gate_comments, ledger.comments
+    # o fake grava body OR detail: sem body, o primeiro post é o detail cru
+    assert gate_comments[0] == "high", (
+        f"sem estimativa nenhuma, o gate não pode inventar corpo: {gate_comments[0]!r}"
+    )
+    assert "Estimated cost" not in " ".join(gate_comments)
 
 
 @pytest.mark.asyncio

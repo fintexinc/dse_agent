@@ -175,6 +175,9 @@ class FakeControlPlane:
     l2_calls: int = 0
     # risk declared by the Planner (default low -> the gate auto-approves)
     plan_risk_class: str = "low"
+    # rc.89: estimativa de linhas declarada pelo fake Planner (None = sem
+    # estimativa, o caso de todo o histórico).
+    plan_estimated_lines: int | None = None
     plan_expected_files: list[str] = field(default_factory=lambda: ["app.py"])
     planner_cost_usd: float = 0.0
     tester_cost_usd: float = 0.0
@@ -268,6 +271,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             work_item_id=payload["work_item_id"],
             steps=["step 1", "step 2"],
             expected_files=list(state.plan_expected_files),
+            estimated_lines=state.plan_estimated_lines,
             test_plan="covers the happy path",
             risk_class=state.plan_risk_class,
         )
