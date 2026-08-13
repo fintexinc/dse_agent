@@ -2465,6 +2465,11 @@ class WorkItemLifecycleWorkflow:
             await self._checkpoint_or_rebuild("implementing")
 
             await self._set_status(WorkItemStatus.validating, audit_action="l1_started")
+            # A superfície acompanha (auditoria 08-13: L1 leva minutos e a
+            # mensagem parada em "implementing" leu como travamento). Guard
+            # próprio: histórias em voo não têm esta Activity aqui.
+            if workflow.patched("validating-status-comment-v1"):
+                await self._post_status_comment(WorkItemStatus.validating.value)
             await self._boundary_gate()
             await self._budget_boundary("l1")
             l1_payload = {
@@ -4090,6 +4095,10 @@ class WorkItemLifecycleWorkflow:
         await self._checkpoint_or_rebuild("review_feedback")
 
         await self._set_status(WorkItemStatus.validating, audit_action="l1_revalidation_started")
+        # Mesmo guard do l1_started: a volta ao Validate no fix loop também
+        # edita a superfície (a barra recua de PR para Validate — verdade).
+        if workflow.patched("validating-status-comment-v1"):
+            await self._post_status_comment(WorkItemStatus.validating.value)
         await self._budget_boundary("review_fix_l1")
         l1_payload = {
             "sandbox": self._input.sandbox_handle,
