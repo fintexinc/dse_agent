@@ -102,6 +102,9 @@ _ENV_REFERENCE_INDICATORS = (
     "os.getenv(",
     "process.env.",
     "${",
+    # k8s pod-spec: o kubelet interpola `$(VAR)` a partir de env/secretKeyRef
+    # em runtime (ex.: DATABASE_URL do model-gateway) — nada em texto plano.
+    "$(",
     "secretKeyRef",
     "valueFrom",
 )
