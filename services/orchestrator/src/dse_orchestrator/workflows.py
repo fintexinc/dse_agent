@@ -1815,10 +1815,13 @@ class WorkItemLifecycleWorkflow:
                 input.base_branch = input.base_branch or "main"
                 if len(repos) > 1:
                     input.cross_repo = True
-                    # Posted BEFORE the fan-out so the group's comment row
-                    # exists before any sibling writes: every sibling's first
-                    # upsert is then an edit, and the surface never shows two
-                    # messages for one request.
+                    # Posted BEFORE the fan-out. NOTE (B6, verificado): isto
+                    # NÃO evita múltiplas mensagens — comment_state tem PK
+                    # (work_item_id, surface), então cada irmão SEMPRE posta a
+                    # própria mensagem mutável na thread (uma por item, por
+                    # construção). O que este post garante é só que a linha do
+                    # PRIMÁRIO existe antes do fan-out; a legibilidade entre
+                    # as N mensagens vem do context de repo (rc.90).
                     await self._post_status_comment(
                         "implementing",
                         detail="Routing to " + str(len(repos)) + " repositories: "
@@ -3161,14 +3164,21 @@ class WorkItemLifecycleWorkflow:
             cap = self._input.budget_max_usd
             cap_txt = f" · cap ${cap:.0f}" if cap else ""
             scope_txt = " in this task class" if est.get("scope") == "task_class" else ""
+            # rc.90: o rótulo admite a BASE da amostra — "completed" só quando
+            # a base é done; no POC (0 merges) a base honesta são os itens que
+            # chegaram a uma PR.
+            basis_txt = (
+                "similar completed item(s)"
+                if est.get("basis") == "done"
+                else "similar item(s) that reached a PR"
+            )
             lines.append(
                 f"💵 Estimated cost: ~${est['p50_usd']:.2f} "
                 f"(range ${est['p25_usd']:.2f}–${est['p75_usd']:.2f}, "
-                f"based on {est['n']} similar completed item(s){scope_txt}){cap_txt}"
+                f"based on {est['n']} {basis_txt}{scope_txt}){cap_txt}"
             )
-        el = (self._input.plan_json or {}).get("estimated_lines")
-        if isinstance(el, int) and el > 0:
-            lines.append(f"📏 Estimated diff: ~{el} lines (planner's estimate)")
+        # rc.90 (pedido do operador): a estimativa de DIFF saiu do canal — ela
+        # mora no modal Details, que o botão agora abre de qualquer mensagem.
         return lines
 
     async def _post_plan_approval_reminder(self) -> None:

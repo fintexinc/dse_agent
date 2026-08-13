@@ -1036,14 +1036,21 @@ async def resolve_budget_cap(payload: dict[str, Any]) -> dict[str, Any]:
 
 _COST_ESTIMATE_MIN_ITEMS = 3
 
+#: rc.90 — duas bases, em ordem de preferência (decisão do operador):
+#:   done       — itens concluídos por merge humano: a referência ideal;
+#:   reached_pr — itens que ABRIRAM PR (o trabalho produtivo completo até a
+#:                revisão). Existe porque o POC tem 0 merges: sem este degrau
+#:                a previsão ficaria dormante por semanas. O rótulo na
+#:                mensagem admite a base ("based on N items that reached a PR").
 _COST_ESTIMATE_SQL = """
 WITH per_item AS (
     SELECT r.work_item_id, SUM(r.cost_usd)::float AS total_usd
       FROM console_rm.runs_view r
       JOIN work_items w ON w.id = r.work_item_id
-     WHERE w.status = 'done'
-       AND w.tenant_id = %(tenant_id)s
+     WHERE w.tenant_id = %(tenant_id)s
        AND (%(task_class)s::text IS NULL OR w.task_class = %(task_class)s)
+       AND ((%(basis)s = 'done' AND w.status = 'done')
+            OR (%(basis)s = 'reached_pr' AND w.pr_number IS NOT NULL))
      GROUP BY r.work_item_id
 )
 SELECT COUNT(*)::int,
@@ -1087,26 +1094,28 @@ async def estimate_plan_cost(payload: dict[str, Any]) -> dict[str, Any]:
             if not row:
                 return {"available": False, "reason": "work_item_not_found"}
             tenant_id, task_class = row
-            cur.execute(_COST_ESTIMATE_SQL,
-                        {"tenant_id": tenant_id, "task_class": task_class})
-            n, p25, p50, p75 = cur.fetchone()
-            scope = "task_class"
-            if n < _COST_ESTIMATE_MIN_ITEMS:
-                cur.execute(_COST_ESTIMATE_SQL,
-                            {"tenant_id": tenant_id, "task_class": None})
+            n = 0
+            for basis, scope in (
+                ("done", "task_class"), ("done", "global"),
+                ("reached_pr", "task_class"), ("reached_pr", "global"),
+            ):
+                cur.execute(_COST_ESTIMATE_SQL, {
+                    "tenant_id": tenant_id, "basis": basis,
+                    "task_class": task_class if scope == "task_class" else None,
+                })
                 n, p25, p50, p75 = cur.fetchone()
-                scope = "global"
-            if n < _COST_ESTIMATE_MIN_ITEMS or p50 is None:
-                return {"available": False, "n": int(n or 0)}
-            return {
-                "available": True,
-                "n": int(n),
-                "scope": scope,
-                "task_class": task_class or "default",
-                "p25_usd": round(float(p25), 2),
-                "p50_usd": round(float(p50), 2),
-                "p75_usd": round(float(p75), 2),
-            }
+                if n >= _COST_ESTIMATE_MIN_ITEMS and p50 is not None:
+                    return {
+                        "available": True,
+                        "n": int(n),
+                        "scope": scope,
+                        "basis": basis,
+                        "task_class": task_class or "default",
+                        "p25_usd": round(float(p25), 2),
+                        "p50_usd": round(float(p50), 2),
+                        "p75_usd": round(float(p75), 2),
+                    }
+            return {"available": False, "n": int(n or 0)}
     finally:
         conn.close()
 
