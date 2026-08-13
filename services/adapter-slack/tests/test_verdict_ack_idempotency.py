@@ -215,8 +215,10 @@ def test_a_repark_rearms_the_decision(fake_slack):
 
 def test_a_transition_without_buttons_clears_the_stale_blocks(fake_slack):
     """chat.update sem `blocks` PRESERVA os blocos antigos no Slack real — a
-    transição pós-decisão (implementing etc.) precisa LIMPAR os botões, senão
-    o prompt continua clicável para sempre."""
+    transição pós-decisão (implementing etc.) precisa tirar os botões de
+    decisão, senão o prompt continua clicável para sempre. Desde a rc.90 o
+    edit re-renderiza os blocks inteiros (layout novo); a proteção passa a
+    ser: blocks presentes E sem Approve/Reject."""
     work_item_id, post = _gated_item(fake_slack, ts="9105.000100")
     resp = client.post("/internal/status-comment", json={
         "work_item_id": work_item_id, "channel": _CH,
@@ -225,7 +227,12 @@ def test_a_transition_without_buttons_clears_the_stale_blocks(fake_slack):
     assert resp.status_code == 200
     updates = [u for u in fake_slack.update_calls if u["ts"] == post["ts"]]
     assert updates, "o upsert edita a mesma mensagem"
-    assert updates[-1]["blocks"] == [], (
-        "sem status interativo o edit tem que mandar blocks=[] — omitir "
-        "preserva os botões velhos no Slack real"
+    latest = updates[-1]["blocks"]
+    assert latest, (
+        "o edit tem que mandar blocks (re-render) — omitir preserva os "
+        "botões velhos no Slack real"
     )
+    action_ids = {e.get("action_id") for b in latest if b.get("type") == "actions"
+                  for e in b.get("elements", [])}
+    assert "dse_plan_approve" not in action_ids, "Approve não sobrevive à transição"
+    assert "dse_plan_reject" not in action_ids, "Reject não sobrevive à transição"

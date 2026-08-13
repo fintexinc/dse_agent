@@ -43,7 +43,7 @@ from pydantic import BaseModel
 
 from .backend import (
     SlackCommentBackend,
-    approval_blocks,
+    status_blocks,
     plan_details_view,
     build_real_slack_client,
     repo_select_blocks,
@@ -189,7 +189,7 @@ _TERMINAL_STATUSES = ("done", "failed", "cancelled", "escalated")
 
 def _plan_for_message(
     tenant_id: str, channel: str, message: dict
-) -> tuple[str | None, dict | None, str | None]:
+) -> tuple[str | None, dict | None, str | None, str | None, list[dict]]:
     """O item, o plano e o risco EFETIVO da mensagem clicada — leitura pura.
 
     Escopada por `tenant_id` e `source`, como TODA leitura de `work_items`
@@ -219,7 +219,7 @@ def _plan_for_message(
                 if ref is None:
                     continue
                 cur.execute(
-                    "SELECT id, plan, risk_class FROM work_items "
+                    "SELECT id, plan, risk_class, repo, group_id FROM work_items "
                     "WHERE tenant_id = %s AND source = 'slack' "
                     "AND source_ref @> %s::jsonb "
                     "AND status NOT IN %s "
@@ -228,10 +228,27 @@ def _plan_for_message(
                 )
                 row = cur.fetchone()
                 if row:
-                    return row[0], row[1], row[2]
+                    # rc.90: irmãos do grupo (plano é POR repo — o aprovador
+                    # precisa ver o conjunto). Padrão COALESCE(group_id, id)
+                    # de live_sibling_preview_namespace.
+                    siblings: list[dict] = []
+                    if row[4]:
+                        cur.execute(
+                            "SELECT sib.id, sib.repo, sib.status, sib.risk_class "
+                            "FROM work_items me JOIN work_items sib "
+                            "ON COALESCE(sib.group_id, sib.id) = COALESCE(me.group_id, me.id) "
+                            "AND sib.id <> me.id WHERE me.id = %s "
+                            "ORDER BY sib.created_at",
+                            (row[0],),
+                        )
+                        siblings = [
+                            {"id": s[0], "repo": s[1], "status": s[2], "risk_class": s[3]}
+                            for s in cur.fetchall()
+                        ]
+                    return row[0], row[1], row[2], row[3], siblings
     finally:
         conn.close()
-    return None, None, None
+    return None, None, None, None, []
 
 
 def _rearm_verdict(work_item_id: str, stage: str) -> None:
@@ -613,7 +630,8 @@ async def slack_interactions(request: Request) -> dict:
                               "You are not allowed to read this task's plan.")
             return {"ok": True, "path": "unauthorized"}
         message = payload.get("message") or {}
-        work_item_id, plan, risk = _plan_for_message(tenant_id, channel, message)
+        work_item_id, plan, risk, item_repo, siblings = _plan_for_message(
+            tenant_id, channel, message)
         if not work_item_id:
             _notify_ephemeral(channel, user_id,
                               "I could not find the task for this message.")
@@ -632,7 +650,8 @@ async def slack_interactions(request: Request) -> dict:
                 get_slack_bot_token(), deadline=time.monotonic()
             ).views_open(
                 trigger_id=payload.get("trigger_id", ""),
-                view=plan_details_view(work_item_id, plan, effective_risk=risk),
+                view=plan_details_view(work_item_id, plan, effective_risk=risk,
+                                       repo=item_repo, siblings=siblings),
             )
         except Exception:  # noqa: BLE001 — sem modal, o gate continua clicável
             logger.warning("views_open failed (plan details)", exc_info=True)
@@ -775,15 +794,25 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT source_ref FROM work_items WHERE id = %s", (req.work_item_id,))
+            # rc.90: `repo` entra no mesmo SELECT — é o texto pequeno que faz
+            # dois irmãos de fan-out serem legíveis na MESMA thread (o
+            # "implementing" do FE foi lido como o BE parqueado tendo começado
+            # sem aprovação, porque nada dizia de quem era a mensagem).
+            cur.execute("SELECT source_ref, repo FROM work_items WHERE id = %s",
+                        (req.work_item_id,))
             row = cur.fetchone()
     finally:
         conn.close()
     item_source_ref = row[0] if row and isinstance(row[0], dict) else {}
+    item_repo = row[1] if row else None
     if item_source_ref.get("thread_ts"):
         surface_ref["thread_ts"] = item_source_ref["thread_ts"]
+    # rc.90: TODA mensagem ganha o layout (repo pequeno + corpo + barra de
+    # etapas + Details); Approve/Reject continuam exclusivos do gate, dentro
+    # de status_blocks.
+    surface_ref["blocks"] = status_blocks(req.body, status=req.status or "",
+                                          repo=item_repo)
     if req.status == "awaiting_plan_approval":
-        surface_ref["blocks"] = approval_blocks(req.body)
         # Item 3: renderizar os botões RE-ARMA a decisão deste stage — um
         # re-render legítimo (novo gate no mesmo item) é uma decisão nova.
         _rearm_verdict(req.work_item_id, "awaiting_plan_approval")

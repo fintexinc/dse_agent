@@ -28,28 +28,78 @@ class _SlackClientLike(Protocol):
     def views_open(self, *, trigger_id: str, view: dict) -> dict: ...
 
 
+#: rc.90 — as etapas fixas da barra de progresso e o mapa status→etapa.
+#: Determinístico e DELIBERADAMENTE incompleto: status terminal (done/failed/
+#: escalated/blocked/spec_conflict) e status desconhecido não têm etapa — uma
+#: barra "em andamento" num item morto mentiria, e etapa chutada é o mesmo
+#: defeito do 400. O corpo humanizado é quem conta o desfecho.
+_STAGES = ("Plan", "Build", "Validate", "PR", "Review")
+_STAGE_FOR_STATUS = {
+    "needs_clarification": "Plan",
+    "awaiting_plan_approval": "Plan",
+    "awaiting_repo_selection": "Plan",
+    "implementing": "Build",
+    "validating": "Validate",
+    "pr_open": "PR",
+    "pr_updated": "PR",
+    "pr_ready": "Review",
+    "review_feedback": "Review",
+}
+
+
+def _progress_line(status: str) -> str | None:
+    stage = _STAGE_FOR_STATUS.get(status)
+    if stage is None:
+        return None
+    idx = _STAGES.index(stage)
+    partes = []
+    for i, nome in enumerate(_STAGES):
+        marcador = "✅" if i < idx else ("🔷" if i == idx else "▫️")
+        partes.append(f"{marcador} {nome}")
+    return "   ".join(partes)
+
+
+def status_blocks(body: str, *, status: str = "", repo: str | None = None) -> list[dict]:
+    """rc.90 — o layout de TODA mensagem de status (pedido literal do operador
+    ao ver dois irmãos de fan-out dividindo a thread sem se identificar):
+
+        [context]  repo, em texto pequeno       (só quando conhecido)
+        [section]  o corpo humanizado de sempre
+        [context]  a barra de etapas            (só em status em voo)
+        [actions]  Details sempre; Approve/Reject SÓ no gate
+
+    Os action_id/value são os marcadores que `parse_slack_approval` lê (C1);
+    o Details é desviado ANTES do fallthrough de veredito, então pode viver em
+    qualquer mensagem sem risco de um clique virar aprovação."""
+    blocks: list[dict] = []
+    if repo:
+        blocks.append({"type": "context",
+                       "elements": [{"type": "mrkdwn", "text": f"`{_escape(repo)}`"}]})
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body}})
+    progress = _progress_line(status)
+    if progress:
+        blocks.append({"type": "context",
+                       "elements": [{"type": "mrkdwn", "text": progress}]})
+    elements: list[dict] = []
+    if status == "awaiting_plan_approval":
+        elements += [
+            {"type": "button", "action_id": "dse_plan_approve", "style": "primary",
+             "text": {"type": "plain_text", "text": "Approve"}, "value": "approve"},
+            {"type": "button", "action_id": "dse_plan_reject", "style": "danger",
+             "text": {"type": "plain_text", "text": "Reject"}, "value": "reject:re_plan"},
+        ]
+    # Sem estilo, de propósito: quem decide tem cor, quem só mostra não —
+    # cor igual convidaria o clique errado.
+    elements.append({"type": "button", "action_id": "dse_plan_details",
+                     "text": {"type": "plain_text", "text": "Details"}, "value": "details"})
+    blocks.append({"type": "actions", "block_id": "dse_plan_approval",
+                   "elements": elements})
+    return blocks
+
+
 def approval_blocks(body: str) -> list[dict]:
-    """Block Kit for plan approval (Phase B / report 07): the status text
-    + Approve/Reject buttons. The `action_id`/`value` are the markers that
-    `parse_slack_approval` reads (deterministic verdict/route — C1). Without
-    posting these buttons, the human had no way to approve/reject from Slack."""
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": body}},
-        {
-            "type": "actions",
-            "block_id": "dse_plan_approval",
-            "elements": [
-                {"type": "button", "action_id": "dse_plan_approve", "style": "primary",
-                 "text": {"type": "plain_text", "text": "Approve"}, "value": "approve"},
-                {"type": "button", "action_id": "dse_plan_reject", "style": "danger",
-                 "text": {"type": "plain_text", "text": "Reject"}, "value": "reject:re_plan"},
-                # Sem estilo, de propósito: os dois primeiros DECIDEM, este só
-                # mostra. Cor igual convidaria o clique errado.
-                {"type": "button", "action_id": "dse_plan_details",
-                 "text": {"type": "plain_text", "text": "Details"}, "value": "details"},
-            ],
-        },
-    ]
+    """Compat (Phase B / report 07): o gate é hoje um caso do layout único."""
+    return status_blocks(body, status="awaiting_plan_approval", repo=None)
 
 
 #: Limites do Slack: 3.000 chars por bloco `section`, 100 blocos por view. Os
@@ -92,7 +142,8 @@ def _escape(text: str) -> str:
 
 
 def plan_details_view(
-    work_item_id: str, plan: dict | None, *, effective_risk: str | None = None
+    work_item_id: str, plan: dict | None, *, effective_risk: str | None = None,
+    repo: str | None = None, siblings: list[dict] | None = None,
 ) -> dict:
     """O plano, legível, num modal.
 
@@ -110,6 +161,11 @@ def plan_details_view(
     plano. O modal diz o que sabe em vez de estourar — derrubar a única via de
     aprovação para mostrar um detalhe seria a pior troca possível."""
     blocks: list[dict] = []
+    # rc.90: num fan-out multi-repo o plano é POR repo — o modal diz de qual
+    # repo é ESTE plano, em texto pequeno, antes de qualquer outra coisa.
+    if repo:
+        blocks.append({"type": "context", "elements": [
+            {"type": "mrkdwn", "text": f"`{_escape(str(repo))[:200]}`"}]})
     if not plan:
         blocks.append({"type": "section", "text": {"type": "mrkdwn",
                        "text": "_The plan is not available for this item._"}})
@@ -152,6 +208,22 @@ def plan_details_view(
             blocks.append({"type": "divider"})
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
                            "text": f"*Test plan*\n{_escape(str(plan['test_plan']))[:_SECTION_CHARS]}"}})
+    # rc.90: os irmãos do grupo — o aprovador vê o CONJUNTO (um plano por
+    # repo) sem caçar mensagens na thread. Cortado como todo o resto.
+    if siblings:
+        linhas = []
+        for s in siblings[:_MAX_ITEMS]:
+            linhas.append(
+                f"• `{_escape(str(s.get('repo') or '?'))[:120]}` — "
+                f"`{_escape(str(s.get('id') or '?'))[:20]}…` · "
+                f"{_escape(str(s.get('status') or '?'))[:40]} · "
+                f"risk {_escape(str(s.get('risk_class') or '?'))[:20]}"
+            )
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                       "text": ("*Sibling plans* _(this change spans multiple "
+                                "repositories — each has its own plan)_\n"
+                                + "\n".join(linhas))[:_SECTION_CHARS]}})
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": f"Work item `{work_item_id}`"}]})
     return {
