@@ -50,3 +50,22 @@ def test_every_internal_status_has_a_public_projection():
     for status in WorkItemStatus:
         projected = to_public_status(status)
         assert projected in ("running", "blocked", "done", "failed")
+
+
+def test_plan_artifact_estimated_lines_is_additive():
+    """rc.89: `estimated_lines` entra como campo OPCIONAL — payload histórico
+    (sem a chave) revalida com None; com a chave, faz roundtrip; e o dump de um
+    plano novo CARREGA a chave (o que muda o plan_hash só de planos novos — a
+    decisão pinada aqui). `diff_budget_lines` fica como legado ignorado."""
+    from dse_contracts import PlanArtifact
+
+    historico = PlanArtifact.model_validate({
+        "work_item_id": "wi_old", "steps": ["s"], "expected_files": ["a.py"],
+        "diff_budget_lines": 400,
+    })
+    assert historico.estimated_lines is None
+
+    novo = PlanArtifact(work_item_id="wi_new", steps=["s"],
+                        expected_files=["a.py"], estimated_lines=380)
+    assert PlanArtifact.model_validate(novo.model_dump()).estimated_lines == 380
+    assert "estimated_lines" in novo.model_dump()

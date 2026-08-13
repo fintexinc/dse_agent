@@ -330,6 +330,37 @@ def test_the_modal_shows_the_EFFECTIVE_risk_not_the_declared_one(fake_slack):
     )
 
 
+def test_modal_shows_estimated_diff_when_present():
+    """rc.89: o header mostra a ESTIMATIVA do Planner — e nunca mais o
+    "Diff budget", que era a constante 400 do contrato (nunca dimensionada,
+    teto de um gate desativado) sendo lida como previsão pelo aprovador."""
+    from adapter_slack.backend import plan_details_view
+
+    plano = dict(_PLAN, estimated_lines=380)  # mantém diff_budget_lines: 400
+    view = plan_details_view("wi_x", plano, effective_risk="high")
+    texto = json.dumps(view)
+
+    assert "Estimated diff" in texto and "380" in texto, (
+        "a estimativa real do Planner não aparece no header do modal"
+    )
+    assert "Diff budget" not in texto, (
+        "o teto morto de 400 continua sendo renderizado como se fosse previsão"
+    )
+
+
+def test_modal_shows_nothing_about_size_without_estimate():
+    """Plano sem estimativa (todo o histórico): NADA sobre tamanho — o campo
+    legado diff_budget_lines=400 do JSONB persistido é ignorado por completo."""
+    from adapter_slack.backend import plan_details_view
+
+    view = plan_details_view("wi_x", dict(_PLAN), effective_risk="high")
+    texto = json.dumps(view)
+
+    assert "Diff budget" not in texto
+    assert "Estimated diff" not in texto
+    assert "Risk" in texto, "o header continua existindo (com o risco)"
+
+
 def test_slack_markup_in_the_plan_is_neutralised(fake_slack):
     """O plano é saída de LLM sobre a descrição do requester e o repositório do
     cliente. O Slack renderiza `<url|rótulo>` como link clicável dentro de uma

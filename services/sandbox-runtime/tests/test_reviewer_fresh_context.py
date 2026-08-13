@@ -79,6 +79,36 @@ def test_reviewer_context_by_construction_has_only_plan_and_diff():
     assert not ({"read_coder_history", "read_transcript", "repo_map", "search_code"} & public)
 
 
+def test_render_shows_estimate_as_info_never_budget():
+    """rc.89: o contexto do L2 carregava `diff_budget_lines: 400` sob o título
+    "Plan the diff must adhere to" — um teto FALSO (constante nunca dimensionada,
+    gate L1 já desativado) apresentado como obrigação. Agora: a estimativa do
+    Planner entra como INFORMAÇÃO ("not a limit") quando existe, e NADA entra
+    quando não existe — o L2 não lê número nenhum sobre tamanho."""
+    com_estimativa = PlanArtifact(
+        work_item_id="wi-est", steps=["s"], expected_files=["src/x.py"],
+        estimated_lines=380, test_plan="t", risk_class="low",
+    )
+    render = ReviewerContext(work_item_id="wi-est", plan=com_estimativa,
+                             diff=_CLEAN_DIFF).render()
+    assert "planner_estimated_lines" in render and "380" in render
+    assert "not a limit" in render, "a estimativa tem de se declarar informativa"
+    assert "diff_budget_lines" not in render, (
+        "o teto morto de 400 voltou ao contexto do L2 como obrigação"
+    )
+
+    sem_estimativa = PlanArtifact(
+        work_item_id="wi-sem", steps=["s"], expected_files=["src/x.py"],
+        test_plan="t", risk_class="low",
+    )
+    render2 = ReviewerContext(work_item_id="wi-sem", plan=sem_estimativa,
+                              diff=_CLEAN_DIFF).render()
+    assert "diff_budget_lines" not in render2
+    assert "planner_estimated_lines" not in render2, (
+        "sem estimativa, nenhuma linha sobre tamanho — não se inventa número"
+    )
+
+
 def test_reviewer_passes_when_diff_adheres_to_plan():
     verdict = asyncio.run(
         _run_l2_review_impl(RunL2ReviewInput(work_item_id="wi-rev", tenant_id="t", plan=_PLAN, diff=_CLEAN_DIFF))

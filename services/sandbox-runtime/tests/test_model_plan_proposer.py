@@ -152,3 +152,60 @@ def test_a_missing_instruction_becomes_an_explicit_marker(monkeypatch):
     inp.instruction = ""
     _model_plan_proposer(_Ctx(), inp, headers=None, virtual_key="vk")
     assert "(instruction missing)" in captured["prompt"]
+
+
+def test_estimated_lines_parsed_and_clamped(monkeypatch):
+    """rc.89: o Planner passa a declarar `estimated_lines`. Inteiro entra;
+    string numérica entra; acima do teto são (20k) vira o teto — nunca um
+    número absurdo que o modal exibiria como fato."""
+    for raw, esperado in ((120, 120), ("350", 350), (25_000, 20_000)):
+        _patch_chat(monkeypatch, json.dumps({
+            "steps": ["s"], "expected_files": ["a.js"], "test_plan": "t",
+            "estimated_lines": raw,
+        }))
+        p = _model_plan_proposer(_Ctx(), _inp(), headers=None, virtual_key="vk")
+        assert p is not None
+        assert p["estimated_lines"] == esperado, (
+            f"estimated_lines={raw!r} devia virar {esperado}, veio {p.get('estimated_lines')!r}"
+        )
+
+
+def test_estimated_lines_absent_or_garbage_is_none(monkeypatch):
+    """Ausente, lixo ou não-positivo → None, nunca um default inventado — foi
+    exatamente um default nunca dimensionado (400) que virou 'previsão' na tela."""
+    casos = (
+        {"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t"},
+        {"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t", "estimated_lines": "muitas"},
+        {"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t", "estimated_lines": 0},
+        {"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t", "estimated_lines": -5},
+    )
+    for caso in casos:
+        _patch_chat(monkeypatch, json.dumps(caso))
+        p = _model_plan_proposer(_Ctx(), _inp(), headers=None, virtual_key="vk")
+        assert p is not None
+        assert p["estimated_lines"] is None, (
+            f"{caso.get('estimated_lines', '<ausente>')!r} devia virar None"
+        )
+
+
+def test_prompt_asks_for_estimated_lines(monkeypatch):
+    """Sem pedir, o modelo não declara — e a tela volta a mostrar um número de
+    ninguém. O prompt tem de pedir a chave explicitamente."""
+    captured = {}
+
+    def fake_chat_completion(**kwargs):
+        captured["prompt"] = kwargs["messages"][0]["content"]
+        return SimpleNamespace(
+            content=json.dumps({"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t"}),
+            model="anthropic/claude", cost_usd=0.01, tokens_in=1, tokens_out=1, raw={},
+        )
+
+    import model_gateway_client.gateway_call as gc
+    import sandbox_runtime.activities as acts
+    monkeypatch.setattr(gc, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(acts, "_repo_tree_for_planner", lambda repo, br: [])
+
+    _model_plan_proposer(_Ctx(), _inp(), headers=None, virtual_key="vk")
+    assert "estimated_lines" in captured["prompt"], (
+        "o prompt do Planner não pede estimated_lines — a estimativa nunca nasce"
+    )

@@ -156,6 +156,35 @@ def test_planner_emits_structured_plan_with_hydrated_context(
         asyncio.run(teardown_sandbox(TeardownSandboxInput(work_item_id=work_item_id, tenant_id=tenant)))
 
 
+def test_planner_plumbs_estimated_lines_into_artifact_and_risk(work_item_id, state_dir, pg_dsn):
+    """rc.89: a estimativa do proposer chega ao PlanArtifact E ao classificador —
+    um plano estimado em 1200 linhas parqueia como high de verdade (o ramo >800
+    era código morto com a constante 400). Fixture sem estimativa → None."""
+    tenant = f"plan-{uuid.uuid4().hex[:8]}"
+    workspace_dir, svc = _seed_workspace(work_item_id, tenant, pg_dsn)
+    try:
+        plan = asyncio.run(
+            _run_planner_turn_impl(
+                RunPlannerTurnInput(
+                    work_item_id=work_item_id, tenant_id=tenant,
+                    instruction="rewrite the module", repo="app",
+                ),
+                retrieval=svc,
+                proposer=lambda ctx: {
+                    "steps": ["rewrite"], "expected_files": ["src/big_module.py"],
+                    "estimated_lines": 1200,
+                },
+            )
+        )
+        assert plan.estimated_lines == 1200
+        assert plan.risk_class == "high", (
+            f"1200 linhas estimadas têm de parquear como high — veio {plan.risk_class!r}"
+        )
+    finally:
+        _cleanup_retrieval(pg_dsn, tenant)
+        asyncio.run(teardown_sandbox(TeardownSandboxInput(work_item_id=work_item_id, tenant_id=tenant)))
+
+
 def test_planner_risk_class_is_deterministic_floor_not_llm(work_item_id, state_dir, pg_dsn):
     """Even if the proposer reports expected_files touching a migration, the
     risk_class is derived in code (high), not from what the 'LLM' claims."""
