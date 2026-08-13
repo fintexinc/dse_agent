@@ -163,6 +163,58 @@ def test_another_tenants_history_is_not_my_price(classe, tenant):
     )
 
 
+def _seed_pr_item(work_item_id: str, tenant_id: str, task_class: str,
+                  total_usd: float, status: str = "failed") -> None:
+    """Item que CHEGOU A UMA PR (pr_number preenchido) sem ter sido concluído —
+    a população de fallback do POC, onde nunca houve merge."""
+    _seed_done_item(work_item_id, tenant_id, task_class, total_usd)
+    conn = psycopg2.connect(DSN)
+    with conn, conn.cursor() as cur:
+        cur.execute("UPDATE work_items SET status=%s, pr_number=7 WHERE id=%s",
+                    (status, work_item_id))
+    conn.close()
+
+
+def test_falls_back_to_items_that_reached_a_pr(classe, tenant):
+    """rc.90 (decisão do operador): com 0 itens `done` no banco — nunca houve
+    merge — a previsão ficava dormante por semanas. O degrau novo: itens que
+    ABRIRAM PR (o trabalho produtivo completo até a revisão), com `basis`
+    explícita para o rótulo ser honesto ('based on N items that reached a PR')."""
+    for c in (2.0, 3.0, 4.0, 5.0):
+        _seed_pr_item(new_work_item_id("cost-pr"), tenant, classe, c)
+    alvo = new_work_item_id("cost-alvo")
+    _seed_target(alvo, tenant, classe)
+
+    est = _estimar(alvo)
+
+    assert est["available"] is True, (
+        "4 itens com PR e a previsão continua dormante — o degrau novo não existe"
+    )
+    assert est.get("basis") == "reached_pr", (
+        f"o rótulo precisa saber a base — veio {est.get('basis')!r}"
+    )
+    assert est["p50_usd"] == pytest.approx(3.5, abs=0.6)
+
+
+def test_done_is_still_preferred_over_pr_reached(classe, tenant):
+    """Com ≥3 concluídos, a base volta a ser `done` — o fallback é degrau,
+    não substituto."""
+    for c in (1.0, 2.0, 3.0):
+        _seed_done_item(new_work_item_id("cost-done"), tenant, classe, c)
+    for c in (50.0, 60.0, 70.0):
+        _seed_pr_item(new_work_item_id("cost-pr"), tenant, classe, c)
+    alvo = new_work_item_id("cost-alvo")
+    _seed_target(alvo, tenant, classe)
+
+    est = _estimar(alvo)
+
+    assert est["available"] is True
+    assert est.get("basis") == "done"
+    assert est["p50_usd"] == pytest.approx(2.0, abs=0.5), (
+        "os itens de PR (caros) contaminaram a base done"
+    )
+
+
 def test_returns_unavailable_below_three_anywhere(tenant):
     alvo = new_work_item_id("cost-vazio")
     _seed_target(alvo, tenant, None)

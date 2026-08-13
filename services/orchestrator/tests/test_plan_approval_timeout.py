@@ -317,7 +317,7 @@ async def test_gate_message_carries_cost_estimate_and_reminder_repeats_it(time_s
     ledger = _Ledger()
     ledger.cost_estimate = {
         "available": True, "n": 4, "scope": "task_class", "task_class": "feature_small",
-        "p25_usd": 1.10, "p50_usd": 2.40, "p75_usd": 5.20,
+        "basis": "reached_pr", "p25_usd": 1.10, "p50_usd": 2.40, "p75_usd": 5.20,
     }
 
     async with Worker(time_skipping_env.client, task_queue=task_queue,
@@ -337,13 +337,19 @@ async def test_gate_message_carries_cost_estimate_and_reminder_repeats_it(time_s
         f"a mensagem do gate não diz quanto deve custar: {gate_comments[0]!r}"
     )
     assert "$1.10" in gate_comments[0] and "$5.20" in gate_comments[0]
-    assert "4 similar" in gate_comments[0]
-    assert "~380 lines" in gate_comments[0], (
-        "a estimativa de diff do Planner não chegou à mensagem do gate"
+    # rc.90: o rótulo diz a BASE — sem merges, a referência são itens que
+    # chegaram a PR, e a frase precisa admitir isso.
+    assert "reached a PR" in gate_comments[0], (
+        f"o rótulo esconde a base da amostra: {gate_comments[0]!r}"
+    )
+    # rc.90 (pedido do operador): a estimativa de DIFF sai do canal — mora só
+    # no Details. A mensagem carrega o custo; o tamanho fica a um clique.
+    assert "Estimated diff" not in gate_comments[0], (
+        "a linha de diff voltou ao canal — ela pertence ao modal"
     )
     # o lembrete repete o número — não é um segundo texto pela metade
     assert "Estimated cost: ~$2.40" in gate_comments[1]
-    assert "~380 lines" in gate_comments[1]
+    assert "Estimated diff" not in gate_comments[1]
     assert "Reminder" in gate_comments[1]
     # e os botões continuam vivos: nenhum pseudo-status novo
     assert set(ledger.comment_statuses) <= {STATUS_AWAITING_PLAN_APPROVAL, "escalated"}

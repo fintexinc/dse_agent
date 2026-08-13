@@ -361,6 +361,60 @@ def test_modal_shows_nothing_about_size_without_estimate():
     assert "Risk" in texto, "o header continua existindo (com o risco)"
 
 
+def test_modal_shows_repo_and_sibling_plans():
+    """rc.90: num fan-out multi-repo, o plano é POR REPO — o modal diz de qual
+    repo é este plano e lista os irmãos do grupo (repo, item, status, risco),
+    para o aprovador enxergar o conjunto sem caçar threads."""
+    from adapter_slack.backend import plan_details_view
+
+    view = plan_details_view(
+        "wi_x", dict(_PLAN, estimated_lines=380), effective_risk="high",
+        repo="fintexinc/bmo-fee-calculator-be-dse",
+        siblings=[{"id": "wi_a577d46809c", "repo": "fintexinc/bmo-fee-calculator-fe-dse",
+                   "status": "validating", "risk_class": "low"}],
+    )
+    texto = json.dumps(view, ensure_ascii=False)
+
+    assert "bmo-fee-calculator-be-dse" in texto, "o repo DESTE plano não aparece"
+    assert "Sibling plans" in texto, "a seção de irmãos não existe"
+    assert "bmo-fee-calculator-fe-dse" in texto and "validating" in texto, (
+        "o irmão (repo + status) não aparece — o aprovador segue sem ver o conjunto"
+    )
+
+
+def test_clicking_details_on_a_grouped_item_lists_the_sibling(fake_slack):
+    """Integração: o clique no Details de um item AGRUPADO traz o irmão no
+    modal — a query por group_id tem que existir de ponta a ponta."""
+    work_item_id, post = _item_at_the_plan_gate(fake_slack, ts="7009.000100")
+    grupo = f"grp_{work_item_id[-8:]}"
+    irmao = f"wi_sib_{work_item_id[-8:]}"
+    conn = psycopg2.connect(DSN)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
+            tenant_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE work_items SET group_id=%s, repo='fintexinc/bmo-fee-calculator-be-dse' "
+                "WHERE id=%s", (grupo, work_item_id))
+            cur.execute(
+                "INSERT INTO work_items (id, tenant_id, source, source_ref, requester, "
+                "idempotency_key, repo, group_id, status) "
+                "VALUES (%s,%s,'slack','{}'::jsonb,'usr_test',%s,"
+                "'fintexinc/bmo-fee-calculator-fe-dse',%s,'validating')",
+                (irmao, tenant_id, f"idem_{irmao}", grupo))
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _click_details(post)
+
+    assert result.get("path") == "plan_details_opened", result
+    rendered = json.dumps(fake_slack.views_open_calls[-1]["view"], ensure_ascii=False)
+    assert "bmo-fee-calculator-fe-dse" in rendered, (
+        "o irmão do grupo não chegou ao modal — a query por group_id não existe"
+    )
+
+
 def test_slack_markup_in_the_plan_is_neutralised(fake_slack):
     """O plano é saída de LLM sobre a descrição do requester e o repositório do
     cliente. O Slack renderiza `<url|rótulo>` como link clicável dentro de uma
