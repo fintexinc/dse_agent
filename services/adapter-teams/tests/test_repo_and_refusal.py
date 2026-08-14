@@ -89,7 +89,12 @@ def test_a_mention_lands_on_the_repo_bound_to_the_channel(teams_secret_b64):
         "o binding do canal foi ignorado: o item nasceu sem repo e vai depender "
         f"do roteador LLM sobre o catálogo do tenant inteiro (repo={got_repo!r})"
     )
-    assert repo in list(candidates), f"repo_candidates não recortou o canal: {candidates}"
+    # Binding único resolve DETERMINISTICAMENTE: a lista de candidatos existe
+    # para o caso ambíguo (canal com FE e BE), e ficar vazia aqui é a prova de
+    # que nenhum modelo foi consultado.
+    assert list(candidates) == [], (
+        f"resolução determinística não deveria deixar candidatos: {candidates}"
+    )
 
 
 def test_a_reply_with_no_task_is_refused_not_a_server_error(teams_secret_b64):

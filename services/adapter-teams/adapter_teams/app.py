@@ -30,10 +30,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from ingest_gateway import (
     AdmissionBlocked,
+    NonTaskAdmissionRefused,
     admit_work_item,
     correlate,
     get_connection,
     record_signal_event,
+    resolve_repo,
     resolve_tenant,
     sanitize_content,
     verify_teams_signature,
@@ -119,18 +121,45 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str) ->
             )
             return {"ok": True, "path": "signal", "work_item_id": result.work_item_id}
 
+        # A cascata de repositório (override no texto → binding do canal →
+        # default do tenant), como Slack (app.py:408) e Jira fazem. Sem ela o
+        # `repo_bindings` do canal é decorativo e o item nasce sem repo, para
+        # um modelo adivinhar depois o que uma linha de banco já respondia. O
+        # texto usado é o SANITIZADO, nunca o cru.
+        repo, base_branch, repo_candidates = resolve_repo(
+            conn, tenant_id=tenant_id, platform="teams",
+            signals={"text": sanitized, "channel": conv_id},
+        )
         try:
             work_item_id = admit_work_item(
                 conv_event,
                 tenant_id=tenant_id,
                 source="teams",
                 channel=conv_id,
+                repo=repo,
+                base_branch=base_branch,
+                repo_candidates=repo_candidates,
                 requester_principal=principal,
                 sanitized_content=sanitized,
                 conn=conn,
             )
         except AdmissionBlocked:
             return {"ok": True, "path": "blocked_kill_switch"}
+        except NonTaskAdmissionRefused as refusal:
+            # Resposta numa conversa que a correlação desconhece NUNCA vira
+            # tarefa — e também não pode virar 500: o connector reentrega erro
+            # de servidor, então a mesma mensagem voltaria em loop. Recusa
+            # explícita e auditada, como no Slack (app.py:427).
+            audit_emit(
+                actor=principal,
+                action="non_task_admission_refused",
+                tenant_id=tenant_id,
+                details={"kind": refusal.kind, "channel": conv_id,
+                         "event_id": conv_event.event_id},
+                conn=conn,
+            )
+            conn.commit()
+            return {"ok": True, "path": "refused_non_task"}
 
         if result.provenance_work_item_id:
             audit_emit(
