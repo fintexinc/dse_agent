@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from adapter_teams import events
 
-from helpers import teams_activity
+from .helpers import teams_activity
 
 
 def test_source_ref_carries_the_service_url():

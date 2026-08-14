@@ -28,8 +28,16 @@ def test_build_conversation_event_gated_on_activation():
     if is_activated():
         ev = events.build_conversation_event(act, resolved_principal="usr_test_x")
         assert ev.platform.value == "teams"
-        assert ev.source_ref == {"conversation_id": "19:channel_abc@thread.tacv2"}
-        assert ev.content_snapshot == "fix the login bug"
+        # Ativado em 2026-08-14: este ramo NUNCA tinha rodado (is_activated()
+        # era False desde a Fase 4), e as duas expectativas abaixo estavam
+        # erradas de nascença — o source_ref agora carrega o service_url
+        # (senão ninguém consegue responder) e o snapshot é o texto sem a
+        # menção, que na fixture é "please fix the login bug".
+        assert ev.source_ref == {
+            "conversation_id": "19:channel_abc@thread.tacv2",
+            "service_url": "https://smba.trafficmanager.net/emea/",
+        }
+        assert ev.content_snapshot == "please fix the login bug"
         assert ev.signature_verified is True
     else:
         with pytest.raises(TeamsNotActivated):

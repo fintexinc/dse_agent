@@ -55,7 +55,7 @@ def _post(work_item_id: str, body: str):
 
 def test_first_status_update_sends_single_activity(tenant_id, monkeypatch):
     fake = FakeTeamsClient()
-    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw: fake)
+    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw, tenant="": fake)
 
     wi = _make_work_item(tenant_id)
     resp = _post(wi, "Task started")
@@ -69,7 +69,7 @@ def test_first_status_update_sends_single_activity(tenant_id, monkeypatch):
 
 def test_subsequent_updates_edit_in_place_never_send_new(tenant_id, monkeypatch):
     fake = FakeTeamsClient()
-    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw: fake)
+    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw, tenant="": fake)
 
     wi = _make_work_item(tenant_id)
     for body in ["Task started", "Task running (1/3)", "Task done"]:
@@ -88,7 +88,7 @@ def test_status_ref_persisted_across_process_restart_simulation(tenant_id, monke
     (comment_state), so swapping the client (simulating a restart) keeps editing
     instead of re-sending."""
     shared = FakeTeamsClient()
-    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw: shared)
+    monkeypatch.setattr(app_module, "build_real_teams_client", lambda app_id, pw, tenant="": shared)
 
     wi = _make_work_item(tenant_id)
     _post(wi, "first")

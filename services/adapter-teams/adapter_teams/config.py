@@ -51,6 +51,13 @@ def get_teams_app_password() -> str:
     return _from_vault_or_env("dse/teams/bot", "app_password", "TEAMS_APP_PASSWORD")
 
 
+def get_teams_bot_tenant_id() -> str:
+    """Tenant do REGISTRO do bot (AAD) — não confundir com `get_tenant_id()`,
+    que é o tenant do DSE. Bot single-tenant só recebe token do emissor do
+    próprio tenant; vazio mantém o fluxo multi-tenant antigo."""
+    return _from_vault_or_env("dse/teams/bot", "tenant_id", "TEAMS_APP_TENANT_ID")
+
+
 def get_default_service_url() -> str:
     """Bot Framework connector `serviceUrl` (per region; e.g.
     `https://smba.trafficmanager.net/emea/`). In production it arrives on every

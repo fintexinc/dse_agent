@@ -115,7 +115,16 @@ def compute_event_id(activity: dict[str, Any]) -> str:
 
 
 def source_ref(activity: dict[str, Any]) -> dict[str, str]:
-    return {"conversation_id": conversation_id(activity)}
+    """O endereço COMPLETO da resposta. O `service_url` entra junto porque
+    endereçar no connector exige os dois: ele é regional (varia por tenant) e
+    só chega aqui, na Activity recebida — o orchestrator responde horas depois,
+    lendo esta linha. Sem ele, `_resolve_comment_target` devolve None e o
+    status some em silêncio."""
+    ref = {"conversation_id": conversation_id(activity)}
+    url = str(activity.get("serviceUrl") or "").strip()
+    if url:
+        ref["service_url"] = url
+    return ref
 
 
 def build_conversation_event(

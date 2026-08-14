@@ -16,6 +16,9 @@ class Platform(str, Enum):
     slack = "slack"
     github = "github"
     jira = "jira"
+    # Ativado em 2026-08-14, junto com a migração 0043 que abre os quatro
+    # CHECKs de plataforma. O adapter existe desde a Fase 4 e esperava só isto.
+    teams = "teams"
 
 
 class EventKind(str, Enum):

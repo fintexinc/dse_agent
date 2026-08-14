@@ -53,8 +53,14 @@ def test_plain_message_is_clarification_answer():
 
 
 def test_source_ref_is_conversation_scoped():
+    """A conversa é o escopo — mas o endereço completo inclui o `service_url`
+    regional, sem o qual ninguém responde depois (ver
+    test_source_ref_can_be_answered.py, achado na ativação de 2026-08-14)."""
     act = teams_activity()
-    assert events.source_ref(act) == {"conversation_id": "19:channel_abc@thread.tacv2"}
+    assert events.source_ref(act) == {
+        "conversation_id": "19:channel_abc@thread.tacv2",
+        "service_url": "https://smba.trafficmanager.net/emea/",
+    }
 
 
 def test_event_id_is_deterministic_and_idempotent():

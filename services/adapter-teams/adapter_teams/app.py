@@ -47,6 +47,7 @@ from .config import (
     get_default_service_url,
     get_teams_app_id,
     get_teams_app_password,
+    get_teams_bot_tenant_id,
     get_teams_shared_secret,
     get_tenant_id,
 )
@@ -186,7 +187,8 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     string "teams") — so it is already fully functional/testable, with
     `FakeTeamsClient`."""
     service_url = req.service_url or get_default_service_url()
-    client = build_real_teams_client(get_teams_app_id(), get_teams_app_password())
+    client = build_real_teams_client(get_teams_app_id(), get_teams_app_password(),
+                                     get_teams_bot_tenant_id())
     backend = TeamsCommentBackend(client)
     store = PgCommentStateStore()
     writer = mutable_comment.MutableCommentWriter(backend, store, SURFACE)

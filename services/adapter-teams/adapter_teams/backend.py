@@ -108,14 +108,25 @@ class RealTeamsClient:
     Exercised in production after activation; in the tests it is replaced by
     `FakeTeamsClient`."""
 
+    #: Emissor do fluxo MULTI-tenant. Continua sendo o default só por
+    #: compatibilidade: a Microsoft encerrou a criação de bots multi-tenant em
+    #: 2025-07-31, e um bot single-tenant pedindo token aqui leva 401.
     _TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
+    #: O público do token é o connector nos DOIS modos — o que muda é o emissor.
     _SCOPE = "https://api.botframework.com/.default"
 
-    def __init__(self, app_id: str, app_password: str):
+    def __init__(self, app_id: str, app_password: str, tenant_id: str = ""):
         self._app_id = app_id
         self._app_password = app_password
+        self._tenant_id = tenant_id
         self._token: str | None = None
         self._token_exp: float = 0.0
+
+    @property
+    def token_url(self) -> str:
+        if self._tenant_id:
+            return f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
+        return self._TOKEN_URL
 
     def _bearer(self) -> str:
         import requests
@@ -124,7 +135,7 @@ class RealTeamsClient:
         if self._token and now < self._token_exp - 60:
             return self._token
         resp = requests.post(
-            self._TOKEN_URL,
+            self.token_url,
             data={
                 "grant_type": "client_credentials",
                 "client_id": self._app_id,
@@ -167,5 +178,9 @@ class RealTeamsClient:
         resp.raise_for_status()
 
 
-def build_real_teams_client(app_id: str, app_password: str) -> RealTeamsClient:
-    return RealTeamsClient(app_id, app_password)
+def build_real_teams_client(app_id: str, app_password: str,
+                            tenant_id: str = "") -> RealTeamsClient:
+    """`tenant_id` vazio mantém o emissor compartilhado (registro multi-tenant
+    preexistente); preenchido, o token vem do tenant — que é o único modo em
+    que um bot criado hoje funciona."""
+    return RealTeamsClient(app_id, app_password, tenant_id=tenant_id)

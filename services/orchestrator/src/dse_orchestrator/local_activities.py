@@ -926,6 +926,16 @@ def _resolve_comment_target(source, repo, source_ref: dict[str, Any]):
             return None
         url = os.environ.get("DSE_ADAPTER_JIRA_URL", "http://adapter-jira:8804")
         return url, {"ticket_key": ticket_key}
+    if source == "teams":
+        # O par que endereça uma mensagem no Teams: `service_url` é regional e
+        # chega em toda Activity; `conversation_id` carrega canal + mensagem
+        # raiz da thread (o análogo do thread_ts do Slack).
+        conversation_id = source_ref.get("conversation_id")
+        service_url = source_ref.get("service_url")
+        if not conversation_id or not service_url:
+            return None
+        url = os.environ.get("DSE_ADAPTER_TEAMS_URL", "http://adapter-teams:8808")
+        return url, {"conversation_id": conversation_id, "service_url": service_url}
     return None
 
 
