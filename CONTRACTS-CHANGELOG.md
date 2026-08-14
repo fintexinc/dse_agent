@@ -43,11 +43,26 @@ change to the public surface.
 
 | Package | Version | Owner | Consumed by |
 |---|---|---|---|
-| `dse_contracts` (`packages/contracts`) | 0.4.0 | Foundation | WS-A, WS-B, WS-C, WS-D, WS-E, WS-F |
+| `dse_contracts` (`packages/contracts`) | 0.4.1 | Foundation | WS-A, WS-B, WS-C, WS-D, WS-E, WS-F |
 | `dse_audit` (`packages/dse_audit`) | 0.1.0 | Foundation (minimal) → **extended by WS-F in Phase 1** | Everyone (via `emit`); `dse_audit.queries` (reconstruction/export) consumed by any compliance service/report |
 | `dse_identity` (`packages/dse_identity`) | 0.1.0 | Foundation (minimal) | WS-A (adapters resolve `platform_user_id` before writing `actor`) |
 
 ## Entries
+
+### `dse_contracts` 0.4.0 → 0.4.1 — `src/app/**` joins the default `ui_path_globs` (rc.93)
+
+- **What:** `TriggerPreviewInput.ui_path_globs` default gains `src/app/**`
+  (Angular CLI convention). No field added/removed/re-typed — only the
+  default value of an existing optional list.
+- **Why:** the second incarnation of the `wi_cc72b204` bug (the first added
+  `**/*.component.ts`): an Angular state-only diff (reducers/selectors/types
+  `.ts`, no template) matched no ui glob, fell to the deployable chain's
+  `**/*.ts` and got an image without npm — `sh: 1: npm: not found`, 900s
+  wait, degraded preview (measured on `wi_e15f4991`, PR #26). Java backends
+  live under `src/main/**` and still classify as deployable.
+- **Change type:** default-value change on an existing field (PATCH bump).
+  Callers that pass explicit globs are unaffected; recorded Temporal
+  payloads carry their own values and replay unchanged.
 
 ### `dse_contracts` 0.3.0 → 0.4.0 — `PlanArtifact` gains optional `estimated_lines` (rc.89)
 

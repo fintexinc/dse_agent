@@ -669,7 +669,12 @@ class TriggerPreviewInput(BaseModel):
     # errada (medido no wi_cc72b204: `npm: not found` numa imagem JDK). O
     # sufixo `.component.ts` é convenção inequívoca do framework, então um
     # backend Node em TypeScript (`src/server.ts`) segue `deployable`.
-    ui_path_globs: list[str] = Field(default_factory=lambda: ["ui/**", "frontend/**", "**/*.html", "**/*.css", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.component.ts"])
+    # `src/app/**` (2026-08-14, wi_e15f4991): a SEGUNDA encarnação do mesmo
+    # bug — diff Angular só-de-estado (reducers/selectors/types .ts) não tem
+    # `.component.ts` nem template, caía no `**/*.ts` do deployable e ganhava
+    # imagem sem npm. `src/app/` é a convenção do Angular CLI; back Java vive
+    # em `src/main/` e segue deployable.
+    ui_path_globs: list[str] = Field(default_factory=lambda: ["ui/**", "frontend/**", "src/app/**", "**/*.html", "**/*.css", "**/*.tsx", "**/*.jsx", "**/*.vue", "**/*.svelte", "**/*.component.ts"])
     # plan 08 §D — deployable service (back): source/manifest/container that
     # change the artifact served in the preview. Docs/test-only do not match
     # and skip.
