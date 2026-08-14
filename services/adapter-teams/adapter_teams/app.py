@@ -51,9 +51,22 @@ from .config import (
     get_teams_shared_secret,
     get_tenant_id,
 )
+from .jwt_auth import BotFrameworkJwtVerifier
 from .platform_compat import TeamsNotActivated, is_activated
 
 logger = logging.getLogger("adapter_teams")
+
+#: Verificador de JWT com estado (cache do JWKS) — um por processo. Construir
+#: a cada requisição jogaria fora o cache e faria uma busca de chaves por
+#: mensagem, que é justamente o que o refetch-por-kid existe para evitar.
+_JWT_VERIFIER: BotFrameworkJwtVerifier | None = None
+
+
+def get_jwt_verifier() -> BotFrameworkJwtVerifier:
+    global _JWT_VERIFIER
+    if _JWT_VERIFIER is None:
+        _JWT_VERIFIER = BotFrameworkJwtVerifier(app_id=get_teams_app_id())
+    return _JWT_VERIFIER
 
 app = FastAPI(title="dse-adapter-teams")
 
@@ -138,15 +151,31 @@ async def teams_messages(request: Request):
     body = await request.body()
     authorization = request.headers.get("Authorization")
 
-    # Defense #1: signature (outgoing webhook HMAC). Always verified, even before
-    # activation — this is the trust boundary.
-    check = verify_teams_signature(
-        shared_secret=get_teams_shared_secret(), body=body, authorization_header=authorization
-    )
-    if not check.verified:
-        _reject(check.reason)
-
-    activity = json.loads(body)
+    # Defesa #1: assinatura. Duas portas, escolhidas pelo PREFIXO do header —
+    # `Bearer` é o bot registrado (Bot Connector), `HMAC` é o outgoing webhook
+    # da Fase 4. Esquema desconhecido não entra.
+    scheme = (authorization or "").split(None, 1)[0].lower() if authorization else ""
+    if scheme == "bearer":
+        # O JWT exige a Activity decodificada: a claim `serviceUrl` é conferida
+        # contra o corpo (é o que impede um forjado redirecionar a NOSSA saída).
+        # Parsear não é confiar: nada é gravado nem lido antes do veredito.
+        try:
+            activity = json.loads(body)
+        except ValueError:
+            _reject("malformed_json_body")
+        check = get_jwt_verifier().verify(
+            authorization_header=authorization, activity=activity
+        )
+        if not check.verified:
+            _reject(check.reason)
+    else:
+        check = verify_teams_signature(
+            shared_secret=get_teams_shared_secret(), body=body,
+            authorization_header=authorization,
+        )
+        if not check.verified:
+            _reject(check.reason)
+        activity = json.loads(body)
     if activity.get("type") != "message":
         return {"ok": True, "path": "ignored_non_message"}
 

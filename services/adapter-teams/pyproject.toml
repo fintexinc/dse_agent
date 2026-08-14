@@ -5,13 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dse-adapter-teams"
 version = "0.1.0"
-description = "WS-A (Phase 4, PROVISION): Microsoft Teams adapter (inbound Bot Framework/outgoing-webhook + outbound status message via MutableCommentWriter). Not activated — see README."
+description = "WS-A: Microsoft Teams adapter (inbound Bot Framework JWT / outgoing-webhook HMAC + outbound status message via MutableCommentWriter). Ativado na rc.94."
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "requests>=2.31",
+    # Validação do Bearer do Bot Connector (jwt_auth). Mesmas versões que o
+    # dse_platform usa no verificador de OIDC — já estão no lock do CI.
+    "PyJWT>=2.8",
+    "cryptography>=42.0",
     "dse-contracts",
     "dse-audit",
     "dse-identity",
