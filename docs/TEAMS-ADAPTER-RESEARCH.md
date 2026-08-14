@@ -105,7 +105,10 @@ wildcard callback we hit on previews:
 1. **Azure subscription** with an **Azure Bot** resource (Teams is a *standard*
    channel: free, unlimited messages; we keep hosting on our own VPS).
 2. **Entra ID app registration** (client id + secret) → stored in Vault as
-   `dse/teams/bot` (the path the adapter already expects).
+   `dse/teams/bot` (the path the adapter already expects). Note the bot must now
+   be **single-tenant** (new multi-tenant bots were discontinued on 2025-07-31),
+   which makes the adapter's hardcoded multi-tenant token endpoint a required
+   Track 1 fix — see [TEAMS-APP-SETUP.md](TEAMS-APP-SETUP.md) §1.
 3. **Public HTTPS messaging endpoint** for the bot. We already terminate TLS for
    previews on the VPS, so this is one more ingress host.
 4. **Teams app package** (manifest + icons) uploaded to the tenant — and the tenant

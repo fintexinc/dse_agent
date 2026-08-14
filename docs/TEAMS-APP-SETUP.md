@@ -32,8 +32,12 @@ tenant's approval queue.
 Teams never calls your service directly: it calls the Bot Framework service,
 which forwards to your endpoint using a registration. You need both halves.
 
-1. [Azure portal](https://portal.azure.com) → **Create a resource** → **Azure Bot**.
-   - *Type of App*: **Multi-tenant** — see the note below before choosing.
+1. [Azure portal](https://portal.azure.com) → **☰ menu (top left)** → **+ Create a
+   resource** → search `bot` → the **Azure Bot** card → **Create**. (The blue
+   global search bar at the top searches existing resources, services and docs —
+   it does *not* open the create blade; that is why "create resource" typed there
+   returns nothing useful.)
+   - *Type of App*: **Single-tenant** — see the note below before choosing.
    - *Creation type*: create a new Microsoft App ID (this creates the Entra ID app
      registration for you).
    - Pricing: the **Teams channel is a standard channel — free, unlimited
@@ -47,13 +51,18 @@ which forwards to your endpoint using a registration. You need both halves.
 You end with two values: **client id** (the `botId` for the manifest) and
 **client secret**.
 
-> **Multi-tenant vs single-tenant.** Our adapter fetches its outbound token from
-> the shared endpoint `login.microsoftonline.com/botframework.com/oauth2/v2.0/token`
-> (`adapter_teams/backend.py: RealTeamsClient._TOKEN_URL`), which is the
-> multi-tenant flow. Choosing single-tenant is the more locked-down option but
-> requires pointing that URL at `login.microsoftonline.com/<tenant-id>/...` — a
-> one-line change plus a config value. Decide before creating the resource; the
-> app type cannot be changed afterwards.
+> **App type: single-tenant, and it forces a code change.** Microsoft **stopped
+> allowing new multi-tenant bots after 2025-07-31** (existing ones keep working),
+> so the remaining options are *single-tenant* and *user-assigned managed
+> identity*. Our adapter, however, fetches its outbound token from the shared
+> multi-tenant endpoint
+> `login.microsoftonline.com/botframework.com/oauth2/v2.0/token`
+> (`adapter_teams/backend.py: RealTeamsClient._TOKEN_URL`) — written in Phase 4,
+> when multi-tenant was still the default. Single-tenant requires pointing that
+> URL at `login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` and carrying
+> the tenant id in config: a small change, but a **mandatory** one, not optional.
+> Add it to Track 1 and store `tenant_id` alongside the credentials in
+> `dse/teams/bot`. The app type cannot be changed after the resource is created.
 
 ## Step 2 — expose the endpoint and store the secret
 
@@ -61,7 +70,8 @@ You end with two values: **client id** (the `botId` for the manifest) and
   `teams.notas.api.br` → ingress + TLS on the VPS, the same pattern the console
   hosts already use. Microsoft requires a publicly reachable HTTPS endpoint with a
   valid certificate; there is no tunnel exception for production.
-- **Vault**: store the pair at `dse/teams/bot` (`client_id`, `client_secret`) —
+- **Vault**: store the credentials at `dse/teams/bot` (`client_id`,
+  `client_secret`, and `tenant_id` for the single-tenant token endpoint above) —
   the path the adapter already expects. Never put them in values files or the
   manifest.
 
