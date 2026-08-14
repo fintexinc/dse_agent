@@ -223,3 +223,23 @@ def test_terminal_status_and_missing_repo_stay_honest(tenant_id, monkeypatch):
     )
     rendered2 = json.dumps(fake_client.post_calls[1]["blocks"] or [], ensure_ascii=False)
     assert "None" not in rendered2.replace("null", ""), "repo inventado na mensagem"
+
+
+def test_a_queued_item_shows_the_bar_parked_at_plan(tenant_id, monkeypatch):
+    """rc.93 (barreira de grupo): o membro que espera as aprovações do grupo
+    fica em `queued` — a barra tem que existir e apontar Plan como etapa
+    atual, senão o aviso da barreira chega sem contexto de progresso."""
+    fake_client = FakeSlackClient()
+    monkeypatch.setattr(app_module, "build_real_slack_client", lambda token, *, deadline: fake_client)
+
+    wid = _make_work_item(tenant_id, repo="fintexinc/bmo-fee-calculator-fe-dse")
+    client.post(
+        "/internal/status-comment",
+        json={"work_item_id": wid, "channel": "C1",
+              "body": "⏸️ Waiting for the group's plans to be approved.",
+              "actor": "system:orchestrator", "status": "queued"},
+    )
+    rendered = json.dumps(fake_client.post_calls[0]["blocks"] or [], ensure_ascii=False)
+    assert "⏳ Plan" in rendered, (
+        f"status queued sem barra em Plan — o membro parado fica ilegível: {rendered[:400]}"
+    )
