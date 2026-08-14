@@ -74,6 +74,7 @@ with workflow.unsafe.imports_passed_through():
     from dse_orchestrator import policy
     from dse_orchestrator.local_activities import (
         LOCAL_ACTIVITY_CHECK_CLARIFICATION,
+        LOCAL_ACTIVITY_CHECK_GROUP_GATE,
         LOCAL_ACTIVITY_EMIT_HISTORY_METRIC,
         LOCAL_ACTIVITY_EMIT_PR_QUALITY_METRIC,
         LOCAL_ACTIVITY_FAN_OUT_SIBLINGS,
@@ -1246,6 +1247,58 @@ class WorkItemLifecycleWorkflow:
             except ActivityError:
                 logger.warning("best-effort post_status_transition failed (status=%s)", status)
 
+    async def _hold_for_group_plans(self) -> None:
+        """rc.93 — barreira de plano do GRUPO (decisão do operador, auditoria
+        wi_d8294fed/wi_e15f4991: o FE low abriu PR com o plano do BE high
+        ainda no gate). A semântica mora na Activity `check_group_plan_gate`
+        (P1, só lê work_items); aqui é o laço durável: holding → dorme 300s e
+        pergunta de novo (aprovação humana leva minutos-horas; o poll é
+        barato); abort → escala com o motivo — o grupo colapsou e implementar
+        sozinho seria trabalho órfão. Item sem grupo: uma checagem única diz
+        in_group=False e nada segura. A barreira SEMPRE termina: o gate do
+        outro membro aprova, rejeita (cancel→failed) ou expira (→escalated),
+        e cada um desses desfechos destrava ou aborta este laço."""
+        held = False
+        polls = 0
+        while True:
+            gate = await workflow.execute_activity(
+                LOCAL_ACTIVITY_CHECK_GROUP_GATE,
+                {"work_item_id": self._input.work_item_id,
+                 "tenant_id": self._input.tenant_id},
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=5),
+            )
+            if gate.get("abort"):
+                raise _EscalateNow(
+                    "group_plan_gate: " + str(gate.get("reason") or "group member dead")
+                )
+            if not gate.get("holding"):
+                if held:
+                    await self._audit("group_plan_barrier_released", {"polls": polls})
+                return
+            if not held:
+                held = True
+                await self._audit("group_plan_barrier_held",
+                                  {"reason": str(gate.get("reason") or "")})
+                # A superfície explica a espera (uma vez; o upsert edita a
+                # mesma mensagem). status=queued mantém a barra em Plan.
+                try:
+                    await workflow.execute_activity(
+                        ACTIVITY_POST_TRACKING_COMMENT,
+                        {"work_item_id": self._input.work_item_id,
+                         "tenant_id": self._input.tenant_id,
+                         "status": WorkItemStatus.queued.value,
+                         "body": "⏸️ Waiting for the group's plans to be "
+                                 "approved before implementing ("
+                                 + str(gate.get("reason") or "") + ")."},
+                        start_to_close_timeout=timedelta(seconds=60),
+                        retry_policy=RetryPolicy(maximum_attempts=5),
+                    )
+                except ActivityError:
+                    logger.warning("group barrier surface post failed; holding anyway")
+            polls += 1
+            await workflow.sleep(timedelta(seconds=300))
+
     async def _post_board_transition(self, status: str) -> None:
         """Moves the Jira card to the mapped column, WITHOUT re-posting the
         status comment. It exists because `_post_status_comment` was only called
@@ -2142,6 +2195,14 @@ class WorkItemLifecycleWorkflow:
         # plan_json).
         if not input.sandbox_id:
             await self._run_planner_and_gate()
+            # rc.93 (decisão do operador, auditoria de 08-14): a barreira do
+            # GRUPO fica entre o gate próprio e o sandbox — antes de gastar
+            # provisão com um item que talvez nem deva anda. Só na PRIMEIRA
+            # entrada (sem sandbox): quem já implementa não é pausado por um
+            # re-gate de irmão. Guard próprio: histórias em voo replayam sem
+            # a Activity nova.
+            if workflow.patched("group-plan-barrier-v1"):
+                await self._hold_for_group_plans()
 
         if not input.sandbox_id:
             await self._boundary_gate()

@@ -79,6 +79,7 @@ LOCAL_ACTIVITY_EMIT_PR_QUALITY_METRIC = "emit_pr_quality_metric"
 # by work_item_id, and three tables enforce that as a PRIMARY KEY.
 LOCAL_ACTIVITY_ROUTE_REPOS = "route_repos"
 LOCAL_ACTIVITY_FAN_OUT_SIBLINGS = "fan_out_sibling_work_items"
+LOCAL_ACTIVITY_CHECK_GROUP_GATE = "check_group_plan_gate"
 # Plan 08 §D — resolves the repo's deploys_preview gate (repo_bindings) to
 # decide whether the preview environment applies (P1, deterministic, fail-safe).
 LOCAL_ACTIVITY_PREVIEW_ENABLED = "preview_enabled_for_repo"
@@ -1366,6 +1367,66 @@ def sibling_work_item_id(event_id: str, repo: str) -> str:
     return "wi_" + hashlib.sha256(f"{event_id}:{repo}".encode()).hexdigest()
 
 
+#: Fase de plano do PRIMÁRIO: nestes estados ele ainda pode ganhar (ou
+#: reganhar, via re_plan/re_clarify) um gate — os membros esperam. `blocked`
+#: entra por ser recuperável por humano; abortar por ele destruiria trabalho
+#: por um estado transitório.
+_GROUP_PRE_PLAN_STATUSES = ("new", "needs_clarification", "ready", "queued",
+                            "awaiting_plan_approval", "blocked")
+_GROUP_DEAD_STATUSES = ("failed", "escalated")
+
+
+@activity.defn(name=LOCAL_ACTIVITY_CHECK_GROUP_GATE)
+async def check_group_plan_gate(payload: dict[str, Any]) -> dict[str, Any]:
+    """Barreira de plano do grupo (decisão do operador, 2026-08-14 — auditoria
+    wi_d8294fed/wi_e15f4991: o FE low abriu PR com o plano do BE high ainda no
+    gate). Nenhum membro entra em implementing enquanto:
+      (a) qualquer OUTRO membro está `awaiting_plan_approval` — um gate segura
+          o conjunto; ou
+      (b) o PRIMÁRIO (id == group_id) ainda está na fase de plano — o irmão
+          não corre na frente de um primário lento (clarificação, re_plan).
+    A regra (b) vale SÓ para o primário: dois irmãos `queued` não se seguram
+    (sem deadlock). Membro morto (failed/escalated) → abort: o grupo colapsou
+    e implementar sozinho seria trabalho órfão.
+    P1 determinístico: só lê work_items."""
+    work_item_id = payload["work_item_id"]
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(group_id, id) FROM work_items WHERE id = %s",
+                (work_item_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return {"in_group": False, "holding": False, "abort": False,
+                        "reason": "work_item_not_found"}
+            gkey = row[0]
+            cur.execute(
+                "SELECT id, status FROM work_items "
+                "WHERE COALESCE(group_id, id) = %s AND id <> %s",
+                (gkey, work_item_id),
+            )
+            others = cur.fetchall()
+    finally:
+        conn.close()
+    if not others:
+        return {"in_group": False, "holding": False, "abort": False, "reason": ""}
+    for oid, st in others:
+        if st in _GROUP_DEAD_STATUSES:
+            return {"in_group": True, "holding": False, "abort": True,
+                    "reason": f"group member {oid} is {st}"}
+    for oid, st in others:
+        if st == "awaiting_plan_approval":
+            return {"in_group": True, "holding": True, "abort": False,
+                    "reason": f"plan of {oid} awaits human approval"}
+    for oid, st in others:
+        if oid == gkey and st in _GROUP_PRE_PLAN_STATUSES:
+            return {"in_group": True, "holding": True, "abort": False,
+                    "reason": f"primary {oid} has not cleared its plan phase ({st})"}
+    return {"in_group": True, "holding": False, "abort": False, "reason": ""}
+
+
 @activity.defn(name=LOCAL_ACTIVITY_FAN_OUT_SIBLINGS)
 async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
     """Create one sibling work item per extra repository, in the outbox.
@@ -1476,5 +1537,6 @@ LOCAL_ACTIVITIES = [
     resolve_retry_caps,
     estimate_plan_cost,
     fan_out_sibling_work_items,
+    check_group_plan_gate,
     route_repos,
 ]

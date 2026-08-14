@@ -228,12 +228,18 @@ def _db_free_activities(ledger: _Ledger, state: FakeControlPlane) -> list[Any]:
     async def post_status_transition(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "target_status": None}
 
+    async def check_group_plan_gate(payload: dict[str, Any]) -> dict[str, Any]:
+        # rc.93: a barreira de grupo pergunta logo após o gate — activity
+        # ausente = NotFoundError retry storm no time-skipping.
+        return {"in_group": False, "holding": False, "abort": False, "reason": ""}
+
     return [
         activity.defn(name=ACTIVITY_EMIT_AUDIT)(emit_audit_event),
         activity.defn(name=ACTIVITY_POST_TRACKING_COMMENT)(post_tracking_comment),
         activity.defn(name=LOCAL_ACTIVITY_UPDATE_STATUS)(update_work_item_status),
         activity.defn(name=LOCAL_ACTIVITY_RECORD_GATE)(record_plan_approval),
         activity.defn(name=LOCAL_ACTIVITY_POST_STATUS_TRANSITION)(post_status_transition),
+        activity.defn(name="check_group_plan_gate")(check_group_plan_gate),
         # Real ones: the checklist is pure, the budget default reads env only,
         # and the history metric is OTel-only.
         check_clarification_completeness,

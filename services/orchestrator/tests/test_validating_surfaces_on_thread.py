@@ -94,7 +94,11 @@ def _recording_activities(state: FakeControlPlane, posted: list[str]) -> list[An
     async def load_work_item(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
 
+    async def check_group_plan_gate(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"in_group": False, "holding": False, "abort": False, "reason": ""}
+
     return [
+        activity.defn(name="check_group_plan_gate")(check_group_plan_gate),
         activity.defn(name=ACTIVITY_EMIT_AUDIT)(emit_audit_event),
         activity.defn(name=ACTIVITY_POST_TRACKING_COMMENT)(post_tracking_comment),
         activity.defn(name=LOCAL_ACTIVITY_UPDATE_STATUS)(update_work_item_status),

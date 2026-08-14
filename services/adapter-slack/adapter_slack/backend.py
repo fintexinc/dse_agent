@@ -38,6 +38,10 @@ _STAGE_FOR_STATUS = {
     "needs_clarification": "Plan",
     "awaiting_plan_approval": "Plan",
     "awaiting_repo_selection": "Plan",
+    # rc.93: o membro parado na barreira de grupo espera em `queued` — a
+    # barra existe e aponta Plan (`ready` idem, pelo mesmo trecho do fluxo).
+    "ready": "Plan",
+    "queued": "Plan",
     "implementing": "Build",
     "validating": "Validate",
     "pr_open": "PR",

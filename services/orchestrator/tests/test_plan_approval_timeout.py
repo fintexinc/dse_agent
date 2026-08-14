@@ -153,6 +153,11 @@ def build_db_free_activities(ledger: _Ledger, state: FakeControlPlane) -> list[A
         # (a lição documentada logo abaixo, em resolve_budget_cap).
         return dict(ledger.cost_estimate)
 
+    async def check_group_plan_gate(payload: dict[str, Any]) -> dict[str, Any]:
+        # rc.93: a barreira de grupo roda logo após o gate — mesma lição da
+        # estimate_plan_cost acima; item sem grupo nunca segura.
+        return {"in_group": False, "holding": False, "abort": False, "reason": ""}
+
     return [
         activity.defn(name=ACTIVITY_EMIT_AUDIT)(emit_audit_event),
         activity.defn(name=ACTIVITY_POST_TRACKING_COMMENT)(post_tracking_comment),
@@ -160,6 +165,7 @@ def build_db_free_activities(ledger: _Ledger, state: FakeControlPlane) -> list[A
         activity.defn(name=LOCAL_ACTIVITY_RECORD_GATE)(record_plan_approval),
         activity.defn(name=LOCAL_ACTIVITY_POST_STATUS_TRANSITION)(post_status_transition),
         activity.defn(name="estimate_plan_cost")(estimate_plan_cost),
+        activity.defn(name="check_group_plan_gate")(check_group_plan_gate),
         # Real ones: the checklist is pure, resolve_plan_approver short-circuits
         # on the CODEOWNERS reader before touching the DB, and the history
         # metric is OTel-only.
