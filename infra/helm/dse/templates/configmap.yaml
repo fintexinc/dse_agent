@@ -49,6 +49,11 @@ data:
   # comments before.
   DSE_ADAPTER_JIRA_URL: "http://{{ include "dse.fullname" . }}-adapter-jira.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.adapters.jira.port }}"
   {{- end }}
+  {{- if .Values.adapters.teams.enabled }}
+  # Idem: o default do código é "http://adapter-teams:8808" — nome curto, que
+  # o HTTPS_PROXY do orchestrator sequestra e devolve 403.
+  DSE_ADAPTER_TEAMS_URL: "http://{{ include "dse.fullname" . }}-adapter-teams.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.adapters.teams.port }}"
+  {{- end }}
   DSE_SANDBOX_INPROCESS: {{ ternary "1" "0" .Values.runtime.inProcess | quote }}
   # merge-base (WSE-E6-T16): a raiz onde o update_base_branch provisiona o
   # workspace on-demand. O default de código aponta para dentro da imagem, que

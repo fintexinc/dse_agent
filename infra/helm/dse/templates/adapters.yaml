@@ -457,3 +457,88 @@ spec:
             {{- include "dse.appTmpMount" $ | nindent 12 }}
 {{- end }}
 {{- end }}
+{{- if .Values.adapters.teams.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dse.fullname" . }}-adapter-teams
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "dse.labels" . | nindent 4 }}
+    {{- include "dse.selectorLabels" (dict "component" "adapter-teams" "Release" .Release) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "dse.selectorLabels" (dict "component" "adapter-teams" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dse.labels" . | nindent 8 }}
+        {{- include "dse.selectorLabels" (dict "component" "adapter-teams" "Release" .Release) | nindent 8 }}
+    spec:
+      {{- include "dse.appPodDefaults" . | nindent 6 }}
+      containers:
+        - name: adapter-teams
+          image: {{ include "dse.image" (dict "root" $ "repository" .Values.adapters.teams.image.repository "tag" .Values.adapters.teams.image.tag "digest" .Values.adapters.teams.image.digest) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "dse.appContainerSecurityContext" . | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.adapters.teams.port }}
+              name: http
+          envFrom:
+            - configMapRef:
+                name: {{ include "dse.fullname" . }}-config
+            - secretRef:
+                name: {{ include "dse.postgresSecretName" . }}
+            {{- if .Values.extraEnvSecret }}
+            # TEAMS_APP_ID + TEAMS_APP_PASSWORD + TEAMS_APP_TENANT_ID (o bot é
+            # single-tenant: sem o tenant id o token de saida vem do emissor
+            # errado e o connector devolve 401). config._from_vault_or_env le
+            # do ambiente. Ver extraEnvSecret em values.yaml.
+            - secretRef:
+                name: {{ .Values.extraEnvSecret }}
+            {{- end }}
+          env:
+            - name: VAULT_ADDR
+              value: {{ .Values.secrets.vaultAddr | quote }}
+            # HTTP e HTTPS: o adapter fala com o Entra (token de saida), com o
+            # JWKS do Bot Framework (validacao de entrada) e com o connector.
+            - name: HTTPS_PROXY
+              value: "http://{{ include "dse.fullname" . }}-egress-proxy:{{ .Values.egressProxy.port }}"
+            - name: HTTP_PROXY
+              value: "http://{{ include "dse.fullname" . }}-egress-proxy:{{ .Values.egressProxy.port }}"
+            - name: NO_PROXY
+              value: ".svc,.cluster.local"
+          resources:
+            {{- toYaml .Values.adapters.teams.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "dse.appTmpMount" . | nindent 12 }}
+          startupProbe:
+            httpGet: { path: /health, port: {{ .Values.adapters.teams.port }} }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /health, port: {{ .Values.adapters.teams.port }} }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: {{ .Values.adapters.teams.port }} }
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dse.fullname" . }}-adapter-teams
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "dse.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "dse.selectorLabels" (dict "component" "adapter-teams" "Release" .Release) | nindent 4 }}
+  ports:
+    - port: {{ .Values.adapters.teams.port }}
+      targetPort: {{ .Values.adapters.teams.port }}
+      name: http
+{{- end }}

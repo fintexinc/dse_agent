@@ -61,6 +61,7 @@ spec:
           - adapter-jira
           - adapter-jira-poller
           - adapter-jira-transition
+          - adapter-teams
           # Reads the system of record and writes console_rm — both in the same
           # Postgres, so the existing rule below is all it needs.
           - console-projector
@@ -137,6 +138,14 @@ spec:
               app.kubernetes.io/name: adapter-jira
       ports:
         - { protocol: TCP, port: {{ .Values.adapters.jira.port }} }
+    {{- end }}
+    {{- if .Values.adapters.teams.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: adapter-teams
+      ports:
+        - { protocol: TCP, port: {{ .Values.adapters.teams.port }} }
     {{- end }}
 ---
 # Self-hosted Temporal only needs the internal Postgres.

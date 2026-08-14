@@ -116,7 +116,12 @@ egressProxy:
     - { host: "fintexinc.atlassian.net", port: 443, purpose: "Jira REST API (poller, comments, transitions)" }
     # OIDC discovery + JWKS. Fetched at start and again on every key
     # rotation, so blocking it does not fail once — it fails forever.
-    - { host: "login.microsoftonline.com", port: 443, purpose: "Entra ID OIDC (discovery + JWKS)" }
+    - { host: "login.microsoftonline.com", port: 443, purpose: "Entra ID OIDC (discovery + JWKS) + token de saida do bot do Teams" }
+    # Entrada: metadata + chaves de assinatura que validam o Bearer do connector.
+    # Saida: o `serviceUrl` regional para onde vao POST/PUT das atividades.
+    # Bloquear qualquer um dos dois nao falha uma vez — falha sempre.
+    - { host: "login.botframework.com", port: 443, purpose: "Bot Framework OpenID metadata + JWKS (validacao de entrada)" }
+    - { host: "smba.trafficmanager.net", port: 443, purpose: "Bot Connector (postar e editar a mensagem de status no Teams)" }
     - { host: "repo.maven.apache.org", port: 443, purpose: "Maven Central (toolchain + dependencias dos gates do testbed Java)" }
 modelGateway:
   image: { repository: ghcr.io/fintexinc/dse_agent/model-gateway, tag: *ghcrTag, digest: "" }
@@ -165,6 +170,25 @@ adapters:
     workerResources:
       requests: { cpu: "40m", memory: "128Mi" }
       limits: { cpu: "300m", memory: "256Mi" }
+  teams:
+    # Ligado na rc.94, com o bot `dse-teams-bot` (single-tenant) registrado em
+    # 2026-08-14. Sem TEAMS_APP_ID/TEAMS_APP_PASSWORD/TEAMS_APP_TENANT_ID no
+    # Secret o adapter NEGA toda requisicao (fail-closed) — sobe, responde
+    # /health e recusa 401 ate o segredo existir.
+    enabled: true
+    image: { repository: ghcr.io/fintexinc/dse_agent/adapter-teams, tag: *ghcrTag, digest: "" }
+    resources:
+      requests: { cpu: "40m", memory: "128Mi" }
+      limits: { cpu: "400m", memory: "256Mi" }
+    ingress:
+      # O messaging endpoint do bot. Host proprio: o Ingress dos webhooks e
+      # single-host e roteia por caminho. Aponta para /teams (NAO para a raiz:
+      # /internal/status-comment e porta interna e confia em nao ser alcancavel
+      # de fora). Requer registro DNS A deste nome para a VPS.
+      enabled: true
+      className: "traefik"
+      host: "teams.notas.api.br"
+      certResolver: "le"
   ingestGateway:
     image: { repository: ghcr.io/fintexinc/dse_agent/ingest-gateway, tag: *ghcrTag, digest: "" }
     resources:
@@ -409,4 +433,4 @@ temporal:
 # Teams/model-server off (topology A, POC)
 modelServer:
   enabled: false
-adapters_teams_note: "adapter-teams is not in the chart's adapters.yaml yet — fast-follow"
+adapters_teams_note: "adapter-teams entrou no chart na rc.94 (adapters.teams acima)"

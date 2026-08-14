@@ -1,0 +1,41 @@
+{{- if and .Values.adapters.teams.enabled .Values.adapters.teams.ingress.enabled }}
+# Host próprio para o messaging endpoint do bot.
+#
+# Não cabe no `ingress.yaml`: aquele é single-host (`.Values.ingress.host` é
+# escalar) e roteia por caminho (/slack, /github, /jira) sob o host dos
+# webhooks. O Bot Framework exige uma URL HTTPS pública com certificado válido
+# — não há exceção de túnel — e o certificado sai do Traefik + ACME (HTTP-01)
+# pelas duas anotações abaixo; não existe cert-manager neste cluster, apesar do
+# que o README do deploy diz.
+#
+# O caminho é o do adapter: /teams/messages. Servir a raiz aqui exporia
+# /internal/status-comment, que é a porta INTERNA do orchestrator e não tem
+# autenticação própria — ela confia em não ser alcançável de fora.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dse.fullname" . }}-adapter-teams
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "dse.labels" . | nindent 4 }}
+  {{- if .Values.adapters.teams.ingress.certResolver }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.tls.certresolver: {{ .Values.adapters.teams.ingress.certResolver | quote }}
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.adapters.teams.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.adapters.teams.ingress.host | quote }}]
+  rules:
+    - host: {{ .Values.adapters.teams.ingress.host | quote }}
+      http:
+        paths:
+          - path: /teams
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "dse.fullname" . }}-adapter-teams
+                port: { number: {{ .Values.adapters.teams.port }} }
+{{- end }}

@@ -487,6 +487,24 @@ adapters:
     workerResources:
       requests: { cpu: "40m", memory: "128Mi" }
       limits: { cpu: "300m", memory: "256Mi" }
+  teams:
+    # Off by default, like jira: without the Azure Bot registration (App ID +
+    # secret + tenant id) the adapter denies every request — fail-closed — and
+    # an enabled-but-unconfigured deployment would only add a pod that 401s.
+    enabled: false
+    image: { repository: dse/adapter-teams, tag: "0.1.0", digest: "" }
+    port: 8808
+    resources:
+      requests: { cpu: "100m", memory: "128Mi" }
+      limits: { cpu: "500m", memory: "256Mi" }
+    ingress:
+      # The bot's messaging endpoint must be a public HTTPS URL with a valid
+      # certificate — Microsoft has no tunnel exception. Own host because
+      # `ingress.host` is a scalar shared by the path-based webhook Ingress.
+      enabled: false
+      className: "traefik"
+      host: ""
+      certResolver: "le"
   ingestGateway:
     enabled: true
     image: { repository: dse/ingest-gateway, tag: "0.1.0", digest: "" }
