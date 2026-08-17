@@ -116,6 +116,7 @@ coverage==7.15.2
 cryptography==50.0.0
     # via
     #   dse-adapter-github
+    #   dse-adapter-teams
     #   dse-platform
     #   dse-sandbox-runtime
     #   dse-validation
@@ -281,6 +282,7 @@ pygments==2.20.0
 pyjwt==2.13.0
     # via
     #   dse-adapter-github
+    #   dse-adapter-teams
     #   dse-egress-proxy
     #   dse-platform
     #   dse-sandbox-runtime
