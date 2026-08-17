@@ -68,7 +68,9 @@ def build_manifest(*, app_id: str, bot_id: str, name: str, host: str) -> dict:
         "manifestVersion": MANIFEST_VERSION,
         "version": "1.0.0",
         "id": app_id,
-        "packageName": "co.fintex.dse",
+        # SEM `packageName`: o campo existia até o schema 1.1x e foi REMOVIDO
+        # no 1.30, que declara `additionalProperties: false` — mandá-lo faz o
+        # Teams recusar o pacote inteiro na validação, sem instalar nada.
         "developer": {
             "name": "Fintex",
             "websiteUrl": f"https://{host}",
@@ -113,6 +115,36 @@ def build_manifest(*, app_id: str, bot_id: str, name: str, host: str) -> dict:
     }
 
 
+def validate(manifest: dict) -> list[str]:
+    """Valida contra o schema PUBLICADO da versão do manifesto.
+
+    Existe porque o custo de errar é assimétrico: o Teams recusa o pacote
+    inteiro por um campo extra, e a descoberta acontece no fim da fila — depois
+    de mandar o zip para o admin, ele subir e o portal recusar. Uma requisição
+    aqui troca essa ida e volta por uma mensagem local.
+
+    Sem rede (ou sem `jsonschema`), devolve lista vazia e avisa: gerar o pacote
+    não pode depender de estar online.
+    """
+    try:
+        import urllib.request
+
+        import jsonschema
+    except ImportError:
+        print("aviso: jsonschema não instalado — pacote gerado SEM validação")
+        return []
+    try:
+        with urllib.request.urlopen(manifest["$schema"], timeout=15) as resp:
+            schema = json.load(resp)
+    except Exception as exc:  # noqa: BLE001 - offline não pode quebrar a geração
+        print(f"aviso: não consegui buscar o schema ({exc}) — pacote SEM validação")
+        return []
+    return [
+        f"{list(e.path) or '(raiz)'}: {e.message}"
+        for e in jsonschema.Draft7Validator(schema).iter_errors(manifest)
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bot-id", required=True,
@@ -133,6 +165,12 @@ def main() -> int:
     _outline_icon(out / "outline.png")
     manifest = build_manifest(app_id=app_id, bot_id=args.bot_id,
                               name=args.name, host=args.host)
+    problemas = validate(manifest)
+    if problemas:
+        print("manifesto INVÁLIDO para o schema — o Teams recusaria o pacote:")
+        for p in problemas:
+            print(f"  - {p}")
+        return 1
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     package = out.parent / "dse-teams-app.zip"
