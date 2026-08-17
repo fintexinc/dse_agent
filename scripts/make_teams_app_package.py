@@ -89,6 +89,11 @@ def build_manifest(*, app_id: str, bot_id: str, name: str, host: str) -> dict:
         },
         "icons": {"color": "color.png", "outline": "outline.png"},
         "accentColor": "#0D1B2A",
+        # Obrigatório para escopo `team` a partir do manifesto 1.25, e o único
+        # valor válido. É a declaração de linha de base de suporte a canais
+        # (padrão, privado, compartilhado). O DSE é exercitado em canal padrão;
+        # os outros dois seguem não testados por nós.
+        "supportsChannelFeatures": "tier1",
         "bots": [
             {
                 "botId": bot_id,
@@ -139,10 +144,29 @@ def validate(manifest: dict) -> list[str]:
     except Exception as exc:  # noqa: BLE001 - offline não pode quebrar a geração
         print(f"aviso: não consegui buscar o schema ({exc}) — pacote SEM validação")
         return []
-    return [
+    problemas = [
         f"{list(e.path) or '(raiz)'}: {e.message}"
         for e in jsonschema.Draft7Validator(schema).iter_errors(manifest)
     ]
+    return problemas + _portal_rules(manifest)
+
+
+def _portal_rules(manifest: dict) -> list[str]:
+    """Regras condicionais que o PORTAL aplica além do schema.
+
+    Descobertas do jeito caro (upload recusado): o schema declara os campos,
+    mas não expressa "se A então B". Cada regra aqui foi vista numa mensagem de
+    erro real do Teams — a lista cresce por evidência, nunca por suposição.
+    """
+    problemas: list[str] = []
+    versao = float(manifest.get("manifestVersion", "0") or 0)
+    escopos = {s for bot in manifest.get("bots", []) for s in bot.get("scopes", [])}
+    if versao >= 1.25 and "team" in escopos and not manifest.get("supportsChannelFeatures"):
+        problemas.append(
+            "(raiz): manifesto >= 1.25 com escopo 'team' exige "
+            "'supportsChannelFeatures'"
+        )
+    return problemas
 
 
 def main() -> int:
