@@ -212,19 +212,27 @@ def _plan_for_message(
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            for ref in (
-                {"channel": channel, "bot_ts": [ts]} if ts else None,
-                {"channel": channel, "thread_ts": thread_ts} if thread_ts else None,
+            # O filtro de terminal vale só no ramo AMBÍGUO. `bot_ts` endereça
+            # UMA mensagem — o item dela é o item dela, terminado ou não, e
+            # recusar aí é o que produzia "I could not find the task" num
+            # clique perfeitamente correlacionado (medido 2026-08-18). Já o
+            # `thread_ts` pode casar vários itens e desempata pelo mais
+            # recente: ali um item concluído ao lado de um no gate mostraria o
+            # plano ERRADO na tela de decisão, que é o risco original.
+            for ref, exclui_terminal in (
+                ({"channel": channel, "bot_ts": [ts]} if ts else None, False),
+                ({"channel": channel, "thread_ts": thread_ts} if thread_ts else None, True),
             ):
                 if ref is None:
                     continue
                 cur.execute(
-                    "SELECT id, plan, risk_class, repo, group_id FROM work_items "
+                    "SELECT id, plan, risk_class, repo, group_id, status, last_error "
+                    "FROM work_items "
                     "WHERE tenant_id = %s AND source = 'slack' "
                     "AND source_ref @> %s::jsonb "
-                    "AND status NOT IN %s "
+                    "AND (NOT %s OR status NOT IN %s) "
                     "ORDER BY created_at DESC LIMIT 1",
-                    (tenant_id, json.dumps(ref), _TERMINAL_STATUSES),
+                    (tenant_id, json.dumps(ref), exclui_terminal, _TERMINAL_STATUSES),
                 )
                 row = cur.fetchone()
                 if row:
@@ -245,10 +253,17 @@ def _plan_for_message(
                             {"id": s[0], "repo": s[1], "status": s[2], "risk_class": s[3]}
                             for s in cur.fetchall()
                         ]
-                    return row[0], row[1], row[2], row[3], siblings
+                    # `status`/`last_error` viajam junto porque o modal de um
+                    # item terminal mostra o DESFECHO, e o erro completo só
+                    # existe aqui: o canal o publica truncado.
+                    outcome = (
+                        {"status": row[5], "last_error": row[6]}
+                        if row[5] in _TERMINAL_STATUSES else None
+                    )
+                    return row[0], row[1], row[2], row[3], siblings, outcome
     finally:
         conn.close()
-    return None, None, None, None, []
+    return None, None, None, None, [], None
 
 
 def _rearm_verdict(work_item_id: str, stage: str) -> None:
@@ -630,7 +645,7 @@ async def slack_interactions(request: Request) -> dict:
                               "You are not allowed to read this task's plan.")
             return {"ok": True, "path": "unauthorized"}
         message = payload.get("message") or {}
-        work_item_id, plan, risk, item_repo, siblings = _plan_for_message(
+        work_item_id, plan, risk, item_repo, siblings, outcome = _plan_for_message(
             tenant_id, channel, message)
         if not work_item_id:
             _notify_ephemeral(channel, user_id,
@@ -651,7 +666,8 @@ async def slack_interactions(request: Request) -> dict:
             ).views_open(
                 trigger_id=payload.get("trigger_id", ""),
                 view=plan_details_view(work_item_id, plan, effective_risk=risk,
-                                       repo=item_repo, siblings=siblings),
+                                       repo=item_repo, siblings=siblings,
+                                       outcome=outcome),
             )
         except Exception:  # noqa: BLE001 — sem modal, o gate continua clicável
             logger.warning("views_open failed (plan details)", exc_info=True)

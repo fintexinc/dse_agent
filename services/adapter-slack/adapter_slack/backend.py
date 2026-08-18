@@ -148,6 +148,7 @@ def _escape(text: str) -> str:
 def plan_details_view(
     work_item_id: str, plan: dict | None, *, effective_risk: str | None = None,
     repo: str | None = None, siblings: list[dict] | None = None,
+    outcome: dict | None = None,
 ) -> dict:
     """O plano, legível, num modal.
 
@@ -228,6 +229,18 @@ def plan_details_view(
                        "text": ("*Sibling plans* _(this change spans multiple "
                                 "repositories — each has its own plan)_\n"
                                 + "\n".join(linhas))[:_SECTION_CHARS]}})
+    # Item terminado: o DESFECHO, com o erro inteiro. O canal publica esse
+    # texto truncado (o "Show less" corta no meio da frase que diagnostica), e
+    # o modal é o único lugar onde ele cabe sem poluir a thread.
+    if outcome:
+        status = _escape(str(outcome.get("status") or "?"))[:40]
+        erro = str(outcome.get("last_error") or "").strip()
+        corpo = f"*Outcome*\nFinal status: `{status}`"
+        if erro:
+            corpo += f"\n```{_escape(erro)[:_SECTION_CHARS - 120]}```"
+        blocks.append({"type": "divider"})
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn", "text": corpo[:_SECTION_CHARS]}})
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": f"Work item `{work_item_id}`"}]})
     return {

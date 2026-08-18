@@ -70,6 +70,8 @@ def _item_terminal(fake_slack, *, ts: str, com_plano: bool = True, status: str =
     assert resp.status_code == 200
     post = fake_slack.post_calls[-1]
 
+    from dse_identity import resolve_principal
+
     conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
@@ -77,6 +79,15 @@ def _item_terminal(fake_slack, *, ts: str, com_plano: bool = True, status: str =
                 "UPDATE work_items SET status=%s, plan=%s::jsonb, last_error=%s, "
                 "risk_class='high' WHERE id=%s",
                 (status, json.dumps(_PLAN) if com_plano else None, _ERRO, work_item_id),
+            )
+            # Ler o plano exige autorização (o modal mostra forbidden_paths, que
+            # é o mapa das guardas) — mesma preparação da fixture do gate.
+            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
+            tenant_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
+                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                (tenant_id, resolve_principal("slack", "U_PLAN_REQ")),
             )
         conn.commit()
     finally:
