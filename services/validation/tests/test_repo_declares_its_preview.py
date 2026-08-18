@@ -63,7 +63,7 @@ def test_the_manifest_accepts_a_preview_block():
         },
         source="teste",
     )
-    assert cfg.commands["build"] == ["sh", "-c", "./mvnw package"], (
+    assert cfg.build_cmd == ["sh", "-c", "./mvnw package"], (
         "o bloco preview não pode atrapalhar o parse dos comandos"
     )
 

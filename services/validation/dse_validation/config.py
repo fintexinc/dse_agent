@@ -12,6 +12,7 @@ trusted policy.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -392,6 +393,104 @@ class L1ManifestError(ValueError):
         self.summary = summary or detail
 
 
+#: Campos do bloco `preview` do manifesto. Fechado de propósito: um typo
+#: (`imagen:`) tem que ser erro explicado, não default silencioso.
+_PREVIEW_FIELDS = ("image", "artifact_glob", "env", "port", "ready_timeout_s")
+#: Teto do timeout que o repo pode pedir. A activity do trigger_preview morre
+#: em 1200s (workflows.py, patch preview-trigger-timeout-headroom-v1) e a folga
+#: paga captura de log, escrita no banco e comentário na PR — pedir mais que
+#: isto não estica nada, só troca "degradado às 15 min" por "attempt perdida".
+_PREVIEW_MAX_READY_TIMEOUT_S = 1050
+
+
+@dataclasses.dataclass(frozen=True)
+class RepoPreviewDeclaration:
+    """O que o REPO diz sobre o próprio preview (G7).
+
+    Existe porque a receita decidia sozinha a forma do repo — imagem de Java
+    17, artefato em `target/*.jar` (módulo único) e um bloco de env com nomes
+    de variável de um cliente específico dentro da plataforma. Cada campo aqui
+    é opcional e `None` significa "continua como antes": a dívida sai por
+    adição, e um repo que não declara nada não percebe diferença.
+    """
+
+    image: str | None = None
+    artifact_glob: str | None = None
+    env: dict[str, str] = dataclasses.field(default_factory=dict)
+    port: int | None = None
+    ready_timeout_s: int | None = None
+
+
+def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreviewDeclaration:
+    """Lê o bloco `preview` de um manifesto já decodificado. Bloco ausente =
+    declaração vazia (todos os defaults de hoje)."""
+    if not isinstance(payload, dict):
+        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
+    raw = payload.get("preview")
+    if raw is None:
+        return RepoPreviewDeclaration()
+    if not isinstance(raw, dict):
+        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} preview must be an object")
+    unknown = sorted(set(raw) - set(_PREVIEW_FIELDS))
+    if unknown:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} preview has unknown fields: {unknown}",
+            summary=(
+                f"preview block has {len(unknown)} unknown field(s) "
+                f"(valid fields: {sorted(_PREVIEW_FIELDS)})"
+            ),
+        )
+
+    def _str(field: str) -> str | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} preview.{field} must be a non-empty string",
+                summary=f"preview.{field} must be a non-empty string",
+            )
+        return value.strip()
+
+    env_raw = raw.get("env") or {}
+    if not isinstance(env_raw, dict):
+        raise L1ManifestError(GateStatus.ERROR,
+                              f"manifest {source} preview.env must be an object",
+                              summary="preview.env must be an object")
+    env: dict[str, str] = {}
+    for key, value in env_raw.items():
+        if not isinstance(key, str) or not key.strip():
+            raise L1ManifestError(GateStatus.ERROR,
+                                  f"manifest {source} preview.env has an empty name",
+                                  summary="preview.env has an empty variable name")
+        # Valor vira string: o YAML do Deployment exige string, e um `true`
+        # de JSON viraria `True` do Python no manifesto gerado.
+        env[key.strip()] = str(value)
+
+    def _positive_int(field: str, ceiling: int | None = None) -> int | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} preview.{field} must be a positive integer",
+                summary=f"preview.{field} must be a positive integer",
+            )
+        return min(value, ceiling) if ceiling else value
+
+    return RepoPreviewDeclaration(
+        image=_str("image"),
+        artifact_glob=_str("artifact_glob"),
+        env=env,
+        port=_positive_int("port"),
+        # Clampado, não recusado — mesma disciplina de `timeout_seconds`.
+        ready_timeout_s=_positive_int("ready_timeout_s", _PREVIEW_MAX_READY_TIMEOUT_S),
+    )
+
+
 def _validate_command(name: str, raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -619,7 +718,8 @@ class L1Config:
     def _from_manifest_payload(cls, payload: Any, *, source: str) -> "L1Config":
         if not isinstance(payload, dict):
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
-        allowed = {"version", "commands", "timeout_seconds", "timeouts", "sast_severity_gate"}
+        allowed = {"version", "commands", "timeout_seconds", "timeouts",
+                   "sast_severity_gate", "preview"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(

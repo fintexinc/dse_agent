@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from dse_contracts.activities import PreviewRef, TriggerPreviewInput
 
 from dse_validation import db
-from dse_validation.config import PreviewConfig
+from dse_validation.config import PreviewConfig, RepoPreviewDeclaration
 from dse_validation.preview import gitops
 from dse_validation.preview.paths_filter import preview_decision
 
@@ -309,7 +309,8 @@ data:
 def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                        repo: str, branch: str, kind: str = "ui",
                        api_proxy_target: str | None = None,
-                       auth_mode: str = "ssh") -> str:
+                       auth_mode: str = "ssh",
+                       repo_preview: RepoPreviewDeclaration | None = None) -> str:
     """Deployment that runs the PR branch straight from source.
 
     No image is built anywhere in this path, and that is the whole point: this
@@ -335,9 +336,16 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     Readiness is deliberately patient: install/build on a cold container easily
     outlasts a default probe.
     """
-    port = cfg.source_port
+    # G7: a porta é do repo quando ele a declara (o Spring deste cluster
+    # recebia a porta do dev server de Node por acidente de default).
+    port = (repo_preview.port if repo_preview and repo_preview.port else cfg.source_port)
     period = 5
-    failure_threshold = max(6, cfg.source_ready_timeout_s // period)
+    ready_timeout = (
+        repo_preview.ready_timeout_s
+        if repo_preview and repo_preview.ready_timeout_s
+        else cfg.source_ready_timeout_s
+    )
+    failure_threshold = max(6, ready_timeout // period)
     if auth_mode == "token":
         # G-1' — installation token da App, lido do VOLUME (nunca do pod spec,
         # que `kubectl get pod -o yaml` mostra, e nunca em argv). O credential
@@ -358,7 +366,14 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     # Single-quoted in the shell and injected from values the DSE itself
     # generated (repo slug, `dse/<work_item_id>` branch) — never from PR text.
     if kind == "deployable":
-        image = cfg.deployable_image
+        # G7: o REPO declara a própria forma; o que ele não declara continua
+        # exatamente como antes (o repo que já roda não pode notar diferença).
+        decl = repo_preview or RepoPreviewDeclaration()
+        image = decl.image or cfg.deployable_image
+        # Multi-módulo: o artefato de um build Maven de vários módulos nasce em
+        # `<modulo>/target/`, e o glob de módulo único falha com `set -eu`
+        # ANTES do java -jar — sintoma "degraded por timeout", causa "ls".
+        artifact_glob = decl.artifact_glob or "target/*.jar"
         script = (
             "set -eu; "
             "(apt-get update >/dev/null 2>&1 && "
@@ -371,7 +386,7 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             "cd /srv/app; "
             "BUILD_CMD=$(jq -r '.commands.build[2]' .dse/validation.json); "
             "sh -c \"$BUILD_CMD\"; "
-            "JAR=$(ls target/*.jar | grep -v plain | head -1); "
+            f"JAR=$(ls {artifact_glob} | grep -v plain | head -1); "
             "exec java -jar \"$JAR\""
         )
         # Contrato de datasource MEDIDO no repo (2026-08-09, timebox de uma
@@ -382,11 +397,21 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         # funciona. `SPRING_FLYWAY_ENABLED=true` porque o repo desabilita o
         # Flyway por padrão e o preview PRECISA da migração da PR aplicada.
         #
-        # Os nomes específicos do repo aqui são a ponte do POC. O mecanismo
-        # geral (G7 no backlog) é o repo DECLARAR seu env de preview no
-        # `.dse/validation.json`, do mesmo jeito que já declara o build — a
-        # plataforma não deveria conhecer o nome de variável de um cliente.
-        env_yaml = f"""            - name: SERVER_PORT
+        # G7 ENTREGUE: quando o repo declara `preview.env`, é ele que vale — os
+        # nomes abaixo pertencem a UM cliente e não têm por que viajar para
+        # outro (o calculation-engine-service, por exemplo, não tem banco).
+        # Sem declaração, o bloco antigo continua inteiro: o repo que depende
+        # dele hoje não pode notar diferença.
+        if decl.env:
+            linhas = [f'            - name: SERVER_PORT\n              value: "{port}"']
+            for nome, valor in decl.env.items():
+                # `json.dumps` no valor: aspas/quebras vindas do manifesto do
+                # cliente não podem escapar do YAML gerado.
+                linhas.append(f"            - name: {nome}\n"
+                              f"              value: {json.dumps(valor)}")
+            env_yaml = "\n".join(linhas) + "\n"
+        else:
+            env_yaml = f"""            - name: SERVER_PORT
               value: "{port}"
             - name: SPRING_FLYWAY_ENABLED
               value: "true"
@@ -551,12 +576,41 @@ metadata:
 {env_yaml}{resources_yaml}{probe_yaml}"""
 
 
+def read_repo_preview(repo: str, branch: str) -> RepoPreviewDeclaration | None:
+    """Lê o bloco `preview` do `.dse/validation.json` do repo, no branch da PR.
+
+    Em Python e não pelo `jq` de dentro do pod porque a IMAGEM sai daqui — ela
+    precisa estar escolhida antes de o pod existir. Usa o mesmo leitor da
+    triage (`github_client.get_file_text`), e é best-effort pelo mesmo motivo:
+    manifesto ausente, ilegível ou torto significa "sem declaração", nunca
+    preview derrubado. Declaração inválida (chave desconhecida, tipo errado)
+    também degrada para None — o L1 é quem reprova manifesto inválido, com
+    mensagem própria; o preview não é lugar de dar essa notícia.
+    """
+    try:
+        from dse_validation.config import L1_MANIFEST_PATH, parse_repo_preview
+        from dse_validation.github.client import GitHubConfig, build_github_client
+
+        client = build_github_client(GitHubConfig())
+        reader = getattr(client, "get_file_text", None)
+        if reader is None:
+            return None
+        texto = reader(repo, L1_MANIFEST_PATH, branch)
+        if not texto:
+            return None
+        return parse_repo_preview(json.loads(texto), source=f"{repo}@{branch}")
+    except Exception as exc:  # noqa: BLE001 — ver docstring
+        logger.info("preview: no usable declaration in %s@%s (%s)", repo, branch, exc)
+        return None
+
+
 def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     expires_at: datetime, ttl_seconds: int, cfg: PreviewConfig,
                     *, image: str | None = None, app_port: int | None = None,
                     repo: str = "", branch: str = "", kind: str = "ui",
                     api_proxy_target: str | None = None,
-                    auth_mode: str = "ssh") -> dict[str, str]:
+                    auth_mode: str = "ssh",
+                    repo_preview: RepoPreviewDeclaration | None = None) -> dict[str, str]:
     """Plan 08 §D: `image` (D4 — the PR image; defaults to the cfg placeholder)
     and `app_port` (the app's port inside the container; Service/Ingress publish
     80 → targetPort). When `cfg.external_host_template` is set, also generates
@@ -591,8 +645,12 @@ metadata:
     if cfg.mode == "source":
         deploy = _source_deployment(namespace, labels, cfg, repo=repo, branch=branch,
                                     kind=kind, api_proxy_target=api_proxy_target,
-                                    auth_mode=auth_mode)
-        port = cfg.source_port
+                                    auth_mode=auth_mode, repo_preview=repo_preview)
+        # A porta que o Service/Ingress publicam tem que ser a MESMA que o
+        # container escuta — se o repo declarou a dele, o encaminhamento segue
+        # junto, senão o preview responde 502 com o pod saudável.
+        port = (repo_preview.port if repo_preview and repo_preview.port
+                else cfg.source_port)
     else:
         deploy = f"""apiVersion: apps/v1
 kind: Deployment
@@ -1315,12 +1373,18 @@ def _trigger_preview(
     if auth_mode is None:
         auth_mode = "ssh"  # sem credencial: o erro nomeado vem do hook abaixo
 
+    # G7: a forma do repo vem do repo. Lido AQUI, em Python, e não pelo `jq`
+    # de dentro do pod, porque a imagem precisa ser escolhida antes de o pod
+    # existir. Best-effort pelo mesmo motivo da triage: manifesto ilegível não
+    # pode derrubar o preview — sem declaração, tudo segue como antes.
+    repo_preview = read_repo_preview(inp.repo, branch)
+
     try:
         manifests = build_manifests(namespace, inp.work_item_id, inp.tenant_id, expires_at, ttl, cfg,
                                     image=pr_image, app_port=app_port,
                                     repo=inp.repo, branch=branch, kind=kind,
                                     api_proxy_target=api_proxy_target,
-                                    auth_mode=auth_mode)
+                                    auth_mode=auth_mode, repo_preview=repo_preview)
         if cfg.apply_mode == "kubectl":
             def _seed_credential() -> None:
                 if not auth_material:

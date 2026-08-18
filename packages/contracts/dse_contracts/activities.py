@@ -682,6 +682,11 @@ class TriggerPreviewInput(BaseModel):
         "**/Dockerfile", "Dockerfile", "**/*.py", "**/*.go", "**/*.rb",
         "**/*.java", "**/*.ts", "**/*.js", "k8s/**", "deploy/**", "charts/**",
         "**/requirements*.txt", "pyproject.toml", "go.mod", "package.json",
+        # Arquivo de build do Java. A lista já tinha `**/*.java` mas nenhum
+        # POM: uma PR que só mexe em dependência ou plugin (metade do trabalho
+        # de onboarding de um repo Maven) não era previewável, e o sintoma era
+        # "preview não saiu" sem nada explicando.
+        "pom.xml", "**/pom.xml",
     ])
 
 
