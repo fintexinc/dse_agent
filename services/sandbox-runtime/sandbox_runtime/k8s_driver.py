@@ -28,6 +28,7 @@ import subprocess
 import time
 import urllib.parse
 from dataclasses import dataclass
+from xml.sax.saxutils import escape as xml_escape
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -95,6 +96,13 @@ class K8sSandboxConfig:
     # this default only applies outside the chart and avoids the stale port 3128
     # footgun).
     egress_proxy_url: str = os.environ.get("DSE_EGRESS_PROXY_URL", "http://egress-proxy.dse.svc.cluster.local:8806")
+    # Repositório Maven PRIVADO do cliente. `feed_id` é o `id` do
+    # `<repository>` no POM dele — o Maven casa credencial por id. Lidos do
+    # ambiente do worker (o Secret), NUNCA do manifesto do Pod: o token viaja
+    # por stdin do `exec` que escreve o settings.xml.
+    maven_feed_id: str = os.environ.get("DSE_MAVEN_FEED_ID", "")
+    maven_feed_username: str = os.environ.get("MAVEN_FEED_USERNAME", "")
+    maven_feed_token: str = os.environ.get("MAVEN_FEED_TOKEN", "")
     cpu_limit: str = os.environ.get("DSE_SANDBOX_CPU_LIMIT", "1")
     mem_limit: str = os.environ.get("DSE_SANDBOX_MEM_LIMIT", "2Gi")
     # Local ephemeral storage. A clone + `npm install` fills the /workspace and
@@ -171,12 +179,26 @@ def pod_name_for(work_item_id: str) -> str:
     return f"dse-sbx-{slug}"[:63].rstrip("-")
 
 
-def maven_proxy_settings_xml(egress_proxy_url: str) -> str:
+def maven_proxy_settings_xml(
+    egress_proxy_url: str,
+    *,
+    feed_id: str = "",
+    feed_username: str = "",
+    feed_token: str = "",
+) -> str:
     """Maven's resolver honors NEITHER the http(s)_proxy env vars NOR the
     -Dhttps.proxyHost system properties — a `<proxies>` block in settings.xml is
     the only channel it respects. Without it every artifact download from a
     sandbox Pod dies with "Network is unreachable" (default-deny NetworkPolicy).
-    nonProxyHosts mirrors NO_PROXY above."""
+    nonProxyHosts mirrors NO_PROXY above.
+
+    `feed_*` (2026-08-18): repositório privado do cliente. O `<servers>` é, pelo
+    mesmo motivo do `<proxies>`, o único canal de credencial que o resolver lê.
+    O `feed_id` TEM de ser o `id` do `<repository>` do POM — o Maven casa
+    credencial por id, e um nome diferente é ignorado sem aviso, produzindo o
+    mesmo 403 de antes com a credencial presente. Vazio = nada de `<servers>`:
+    tenant sem feed privado gera exatamente o documento de sempre.
+    """
     parsed = urllib.parse.urlparse(egress_proxy_url)
     host, port = parsed.hostname or "", parsed.port or 8806
     non_proxy = "localhost|127.0.0.1|*.svc|*.cluster.local"
@@ -186,9 +208,21 @@ def maven_proxy_settings_xml(egress_proxy_url: str) -> str:
         f"<nonProxyHosts>{non_proxy}</nonProxyHosts></proxy>"
         for scheme in ("https", "http")
     )
+    servers = ""
+    if feed_id and feed_token:
+        # `escape`: o PAT é gerado por terceiro e pode conter `&`, `<`, `>`. Um
+        # deles cru quebraria o XML, e o Maven falharia com erro de parse — que
+        # seria diagnosticado como qualquer outra coisa menos a credencial.
+        servers = (
+            "<servers><server>"
+            f"<id>{xml_escape(feed_id)}</id>"
+            f"<username>{xml_escape(feed_username or 'dse')}</username>"
+            f"<password>{xml_escape(feed_token)}</password>"
+            "</server></servers>"
+        )
     return (
         '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">'
-        f"<proxies>{proxies}</proxies></settings>"
+        f"{servers}<proxies>{proxies}</proxies></settings>"
     )
 
 
@@ -427,7 +461,12 @@ class KubernetesSandboxDriver:
         self._kubectl(
             ["exec", "-i", name, "-n", self._cfg.namespace, "--",
              "sh", "-c", "mkdir -p /tmp/.m2 && cat > /tmp/.m2/settings.xml"],
-            input_text=maven_proxy_settings_xml(self._cfg.egress_proxy_url),
+            input_text=maven_proxy_settings_xml(
+                self._cfg.egress_proxy_url,
+                feed_id=self._cfg.maven_feed_id,
+                feed_username=self._cfg.maven_feed_username,
+                feed_token=self._cfg.maven_feed_token,
+            ),
         )
         return docker_driver.ProvisionedSandbox(
             container_id=name,
