@@ -127,6 +127,11 @@ def _clone_target_repo(req: WorkspaceBootstrapRequest) -> str:
     ])
     session = ScopedGitSession(workspace_dir=req.workspace_dir, branch=req.branch)
     session.ensure_identity()
+    # AQUI, e não na hora do push: daqui a três linhas o `origin` passa a ser o
+    # checkpoint local, que não tem o histórico do cliente — depois disso não há
+    # de onde completar o clone. Repo mais fundo que `--depth` empurra linhas
+    # `shallow` e o receive-pack recusa (medido 2026-08-18, 147 commits).
+    session.unshallow_if_needed()
     _git(["checkout", "-b", req.branch], cwd=req.workspace_dir)
     write_task_branch_marker(req.workspace_dir, req.branch)
     # origin becomes the checkpoint (never GitHub again) — the turn's

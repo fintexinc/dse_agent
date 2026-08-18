@@ -31,9 +31,21 @@ Two enforcement layers, independent of each other:
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger("sandbox_runtime.scoped_git")
+
+#: O hook `pre-receive` se ANUNCIA em toda recusa (`PRE_RECEIVE_HOOK_TEMPLATE`).
+#: É esse marcador — e não "o push falhou" — que distingue violação de escopo de
+#: falha de mecânica do git.
+_SCOPE_MARKER = "dse-scope:"
+
+
+def _looks_like_scope_refusal(message: str) -> bool:
+    return _SCOPE_MARKER in message
 
 #: Hooks do repositório do cliente desligados NA LINHA DE COMANDO, em todo
 #: comando que esta sessão executa.
@@ -241,11 +253,43 @@ class ScopedGitSession:
         sha = self._run(["rev-parse", "HEAD"]).stdout.strip()
         return sha
 
+    def unshallow_if_needed(self) -> None:
+        """Um clone raso não pode ser empurrado para o checkpoint.
+
+        Medido 2026-08-18 no primeiro repo de cliente com histórico real (147
+        commits): o clone é `--depth 50`, o push manda linhas `shallow` e o
+        `git-receive-pack` do bare repo recusa com `shallow update not
+        allowed`. Repo com menos commits que a profundidade recebe o histórico
+        inteiro, não tem fronteira e sempre funcionou — por isso o defeito
+        ficou invisível durante todo o POC.
+
+        O atalho seria `receive.shallowUpdate=true` no bare repo. Recusado: o
+        checkpoint viraria raso e `_is_fast_forward` decide por `merge-base
+        --is-ancestor`, cuja resposta muda ao atravessar fronteira rasa — a
+        guarda anti-force-push ficaria mais fraca em silêncio. Preenchemos o
+        histórico uma vez, e a guarda continua exata.
+        """
+        if not (Path(self.workspace_dir) / ".git" / "shallow").is_file():
+            return
+        # `origin` neste ponto já pode ser o checkpoint (que não tem o
+        # histórico): o unshallow tem que ir ao remote de ONDE veio o clone.
+        for remote in ("upstream", "origin"):
+            try:
+                self._run(["fetch", "--unshallow", remote])
+                return
+            except GitCommandError:
+                continue
+        logger.warning(
+            "workspace is shallow and could not be deepened; the push to the "
+            "checkpoint will be refused with 'shallow update not allowed'"
+        )
+
     def push(self) -> None:
         """Push hardcoded to `HEAD:refs/heads/<branch>` on the configured remote
         — there is no way to pass `--force` or another refspec through this API.
         Server-side `pre-receive` hook failures propagate as `GitScopeViolation`
         (P6: clean failure, not swallowed)."""
+        self.unshallow_if_needed()
         try:
             self._run(["push", self.remote_name, f"HEAD:refs/heads/{self.branch}"])
         except GitCommandError as e:
@@ -254,7 +298,16 @@ class ScopedGitSession:
             # so a push REFUSED BY THE SCOPE HOOK would have escaped as a plain
             # git failure instead of the scope violation callers act on — a
             # security guarantee turned into a generic error by a refactor.
-            raise GitScopeViolation(f"push refused by the remote (scope): {e}") from e
+            #
+            # A correção passou do ponto na direção oposta: TODA falha de git
+            # virava violação de escopo. Um push recusado por mecânica (shallow,
+            # remote inexistente, disco cheio) mandava a investigação para
+            # credencial e allowlist — custou uma auditoria inteira em
+            # 2026-08-18. Violação de escopo é o que o HOOK recusa; ele se
+            # anuncia, e é só isso que reetiquetamos.
+            if _looks_like_scope_refusal(str(e)):
+                raise GitScopeViolation(f"push refused by the remote (scope): {e}") from e
+            raise
 
     def current_sha(self) -> str:
         return self._run(["rev-parse", "HEAD"]).stdout.strip()

@@ -78,10 +78,17 @@ def test_a_repo_deeper_than_the_clone_can_still_checkpoint(tmp_path):
 
     session = ScopedGitSession(workspace_dir=str(ws), branch="dse/wi-fundo")
     session.ensure_identity()
+    # Mesma ordem do `_clone_target_repo` real: o unshallow tem que caber ANTES
+    # de o origin virar o checkpoint — depois disso não há de onde completar.
+    session.unshallow_if_needed()
     _git(["-C", str(ws), "checkout", "-b", "dse/wi-fundo"])
     _git(["-C", str(ws), "remote", "set-url", "origin", str(checkpoint)])
 
     session.push()  # vermelho: shallow update not allowed
+
+    assert not (ws / ".git" / "shallow").is_file(), (
+        "o workspace continua raso — o push só passou por acidente"
+    )
 
     # E o checkpoint tem mesmo o commit — push aceito não é push completo.
     ref = _git(["-C", str(checkpoint), "rev-parse", "refs/heads/dse/wi-fundo"]).stdout.strip()
