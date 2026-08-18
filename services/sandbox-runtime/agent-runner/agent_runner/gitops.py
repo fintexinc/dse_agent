@@ -115,7 +115,11 @@ def _clone_target_repo(req: WorkspaceBootstrapRequest) -> str:
         )
     # --depth: shallow history is enough for the turn; pushing the tip to the
     # local checkpoint carries the objects that are needed.
-    _git([
+    # As opções de transporte vivem no COMANDO (`-c`), não no `.git/config` —
+    # de propósito: o token não pode ficar escrito no clone. A consequência é
+    # que TODA operação de rede posterior precisa repeti-las; um `git fetch`
+    # simples sai sem proxy e sem credencial, e o egress é default-deny.
+    transporte = [
         "-c", f"http.proxy={proxy}",
         "-c", "http.extraHeader=X-Dse-Inject-Credential: github",
         "-c", f"http.extraHeader=X-Dse-Repo: {req.repo}",
@@ -123,8 +127,17 @@ def _clone_target_repo(req: WorkspaceBootstrapRequest) -> str:
         # git would otherwise follow GitHub's 301 to https:// and land back on a
         # CONNECT tunnel with no credential — the exact failure being fixed.
         "-c", "http.followRedirects=false",
+    ]
+    _git([
+        *transporte,
         "clone", "--depth", "50", "--branch", req.base_branch, url, req.workspace_dir,
     ])
+    # Completa o histórico AQUI: daqui a poucas linhas o `origin` vira o
+    # checkpoint local, que não tem o histórico do cliente — e um clone raso é
+    # recusado pelo `git-receive-pack` do checkpoint com `shallow update not
+    # allowed` (medido 2026-08-18, repo de 147 commits contra `--depth 50`).
+    if (Path(req.workspace_dir) / ".git" / "shallow").is_file():
+        _git([*transporte, "fetch", "--unshallow"], cwd=req.workspace_dir)
     session = ScopedGitSession(workspace_dir=req.workspace_dir, branch=req.branch)
     session.ensure_identity()
     # AQUI, e não na hora do push: daqui a três linhas o `origin` passa a ser o

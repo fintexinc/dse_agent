@@ -148,11 +148,17 @@ def test_bootstrap_clone_from_local_repo_repoints_origin_to_checkpoint(tmp_path)
         session.push()
         return session.current_sha()
 
+    # `finally` restaurando os DOIS: antes só o `_git` voltava, e o
+    # `_clone_target_repo` ficava trocado pelo fake para o resto da sessão —
+    # todo teste posterior que exercitasse o clone real media o dublê. Custou
+    # um vermelho fantasma em 2026-08-18.
+    orig_clone = gitops._clone_target_repo
     gitops._clone_target_repo = fake_clone_url
     try:
         res = bootstrap_workspace(req)
     finally:
         gitops._git = orig
+        gitops._clone_target_repo = orig_clone
     assert not res.failed and res.created and res.sha
     # origin re-pointed at the checkpoint (the upstream URL is gone from the config)
     import subprocess as sp
