@@ -50,7 +50,7 @@ global:
 #     vault/otel) stay in the public repositories, with no prefix. ---
 # rc.53: adapters + gateway precisam do F1/F2 (thread do bot, bot_ts, recusa
 # non-task) — parados na rc.31 desde sempre; sobe tudo junto do mesmo main.
-_ghcrTag: &ghcrTag "v0.1.0-rc.101"
+_ghcrTag: &ghcrTag "v0.1.0-rc.102"
 
 # --- CPU requests right-sized against MEASURED usage (2026-07-25) ------------
 # The node sat at 97% CPU *reserved* while using 9%: 1843m of the 2000m was
@@ -77,7 +77,7 @@ orchestrator:
   defaultWorkItemMaxUsd: 50
   coderRetryCap: 8
   replicas: 1                  # POC: 1 replica (HA fora de escopo)
-  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.101", digest: "sha256:a7f8a8ea1d2caab142fa2731717ca02a90f4d6d8f56c57bf6e249e9a0affb2db" }
+  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.102", digest: "sha256:b18cea5a8920b49976560e7d47becc192c4fbd3c063c7c3fa4b646ffecf9dd50" }
   resources:
     # Medido 3m/80Mi ocioso. Roda os gates do L1 IN-PROCESS, então estoura
     # muito acima do ocioso — por isso o request fica bem acima do medido.
@@ -342,8 +342,8 @@ runtime:
     # LOCKSTEP OBRIGATORIO: PostTurnRequest/Result sao extra="forbid" e mudaram
     # nesta rc. Esta tag e a do orchestrator TEM de subir juntas -- fixar so
     # uma das duas quebra o post_turn dentro do Pod.
-    tag: "v0.1.0-rc.101"
-    digest: "sha256:e5e189bbcc5990b441b14f7f88c2146159c5047a6d5fe8dc5c6203be7f31643a"
+    tag: "v0.1.0-rc.102"
+    digest: "sha256:4cc35823a571bbbed92ddace3341a7c98936dd7fff68cd06a2a6329341d6ceac"
   # Ceiling per sandbox, not a concurrency cap: each turn may burst to a full
   # core, and how many run at once follows from what the node has left. On 4
   # vCPU with ~1.2 of them reserved, several fit — the 2-core node was what made
