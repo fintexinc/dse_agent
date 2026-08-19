@@ -123,6 +123,10 @@ egressProxy:
     - { host: "login.botframework.com", port: 443, purpose: "Bot Framework OpenID metadata + JWKS (validacao de entrada)" }
     - { host: "smba.trafficmanager.net", port: 443, purpose: "Bot Connector (postar e editar a mensagem de status no Teams)" }
     - { host: "repo.maven.apache.org", port: 443, purpose: "Maven Central (toolchain + dependencias dos gates do testbed Java)" }
+    # Feed Maven privado do cliente (Azure Artifacts): o modulo `domain` do
+    # calculation-engine-service depende de um artefato que so existe la, e sem
+    # este host NENHUM comando de build daquele repo passa — nem `compile`.
+    - { host: "pkgs.dev.azure.com", port: 443, purpose: "Azure Artifacts (feed Maven privado do calculation-engine-service)" }
 modelGateway:
   image: { repository: ghcr.io/fintexinc/dse_agent/model-gateway, tag: *ghcrTag, digest: "" }
   allowFixture: true           # POC: no real provider required
@@ -365,6 +369,8 @@ runtime:
   # matava o lint (exit 134), falha que o upgrade da VPS PIOROU em vez de
   # resolver. Dois sandboxes a 12Gi cabem nos 31 do nó com folga.
   sandboxMemLimit: "12Gi"
+  # `id` do <repository> privado no pom do calculation-engine-service.
+  mavenFeedId: "fintexincorporated"
 
 networkPolicy:
   kubeApiServer:

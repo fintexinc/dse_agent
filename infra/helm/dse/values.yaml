@@ -103,6 +103,9 @@ runtime:
     digest: ""
   sandboxCpuLimit: "1"
   sandboxMemLimit: "2Gi"
+  # `id` do <repository> privado no POM do repo alvo. Vazio = sem feed
+  # privado, e o settings.xml do sandbox sai como sempre saiu.
+  mavenFeedId: ""
   # Absolute lifetime stamped on each sandbox Pod (annotation
   # dse.fintex/expires-at) and enforced by the sandbox-reaper CronJob. It is the
   # BACKSTOP for Pods whose workflow died without calling teardown_sandbox — the

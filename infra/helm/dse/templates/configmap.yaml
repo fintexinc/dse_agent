@@ -74,6 +74,13 @@ data:
   DSE_SANDBOX_SERVICE_ACCOUNT: "dse-sandbox-runner"
   DSE_SANDBOX_CPU_LIMIT: {{ .Values.runtime.sandboxCpuLimit | quote }}
   DSE_SANDBOX_MEM_LIMIT: {{ .Values.runtime.sandboxMemLimit | quote }}
+  {{- if .Values.runtime.mavenFeedId }}
+  # Repositorio Maven PRIVADO do cliente: o `id` do <repository> no POM dele.
+  # O Maven casa credencial por id — nome diferente e ignorado sem aviso, e o
+  # sintoma e o mesmo 403 de quem nao tem credencial nenhuma. As credenciais
+  # (MAVEN_FEED_USERNAME/MAVEN_FEED_TOKEN) vem do extraEnvSecret, nunca daqui.
+  DSE_MAVEN_FEED_ID: {{ .Values.runtime.mavenFeedId | quote }}
+  {{- end }}
   DSE_SANDBOX_TTL_SECONDS: {{ .Values.runtime.sandboxTtlSeconds | quote }}
   DSE_SANDBOX_CHECKPOINT_PVC: {{ if .Values.runtime.checkpointPvc.enabled }}{{ include "dse.fullname" . }}-sandbox-checkpoint{{ else }}""{{ end }}
   # Per-WorkItem dollar ceiling applied when work_items.budget carries no
