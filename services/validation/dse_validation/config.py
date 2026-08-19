@@ -668,6 +668,7 @@ class L1Config:
         timeout_seconds: int | None = None,
         timeouts: dict[str, int] | None = None,
         sast_severity_gate: str | None = None,
+        disabled_stages: frozenset[str] | set[str] | None = None,
         source: str = "not-configured",
         manifest_status: GateStatus = GateStatus.NOT_CONFIGURED,
         manifest_detail: str = "L1 manifest not loaded",
@@ -689,6 +690,10 @@ class L1Config:
         self.sast_severity_gate = (
             sast_severity_gate or os.environ.get("DSE_L1_SAST_SEVERITY_GATE", "MEDIUM")
         ).upper()
+        # Estágios que o REPO desligou (`disabled_stages` do manifesto). Só os
+        # quatro gates do repo — sast/secret_scan são da plataforma e o parse
+        # recusa. Vazio = tudo ligado, que é o caso de todo manifesto anterior.
+        self.disabled_stages: frozenset[str] = frozenset(disabled_stages or ())
         self.source = source
         self.manifest_status = manifest_status
         self.manifest_detail = manifest_detail
@@ -785,7 +790,8 @@ class L1Config:
         if not isinstance(payload, dict):
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
         allowed = {"version", "commands", "timeout_seconds", "timeouts",
-                   "sast_severity_gate", "preview", "forbidden_paths"}
+                   "sast_severity_gate", "preview", "forbidden_paths",
+                   "disabled_stages"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(
@@ -852,6 +858,38 @@ class L1Config:
                 f"manifest {source}: sast_severity_gate must be LOW, MEDIUM or HIGH",
             )
 
+        # `disabled_stages` — o jeito HONESTO de o repo desligar um gate seu.
+        # As rotas óbvias são ambas erradas: comando null vira NOT_CONFIGURED
+        # com passed=False (reprova o L1 inteiro, com um "conserto" impossível
+        # — o manifesto é lido do base SHA), e um stub `echo` não passa na
+        # regra de evidência do teste sem imprimir contagem falsa. Só os
+        # gates do REPO são desligáveis: sast/secret_scan são da plataforma —
+        # repo não desliga scan de segredo.
+        disabled_raw = payload.get("disabled_stages")
+        disabled: frozenset[str] = frozenset()
+        if disabled_raw is not None:
+            if not isinstance(disabled_raw, list) or not all(
+                isinstance(stage, str) for stage in disabled_raw
+            ):
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} disabled_stages must be a list of stage names",
+                    summary="disabled_stages must be a list of stage names",
+                )
+            unknown_stages = sorted(set(disabled_raw) - set(_COMMAND_NAMES))
+            if unknown_stages:
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} disabled_stages has invalid entries: "
+                    f"{unknown_stages} (only repository gates can be disabled: "
+                    f"{sorted(_COMMAND_NAMES)})",
+                    summary=(
+                        f"disabled_stages has {len(unknown_stages)} invalid "
+                        f"entr(ies) (valid: {sorted(_COMMAND_NAMES)})"
+                    ),
+                )
+            disabled = frozenset(disabled_raw)
+
         parsed = {name: _validate_command(name, commands.get(name)) for name in _COMMAND_NAMES}
         return cls(
             lint_cmd=parsed["lint"],
@@ -861,6 +899,7 @@ class L1Config:
             timeout_seconds=timeout,
             timeouts=declared_timeouts,
             sast_severity_gate=severity,
+            disabled_stages=disabled,
             source=source,
             manifest_status=GateStatus.PASS,
             manifest_detail=detail,

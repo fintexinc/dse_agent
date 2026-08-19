@@ -47,8 +47,14 @@ Must be exactly `1`. Anything else is an ERROR.
 ## `commands` *(required)*
 
 An object whose keys are `lint`, `typecheck`, `test`, `build`. Any other key is
-an ERROR. A command that is absent or `null` means "this repository has no such
-gate" — the stage is skipped, not failed.
+an ERROR.
+
+**A command that is absent or `null` is NOT a disabled gate.** The stage reads
+`NOT_CONFIGURED`, and `NOT_CONFIGURED` **fails the pipeline** — a manifest with
+no test command is treated as a misconfiguration, never silently blessed. To
+turn a gate off on purpose, declare it in `disabled_stages` (below); that is
+the honest switch, and it keeps the command intact for the consumers that read
+it (the preview build does).
 
 Each command is an **argv array**, never a shell string:
 
@@ -138,6 +144,38 @@ Asking for more trades "degraded at 15 minutes" for "attempt lost".
 
 **Trap — a preview needs HTTPS to be useful.** Anything behind Auth0 (or any
 provider that requires a secure origin) renders a blank page over `http://`.
+
+## `disabled_stages` *(optional)*
+
+Repository gates this repository has turned off, by name:
+
+```json
+"disabled_stages": ["test", "build"]
+```
+
+- Valid entries: `lint`, `typecheck`, `test`, `build` — **only the
+  repository's own gates**. `sast` and `secret_scan` belong to the platform (a
+  repository cannot disable the secret scan) and are refused, as is any
+  unknown name.
+- A disabled stage runs **nothing** and reports
+  `not run: disabled by the repository manifest (disabled_stages)` — a PASS
+  that says exactly why it passed. The ledger never shows a silent green.
+- The `commands` entries stay untouched, so consumers that read them keep
+  working — the preview's build recipe reads `commands.build[2]` from this
+  same file.
+- Read from the **base SHA**, like `forbidden_paths`: a PR cannot disable the
+  gates it is about to face; turning one off costs a reviewed merge.
+
+**Why this field exists** (measured, 2026-08-19): the two obvious routes are
+both wrong. Nulling a command makes the stage `NOT_CONFIGURED`, which fails the
+whole pipeline with an impossible fix ("add a test command" — the manifest is
+read from the base SHA, so the Coder cannot). And an `echo` stub cannot pass
+the test gate's evidence rule without printing a fake test count — a ledger
+that lies. This field is the honest door.
+
+**Trap — this is a pause button, not a policy.** A repository with `test`
+disabled ships changes nobody's suite looked at; the PR reviewer is the only
+gate left. Re-enable as soon as whatever forced the pause is fixed.
 
 ## `forbidden_paths` *(optional)*
 

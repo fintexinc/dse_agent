@@ -212,9 +212,23 @@ def _not_configured(check: str, cfg: L1Config) -> L1Finding:
     )
 
 
+def _disabled(check: str, cfg: L1Config) -> "L1Finding | None":
+    """O finding de um estágio que o REPO desligou, ou None.
+
+    Vem ANTES do check de not-configured em todos os gates: um estágio
+    desligado E sem comando é desligado — a intenção declarada vence a
+    ausência. E "desligado" significa que NADA executa; o ledger diz que não
+    rodou e por quê, nunca um PASS mudo."""
+    if check not in cfg.disabled_stages:
+        return None
+    return _not_applicable(check, "disabled by the repository manifest (disabled_stages)")
+
+
 def lint_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None
 ) -> L1Finding:
+    if (skip := _disabled("lint", cfg)) is not None:
+        return skip
     if not cfg.lint_cmd:
         return _not_configured("lint", cfg)
     if (why := _gate_is_unreachable("lint", changed_files)) is not None:
@@ -290,6 +304,8 @@ _TSC_ERROR_RE = re.compile(r": error TS\d+:")
 def typecheck_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None
 ) -> L1Finding:
+    if (skip := _disabled("typecheck", cfg)) is not None:
+        return skip
     if not cfg.typecheck_cmd:
         return _not_configured("typecheck", cfg)
     if (why := _gate_is_unreachable("typecheck", changed_files)) is not None:
@@ -434,16 +450,17 @@ def _test_counts(text: str) -> TestCounts | None:
     `workflows.py::_l1_failure_context` hands it to the next Coder turn — so
     the fix loop was told to repair a suite it was told passed.
 
-    A line naming a non-zero failure wins outright; otherwise the line with the
-    most executions wins — surefire prints one line per class and then the
-    totals, and the totals are never smaller than a class line.
+    Among footers, one that NAMES a failure beats a bigger green one; among
+    failing footers, the one with the most executions wins — surefire prints
+    one line per class and then the module total, and the total is never
+    smaller than a class line in either metric.
     """
     fallback: TestCounts | None = None
     for line in text.splitlines():
         counts = _counts_from_line(line)
         if counts is None:
             continue
-        # RODAPÉ vence, sempre — e o maior rodapé vence entre rodapés.
+        # RODAPÉ vence, sempre — e entre rodapés a seleção tem DOIS níveis.
         #
         # O que estava aqui antes era `if counts.failed > 0: return counts`:
         # a primeira linha com falha ganhava. Medido em 10/08, nos dois
@@ -456,14 +473,31 @@ def _test_counts(text: str) -> TestCounts | None:
         #     rodapé real de "3 failed, 4972 passed" (wi_176dfa72). O
         #     operador leu isso como "longe do verde"; eram três asserções.
         #
-        # `_SUREFIRE_RE` já é ancorada o bastante para não casar nome de
-        # teste; para os demais dialetos exigimos a forma de rodapé, e entre
-        # candidatos vence o de maior `executed` — o total nunca é menor que
-        # uma linha de classe, que é o que o docstring sempre afirmou.
+        # A correção de 10/08 ("maior executed vence") criou o defeito oposto
+        # num reator Maven MULTI-MÓDULO (wi_8c26a5e7, 2026-08-19): cada módulo
+        # imprime o próprio total e não existe total global, então o módulo
+        # verde de 1141 testes apagou o `bootstrap` com `151, Failures: 1,
+        # Errors: 7` — e o resumo publicado foi "no test failed… coverage
+        # threshold or similar". Esse texto é o que _l1_failure_context entrega
+        # ao Coder: ele caçou um problema de cobertura que não existe e o item
+        # morreu em coder_not_converging. Fabricado pelo resumo.
+        #
+        # Regra atual, preservando as duas lições de 10/08 por construção:
+        #   1. rodapé com falha vence rodapé verde (o vermelho nunca é apagado);
+        #   2. no mesmo nível, vence o de maior `executed` (total do módulo ≥
+        #      suas linhas de classe nas DUAS métricas).
+        # Nunca se SOMA: linha de classe + total do próprio módulo dobrariam a
+        # conta. O preço honesto é que num reator multi-módulo o resumo é o do
+        # módulo que falhou (ou, todo verde, o do maior módulo) — não a soma.
         is_footer = bool(_SUREFIRE_RE.search(line)) or bool(_FOOTER_LINE_RE.search(line))
         if not is_footer:
             continue
-        if fallback is None or counts.executed > fallback.executed:
+        if fallback is None:
+            fallback = counts
+            continue
+        melhor_falha = (counts.failed > 0, counts.executed)
+        atual_falha = (fallback.failed > 0, fallback.executed)
+        if melhor_falha > atual_falha:
             fallback = counts
     return fallback
 
@@ -602,6 +636,8 @@ def test_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None,
     base_sha: str | None = None,
 ) -> L1Finding:
+    if (skip := _disabled("test", cfg)) is not None:
+        return skip
     if not cfg.test_cmd:
         return _not_configured("test", cfg)
     if (why := _gate_is_unreachable("test", changed_files)) is not None:
@@ -736,6 +772,8 @@ def test_check(
 def build_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None
 ) -> L1Finding:
+    if (skip := _disabled("build", cfg)) is not None:
+        return skip
     if not cfg.build_cmd:
         return _not_configured("build", cfg)
     if (why := _gate_is_unreachable("build", changed_files)) is not None:
