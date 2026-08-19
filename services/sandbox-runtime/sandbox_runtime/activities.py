@@ -1646,12 +1646,12 @@ def _read_repo_manifest_text(repo: str, ref: str) -> str | None:
 
     Pela API e não por `git show` de dentro do sandbox porque isto roda ANTES
     do plano existir — e portanto antes de haver sandbox. Mesmo leitor do
-    preview (G7) e da triage.
+    preview (G7) e da triage, e o MESMO cliente que a árvore e os docs do
+    Planner já usam: mesmo repo, mesmo ref, mesmo turno, uma construção só.
     """
     from dse_validation.config import L1_MANIFEST_PATH
-    from dse_validation.github.client import GitHubConfig, build_github_client
 
-    client = build_github_client(GitHubConfig())
+    client = _planner_github_client()
     reader = getattr(client, "get_file_text", None)
     if reader is None:
         return None
