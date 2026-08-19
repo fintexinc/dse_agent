@@ -117,15 +117,20 @@ def test_the_declared_env_replaces_the_hardcoded_client_variables():
     )
 
 
-def test_a_repo_that_declares_nothing_keeps_the_recipe_byte_for_byte():
-    """A rede de segurança do G7: o repo BMO depende dos nomes antigos e da
-    imagem antiga. Sem declaração, nada muda."""
+def test_a_repo_that_declares_nothing_keeps_image_and_artifact_defaults():
+    """A rede de segurança do G7, ATUALIZADA em 2026-08-19 (Fase A3): imagem e
+    glob continuam com os defaults de sempre — mas o env de fallback deixou de
+    carregar os nomes de UM cliente (`BMO_DB_*`/Spring). Este teste afirmava o
+    contrário; a mudança de política está em
+    test_preview_recipe_is_repo_agnostic.py, e a migração dos repos BMO para
+    `preview.env` declarado é pré-condição do deploy da rc.101."""
     y = argocd._source_deployment(
         "preview-wi", _LABELS, _cfg(), repo="fintexinc/bmo-fee-calculator-be-dse",
         branch="dse/wi_teste", kind="deployable", repo_preview=None,
     )
     assert "eclipse-temurin:17-jdk" in y
-    assert "BMO_DB_URL" in y and "SPRING_FLYWAY_ENABLED" in y
+    assert "SERVER_PORT" in y
+    assert "BMO_DB_URL" not in y
     assert "ls target/*.jar" in y or "target/*.jar" in y
 
 

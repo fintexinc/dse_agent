@@ -56,3 +56,16 @@ def test_the_grant_lands_on_the_worker_that_runs_the_capture():
         "o ClusterRoleBinding do preview não aponta para o orchestrator-worker; "
         "foi ele quem levou o Forbidden em produção"
     )
+
+
+def test_the_build_credentials_secret_is_reapplyable():
+    """Fase A1 (2026-08-19): `create` de secrets é irrestrito, mas
+    get/update/patch/delete são pinados por NOME — `kubectl apply` sobre um
+    objeto existente é um patch, então sem o nome novo na lista o RE-apply num
+    namespace vivo (refresh do preview) morre em Forbidden. Foi exatamente o
+    desenho que protegeu a deploy key; a secret nova entra na mesma lista."""
+    text = _CHART.read_text(encoding="utf-8")
+    assert "dse-preview-build-credentials" in text, (
+        "a secret de credenciais de build não está no resourceNames do "
+        "ClusterRole — o segundo apply no mesmo namespace toma 403"
+    )
