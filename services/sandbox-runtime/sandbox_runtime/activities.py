@@ -1642,6 +1642,61 @@ def _model_plan_proposer(
 
 
 @activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)
+
+def _read_repo_manifest_text(repo: str, ref: str) -> str | None:
+    """O `.dse/validation.json` do repo em `ref`, pela API do GitHub.
+
+    Pela API e não por `git show` de dentro do sandbox porque isto roda ANTES
+    do plano existir — e portanto antes de haver sandbox. Mesmo leitor do
+    preview (G7) e da triage.
+    """
+    from dse_validation.config import L1_MANIFEST_PATH
+    from dse_validation.github.client import GitHubConfig, build_github_client
+
+    client = build_github_client(GitHubConfig())
+    reader = getattr(client, "get_file_text", None)
+    if reader is None:
+        return None
+    return reader(repo, L1_MANIFEST_PATH, ref)
+
+
+def _forbidden_paths_for(repo: str, base_sha: str | None) -> list[str]:
+    """Os caminhos protegidos deste plano: os do REPO, ou o default da plataforma.
+
+    A lista era uma constante nossa — `[".github/workflows/", "migrations/"]`,
+    do primeiro commit deste repositório, sem justificativa escrita e nunca
+    revista — aplicada igual a todo repo. Ela agora mora no
+    `.dse/validation.json`, lido no BASE SHA: a PR em voo não afrouxa a própria
+    guarda, e mudar a proteção custa um merge revisado por humano.
+
+    TODA falha cai no default, nunca em "nenhuma proteção": manifesto ausente,
+    JSON torto, API fora do ar ou bloco inválido. Quem dá a notícia de
+    manifesto inválido é o L1, com o nome do campo e mensagem própria — aqui
+    ela viraria um plano silenciosamente desprotegido.
+    """
+    padrao: list[str] = PlanArtifact.model_fields["forbidden_paths"].default_factory()
+    if not base_sha:
+        # Sem SHA imutável não se lê: ler do branch seria deixar a PR escolher
+        # a própria guarda.
+        return padrao
+    try:
+        from dse_validation.config import parse_repo_forbidden_paths
+
+        texto = _read_repo_manifest_text(repo, base_sha)
+        if not texto:
+            return padrao
+        declarado = parse_repo_forbidden_paths(
+            json.loads(texto), source=f"{repo}@{base_sha[:12]}"
+        )
+    except Exception as exc:  # noqa: BLE001 — ver docstring
+        logger.info(
+            "planner: no usable forbidden_paths in %s@%s (%s); keeping the platform default",
+            repo, (base_sha or "")[:12], exc,
+        )
+        return padrao
+    return padrao if declarado is None else declarado
+
+
 async def run_planner_turn(inp: RunPlannerTurnInput) -> PlanArtifact:
     """Thin wrapper registered as the Temporal Activity (same pattern as
     `run_coder_turn`). The logic and the test injection points live in
@@ -1789,7 +1844,7 @@ async def _run_planner_turn_impl(
         operation="planner_proposal",
     )
     expected_files = list(proposal.get("expected_files", []))
-    forbidden = PlanArtifact.model_fields["forbidden_paths"].default_factory()
+    forbidden = _forbidden_paths_for(inp.repo, inp.base_sha)
     # rc.89: o risco é classificado pela ESTIMATIVA do Planner (None quando não
     # há — fixture nunca finge), não pela constante 400 do input, que fazia
     # todo plano sair >= medium e mantinha o ramo high-por-tamanho morto.

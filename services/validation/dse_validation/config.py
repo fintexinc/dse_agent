@@ -421,6 +421,72 @@ class RepoPreviewDeclaration:
     ready_timeout_s: int | None = None
 
 
+#: Limites do bloco `forbidden_paths`. O manifesto vem do base SHA (revisado
+#: por humano), então isto não é defesa contra um adversário — é o que impede
+#: um erro de digitação de virar um item reprovando sem explicação.
+_MAX_FORBIDDEN_PATHS = 64
+_MAX_FORBIDDEN_PATH_CHARS = 256
+
+
+def parse_repo_forbidden_paths(payload: Any, *, source: str = "manifest") -> list[str] | None:
+    """Lê `forbidden_paths` de um manifesto já decodificado.
+
+    `None` (bloco ausente) e `[]` (lista vazia) NÃO são a mesma coisa: o
+    primeiro herda o default da plataforma, o segundo é a decisão explícita de
+    não proteger nada — e ela custa um merge revisado no base branch, porque é
+    de lá que este arquivo é lido.
+
+    A sintaxe é a do matcher (`dse_contracts.paths.first_forbidden_match`):
+    segmentos de caminho, "/" no começo prende à raiz, sem globs. Entrada que
+    normaliza para vazio é RECUSADA — `"/"` significaria "o repositório
+    inteiro", e o sintoma apareceria só no L1, como um item reprovando sem
+    explicação.
+    """
+    if not isinstance(payload, dict):
+        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
+    raw = payload.get("forbidden_paths")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} forbidden_paths must be a list of strings",
+            summary="forbidden_paths must be a list of strings",
+        )
+    if len(raw) > _MAX_FORBIDDEN_PATHS:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} forbidden_paths has {len(raw)} entries "
+            f"(maximum {_MAX_FORBIDDEN_PATHS})",
+            summary=f"forbidden_paths has more than {_MAX_FORBIDDEN_PATHS} entries",
+        )
+    paths: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or len(entry) > _MAX_FORBIDDEN_PATH_CHARS:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} forbidden_paths entries must be strings of at "
+                f"most {_MAX_FORBIDDEN_PATH_CHARS} characters",
+                summary="forbidden_paths has an entry that is not a short string",
+            )
+        normalizado = entry.replace("\\", "/").strip().strip("/")
+        if not normalizado:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} forbidden_paths has an entry that covers the whole "
+                f"repository ({entry!r}); remove the entry instead",
+                summary="forbidden_paths has an entry that covers the whole repository",
+            )
+        if ".." in normalizado.split("/"):
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} forbidden_paths entry {entry!r} escapes the repository",
+                summary="forbidden_paths has an entry that escapes the repository",
+            )
+        paths.append(entry.strip())
+    return paths
+
+
 def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreviewDeclaration:
     """Lê o bloco `preview` de um manifesto já decodificado. Bloco ausente =
     declaração vazia (todos os defaults de hoje)."""
@@ -719,7 +785,7 @@ class L1Config:
         if not isinstance(payload, dict):
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
         allowed = {"version", "commands", "timeout_seconds", "timeouts",
-                   "sast_severity_gate", "preview"}
+                   "sast_severity_gate", "preview", "forbidden_paths"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(
