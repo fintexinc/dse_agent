@@ -206,7 +206,11 @@ def test_g2_deployable_kind_builds_with_the_repos_own_ruler():
         "preview-wi-y", _LABELS, _cfg(), repo=_BE_REPO, branch="dse/wi_y",
         kind="deployable",
     )
-    assert "jq -r '.commands.build[2]'" in y, (
+    # Fase A3: a régua continua sendo o manifesto do repo — agora parseada
+    # pelo validador do L1 quando a API responde (build_cmd), com o jq
+    # ENDURECIDO (`// empty` + falha nomeada) como fallback in-pod. O que este
+    # pin protege é a FONTE: nunca uma segunda receita.
+    assert "jq -r '.commands.build[2] // empty'" in y, (
         "o build é o do manifesto do repo — nunca uma segunda receita"
     )
     assert "java -jar" in y
@@ -214,8 +218,16 @@ def test_g2_deployable_kind_builds_with_the_repos_own_ruler():
     assert "tcpSocket" in y, "readiness por socket — actuator é opcional no repo"
     # contrato MEDIDO no repo: jdbc-url (Hikari) não liga em
     # SPRING_DATASOURCE_URL; os placeholders do próprio repo, sim.
-    assert "BMO_DB_URL" in y and "postgres:5432" in y, "o app aponta para o Postgres efêmero"
-    assert "SPRING_FLYWAY_ENABLED" in y, "a migração da PR precisa rodar (repo desabilita por padrão)"
+    # Fase A3 (2026-08-19): o env `BMO_DB_*` deixou de ser fallback da
+    # PLATAFORMA — o repo que precisa dele declara em `preview.env` (os dois
+    # bmo foram migrados como pré-condição do deploy da rc.101). O fallback é
+    # só a porta.
+    assert "SERVER_PORT" in y
+    assert "BMO_DB_URL" not in y, "nome de variável de cliente voltou ao fallback da plataforma"
+    assert "SPRING_FLYWAY_ENABLED" not in y, (
+        "o bloco Spring era parte do MESMO fallback de cliente; o repo que "
+        "precisa dele declara em preview.env"
+    )
 
 
 def test_g2_deployable_manifests_include_ephemeral_postgres():

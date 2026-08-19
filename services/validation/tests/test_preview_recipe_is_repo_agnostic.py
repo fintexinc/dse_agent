@@ -66,7 +66,9 @@ def test_without_a_parsed_cmd_the_fallback_fails_loud_never_sh_c_null():
     clone — o jq continua como fallback, mas `null` vira erro NOMEADO."""
     y = _deployment(build_cmd=None)
     assert "jq -r" in y, "o fallback in-pod sumiu — API instável derrubaria o preview"
-    assert 'sh -c "$BUILD_CMD"' in y
+    # o script viaja pelo json.dumps do YAML, então as aspas chegam escapadas;
+    # o pin é semântico: a variável existe e é executada via sh -c.
+    assert "$BUILD_CMD" in y and "sh -c" in y
     assert "no build command" in y, (
         "manifesto sem build tem que falhar com mensagem nossa, não `sh -c null`"
     )

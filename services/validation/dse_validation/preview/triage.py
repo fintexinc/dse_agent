@@ -28,7 +28,12 @@ logger = logging.getLogger("dse_validation.preview.triage")
 
 #: Os arquivos que costumam carregar a causa de um preview morto por código —
 #: manifesto de deps, config de builders, o manifesto do L1 e o Dockerfile.
-_KEY_FILES = ("package.json", "angular.json", ".dse/validation.json", "Dockerfile")
+# Fase A3 (2026-08-19): um preview Java quebrado era triado a partir de
+# `angular.json` — o modelo respondia sem ver o manifesto de build do
+# ecossistema real. A lista cobre os ecossistemas que o DSE roda; arquivo
+# ausente custa um 404 barato e não entra no prompt.
+_KEY_FILES = ("package.json", "angular.json", "pom.xml", "build.gradle",
+              "go.mod", "requirements.txt", ".dse/validation.json", "Dockerfile")
 _FILE_CHARS = 6000
 _DETAIL_CHARS = 2000
 

@@ -135,14 +135,16 @@ def test_a_repo_that_declares_nothing_keeps_image_and_artifact_defaults():
 
 
 def test_the_build_command_shape_the_recipe_depends_on_is_pinned():
-    """`jq -r '.commands.build[2]'` (argocd.py:372) assume que o build é
-    ["sh","-c","<comando>"]. É suposição de forma que ninguém verificava: um
-    repo que declare o build como argv puro faz o jq devolver null e o pod
-    roda `sh -c null`."""
+    """HISTÓRICO + FASE A3: `jq -r '.commands.build[2]'` assumia que o build é
+    ["sh","-c","<comando>"] — um argv puro fazia o jq devolver null e o pod
+    rodava `sh -c null` SILENCIOSO. Desde a Fase A3 o caminho principal é o
+    argv parseado pelo validador do L1 (read_repo_build_cmd); o jq continua
+    como fallback de API falhada, endurecido: `// empty` + falha nomeada."""
     y = argocd._source_deployment(
         "preview-wi", _LABELS, _cfg(), repo="acme/repo", branch="dse/wi",
         kind="deployable", repo_preview=None,
     )
-    assert "jq -r '.commands.build[2]'" in y, (
+    assert "jq -r '.commands.build[2] // empty'" in y, (
         "a receita mudou de fonte do build — o manifesto do repo é a régua"
     )
+    assert "no build command" in y, "manifesto sem build falha nomeado, nunca sh -c null"

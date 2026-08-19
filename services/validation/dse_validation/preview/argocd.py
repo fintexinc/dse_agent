@@ -37,6 +37,7 @@ import base64
 import json
 import logging
 import re
+import shlex
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -192,6 +193,50 @@ def resolve_fe_api_target(
 #: preview (copiada de `dse-preview-deploy-keys` do namespace do DSE).
 DEPLOY_KEY_SECRET = "dse-preview-deploy-key"
 
+#: Fase A1 (2026-08-19) — credenciais de BUILD (feed Maven privado hoje; um
+#: registry npm amanhã), uma chave por arquivo de ecossistema. Semeada FORA do
+#: manifest set pela mesma razão da deploy key: em modo gitops o set vira
+#: commit, e credencial não vai para git. O prelúdio dos scripts copia do
+#: volume o que existir — ver dse_validation.build_credentials.
+BUILD_CREDENTIALS_SECRET = "dse-preview-build-credentials"
+
+
+def build_credential_files_for(cfg: "PreviewConfig") -> dict[str, str]:
+    """Os arquivos de credencial que ESTE deployment tem para dar ao preview.
+    Vazio = nada configurado = nada muda em lugar nenhum (nem Secret, nem
+    volume, nem prelúdio) — o pin que protege os repos sem feed privado."""
+    from dse_validation.build_credentials import preview_credential_files
+
+    return preview_credential_files(
+        feed_id=cfg.maven_feed_id,
+        feed_username=cfg.maven_feed_username,
+        feed_token=cfg.maven_feed_token,
+    )
+
+
+def apply_build_credentials(
+    cfg: "PreviewConfig", namespace: str, files: dict[str, str]
+) -> None:
+    """Materializa as credenciais de build na secret que o pod monta — via
+    kubectl, fora do manifest set (mesma garantia por construção da deploy
+    key)."""
+    if not files:
+        return
+    linhas = "".join(
+        f"  {nome}: {base64.b64encode(corpo.encode()).decode()}\n"
+        for nome, corpo in sorted(files.items())
+    )
+    _kubectl(cfg, ["apply", "-f", "-"], input_text=(
+        "apiVersion: v1\n"
+        "kind: Secret\n"
+        "metadata:\n"
+        f"  name: {BUILD_CREDENTIALS_SECRET}\n"
+        f"  namespace: {namespace}\n"
+        "type: Opaque\n"
+        "data:\n"
+        f"{linhas}"
+    ))
+
 
 def deploy_key_item_for(repo: str) -> str:
     """Nome do item dentro da secret agregada `dse-preview-deploy-keys` no
@@ -310,7 +355,9 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                        repo: str, branch: str, kind: str = "ui",
                        api_proxy_target: str | None = None,
                        auth_mode: str = "ssh",
-                       repo_preview: RepoPreviewDeclaration | None = None) -> str:
+                       repo_preview: RepoPreviewDeclaration | None = None,
+                       build_cmd: list[str] | None = None,
+                       build_credential_files: tuple[str, ...] = ()) -> str:
     """Deployment that runs the PR branch straight from source.
 
     No image is built anywhere in this path, and that is the whole point: this
@@ -363,6 +410,22 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             "export GIT_SSH_COMMAND='ssh -i /preview-keys/key "
             "-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes'; "
         )
+    # Fase A1 — credenciais de build: o prelúdio copia do volume o que existir,
+    # por ecossistema (dse_validation.build_credentials.CREDENTIAL_DESTINATIONS).
+    # Sem arquivo → string vazia → script byte-idêntico ao de sempre.
+    from dse_validation.build_credentials import CREDENTIAL_DESTINATIONS
+
+    cred_prelude = ""
+    for arquivo in build_credential_files:
+        destino = CREDENTIAL_DESTINATIONS.get(arquivo)
+        if not destino:
+            continue
+        destino_dir = destino.rsplit("/", 1)[0] + '"'
+        cred_prelude += (
+            f"if [ -f /preview-build-creds/{arquivo} ]; then "
+            f"mkdir -p {destino_dir} && "
+            f"cp /preview-build-creds/{arquivo} {destino}; fi; "
+        )
     # Single-quoted in the shell and injected from values the DSE itself
     # generated (repo slug, `dse/<work_item_id>` branch) — never from PR text.
     if kind == "deployable":
@@ -374,6 +437,20 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         # `<modulo>/target/`, e o glob de módulo único falha com `set -eu`
         # ANTES do java -jar — sintoma "degraded por timeout", causa "ls".
         artifact_glob = decl.artifact_glob or "target/*.jar"
+        # Fase A3 — o build vem PARSEADO (read_repo_build_cmd, o parser do L1):
+        # robusto a qualquer forma de argv. O jq de índice fixo fica só como
+        # fallback para leitura de API falhada (o pod ainda tem o clone) — e o
+        # `null` que ele devolvia num manifesto sem build agora falha NOMEADO
+        # em vez de `sh -c null` silencioso.
+        if build_cmd:
+            build_step = shlex.join(build_cmd) + "; "
+        else:
+            build_step = (
+                "BUILD_CMD=$(jq -r '.commands.build[2] // empty' .dse/validation.json); "
+                "[ -n \"$BUILD_CMD\" ] || { echo 'DSE preview: no build command "
+                "declared in .dse/validation.json'; exit 1; }; "
+                "sh -c \"$BUILD_CMD\"; "
+            )
         script = (
             "set -eu; "
             "(apt-get update >/dev/null 2>&1 && "
@@ -384,8 +461,8 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             + git_env +
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
-            "BUILD_CMD=$(jq -r '.commands.build[2]' .dse/validation.json); "
-            "sh -c \"$BUILD_CMD\"; "
+            + cred_prelude
+            + build_step +
             f"JAR=$(ls {artifact_glob} | grep -v plain | head -1); "
             "exec java -jar \"$JAR\""
         )
@@ -411,22 +488,14 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                               f"              value: {json.dumps(valor)}")
             env_yaml = "\n".join(linhas) + "\n"
         else:
+            # Fase A3 (decisão de operador, 2026-08-19): o fallback deixou de
+            # carregar os nomes de UM cliente (`BMO_DB_*` + o bloco Spring).
+            # Quem precisa deles DECLARA em `preview.env` no próprio manifesto —
+            # os dois bmo-fee-calculator foram migrados como pré-condição do
+            # deploy desta mudança (Ship da rc.101). Um repo novo que não
+            # declara nada ganha só a porta — e não o banco de outro cliente.
             env_yaml = f"""            - name: SERVER_PORT
               value: "{port}"
-            - name: SPRING_FLYWAY_ENABLED
-              value: "true"
-            - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres:5432/{cfg.preview_db_name}"
-            - name: SPRING_DATASOURCE_USERNAME
-              value: "preview"
-            - name: SPRING_DATASOURCE_PASSWORD
-              value: "preview"
-            - name: BMO_DB_URL
-              value: "jdbc:postgresql://postgres:5432/{cfg.preview_db_name}"
-            - name: BMO_DB_USER
-              value: "preview"
-            - name: BMO_DB_PASSWORD
-              value: "preview"
 """
         probe_yaml = f"""          readinessProbe:
             tcpSocket: {{ port: {port} }}
@@ -438,7 +507,10 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             limits: { cpu: "2", memory: "3Gi" }
 """
     else:
-        image = cfg.source_image
+        # Fase A3: o branch ui honra o manifesto como o deployable já honra —
+        # os campos existiam e eram ignorados só aqui (assimetria sem razão).
+        decl = repo_preview or RepoPreviewDeclaration()
+        image = decl.image or cfg.source_image
         proxy_step = ""
         # As TRÊS flags são obrigatórias, e cada uma foi medida no preview da
         # PR #19 (fintexinc/bmo-fee-calculator-fe-dse), onde o Angular compilou
@@ -514,6 +586,7 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             + git_env +
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
+            + cred_prelude +
             "npm install --no-audit --no-fund --loglevel=error; "
             + proxy_step + start
         )
@@ -522,6 +595,13 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             - name: NODE_ENV
               value: "development"
 """
+        # A declaração ADICIONA ao env base do ui (PORT/NODE_ENV continuam:
+        # a receita depende deles); valor via json.dumps pela mesma razão do
+        # branch deployable — conteúdo do manifesto do cliente não escapa do
+        # YAML gerado.
+        for nome, valor in decl.env.items():
+            env_yaml += (f"            - name: {nome}\n"
+                         f"              value: {json.dumps(valor)}\n")
         probe_yaml = f"""          readinessProbe:
             httpGet: {{ path: /, port: {port} }}
             periodSeconds: {period}
@@ -539,6 +619,19 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             requests: { cpu: "200m", memory: "512Mi" }
             limits: { cpu: "3", memory: "6Gi" }
 """
+    if build_credential_files:
+        cred_volume = (f"""        - name: build-creds
+          secret:
+            secretName: {BUILD_CREDENTIALS_SECRET}
+            defaultMode: 256
+""")
+        cred_mount = ("""            - name: build-creds
+              mountPath: /preview-build-creds
+              readOnly: true
+""")
+    else:
+        cred_volume = ""
+        cred_mount = ""
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -560,7 +653,7 @@ metadata:
           secret:
             secretName: {DEPLOY_KEY_SECRET}
             defaultMode: 256
-      containers:
+{cred_volume}      containers:
         - name: web
           image: {image}
           command: ["sh", "-c"]
@@ -570,10 +663,38 @@ metadata:
             - name: deploy-key
               mountPath: /preview-keys
               readOnly: true
+{cred_mount}
           ports:
             - containerPort: {port}
           env:
 {env_yaml}{resources_yaml}{probe_yaml}"""
+
+
+def read_repo_build_cmd(repo: str, branch: str) -> list[str] | None:
+    """O `commands.build` do manifesto no branch da PR, PARSEADO pelo validador
+    do L1 — a receita deixa de depender do índice [2] do jq (Fase A3). Mesmo
+    best-effort do read_repo_preview: qualquer falha → None → o script usa o
+    fallback in-pod (o clone existe mesmo quando a API não responde)."""
+    try:
+        from dse_validation.config import (
+            L1_MANIFEST_PATH,
+            _validate_command,
+        )
+        from dse_validation.github.client import GitHubConfig, build_github_client
+
+        client = build_github_client(GitHubConfig())
+        reader = getattr(client, "get_file_text", None)
+        if reader is None:
+            return None
+        texto = reader(repo, L1_MANIFEST_PATH, branch)
+        if not texto:
+            return None
+        payload = json.loads(texto)
+        cmd = _validate_command("build", (payload.get("commands") or {}).get("build"))
+        return cmd or None
+    except Exception as exc:  # noqa: BLE001 — best-effort, ver docstring
+        logger.info("preview: no usable build command in %s@%s (%s)", repo, branch, exc)
+        return None
 
 
 def read_repo_preview(repo: str, branch: str) -> RepoPreviewDeclaration | None:
@@ -610,7 +731,9 @@ def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     repo: str = "", branch: str = "", kind: str = "ui",
                     api_proxy_target: str | None = None,
                     auth_mode: str = "ssh",
-                    repo_preview: RepoPreviewDeclaration | None = None) -> dict[str, str]:
+                    repo_preview: RepoPreviewDeclaration | None = None,
+                    build_cmd: list[str] | None = None,
+                    build_credential_files: tuple[str, ...] = ()) -> dict[str, str]:
     """Plan 08 §D: `image` (D4 — the PR image; defaults to the cfg placeholder)
     and `app_port` (the app's port inside the container; Service/Ingress publish
     80 → targetPort). When `cfg.external_host_template` is set, also generates
@@ -645,7 +768,9 @@ metadata:
     if cfg.mode == "source":
         deploy = _source_deployment(namespace, labels, cfg, repo=repo, branch=branch,
                                     kind=kind, api_proxy_target=api_proxy_target,
-                                    auth_mode=auth_mode, repo_preview=repo_preview)
+                                    auth_mode=auth_mode, repo_preview=repo_preview,
+                                    build_cmd=build_cmd,
+                                    build_credential_files=build_credential_files)
         # A porta que o Service/Ingress publicam tem que ser a MESMA que o
         # container escuta — se o repo declarou a dele, o encaminhamento segue
         # junto, senão o preview responde 502 com o pod saudável.
@@ -1378,13 +1503,20 @@ def _trigger_preview(
     # existir. Best-effort pelo mesmo motivo da triage: manifesto ilegível não
     # pode derrubar o preview — sem declaração, tudo segue como antes.
     repo_preview = read_repo_preview(inp.repo, branch)
+    # Fase A3: o build parseado pelo validador do L1 — o jq de índice fixo do
+    # script fica só como fallback de leitura falhada.
+    repo_build_cmd = read_repo_build_cmd(inp.repo, branch)
+    # Fase A1: as credenciais de build deste deployment (vazio = nada muda).
+    cred_files = build_credential_files_for(cfg)
 
     try:
         manifests = build_manifests(namespace, inp.work_item_id, inp.tenant_id, expires_at, ttl, cfg,
                                     image=pr_image, app_port=app_port,
                                     repo=inp.repo, branch=branch, kind=kind,
                                     api_proxy_target=api_proxy_target,
-                                    auth_mode=auth_mode, repo_preview=repo_preview)
+                                    auth_mode=auth_mode, repo_preview=repo_preview,
+                                    build_cmd=repo_build_cmd,
+                                    build_credential_files=tuple(sorted(cred_files)))
         if cfg.apply_mode == "kubectl":
             def _seed_credential() -> None:
                 if not auth_material:
@@ -1394,6 +1526,9 @@ def _trigger_preview(
                         f"{cfg.deploy_keys_secret} (see deploy/vps/preview-deploy-keys.md)"
                     )
                 apply_preview_credential(cfg, namespace, auth_mode, auth_material)
+                # Depois da deploy key, pela mesma porta e pela mesma razão:
+                # fora do manifest set, antes do workload que monta o volume.
+                apply_build_credentials(cfg, namespace, cred_files)
             _apply_manifests(cfg, manifests, after_namespace=_seed_credential)
         else:
             gitops.write_preview_dir(cfg.repo_dir, namespace, manifests)

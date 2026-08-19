@@ -60,9 +60,13 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
+  # `dse-preview-build-credentials` (Fase A1, 2026-08-19): o settings.xml do
+  # feed privado que o build do preview monta. Precisa estar AQUI porque
+  # `kubectl apply` sobre objeto existente é um patch — sem o nome, o RE-apply
+  # num namespace vivo (refresh do preview) morre em Forbidden.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["dse-preview-deploy-key"]
+    resourceNames: ["dse-preview-deploy-key", "dse-preview-build-credentials"]
     verbs: ["get", "update", "patch", "delete"]
   # Read-only: `kubectl wait` watches the Deployment, and reading pod status is
   # how a stuck preview gets diagnosed. No exec, no delete.

@@ -1063,6 +1063,12 @@ class PreviewConfig:
         # catalog é o BANCO, então um nome diferente faz o Hibernate emitir
         # `fee.tabela` contra um banco que não existe.
         self.preview_db_name = os.environ.get("DSE_PREVIEW_DB_NAME", "fee")
+        # Fase A1 — as MESMAS envs que o sandbox lê (k8s_driver): a credencial
+        # de build tem UMA fonte por deployment, e os dois entregadores (stdin
+        # do sandbox, Secret do preview) derivam dela.
+        self.maven_feed_id = os.environ.get("DSE_MAVEN_FEED_ID", "")
+        self.maven_feed_username = os.environ.get("MAVEN_FEED_USERNAME", "")
+        self.maven_feed_token = os.environ.get("MAVEN_FEED_TOKEN", "")
         self.ingress_class = os.environ.get("DSE_PREVIEW_INGRESS_CLASS", "traefik")
         #: O resolver ACME que emite o certificado do preview. Default `le`
         #: porque é o que os ingresses do próprio DSE já usam neste cluster —

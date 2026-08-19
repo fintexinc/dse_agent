@@ -26,9 +26,7 @@ import os
 import shutil
 import subprocess
 import time
-import urllib.parse
 from dataclasses import dataclass
-from xml.sax.saxutils import escape as xml_escape
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -179,51 +177,14 @@ def pod_name_for(work_item_id: str) -> str:
     return f"dse-sbx-{slug}"[:63].rstrip("-")
 
 
-def maven_proxy_settings_xml(
-    egress_proxy_url: str,
-    *,
-    feed_id: str = "",
-    feed_username: str = "",
-    feed_token: str = "",
-) -> str:
-    """Maven's resolver honors NEITHER the http(s)_proxy env vars NOR the
-    -Dhttps.proxyHost system properties — a `<proxies>` block in settings.xml is
-    the only channel it respects. Without it every artifact download from a
-    sandbox Pod dies with "Network is unreachable" (default-deny NetworkPolicy).
-    nonProxyHosts mirrors NO_PROXY above.
-
-    `feed_*` (2026-08-18): repositório privado do cliente. O `<servers>` é, pelo
-    mesmo motivo do `<proxies>`, o único canal de credencial que o resolver lê.
-    O `feed_id` TEM de ser o `id` do `<repository>` do POM — o Maven casa
-    credencial por id, e um nome diferente é ignorado sem aviso, produzindo o
-    mesmo 403 de antes com a credencial presente. Vazio = nada de `<servers>`:
-    tenant sem feed privado gera exatamente o documento de sempre.
-    """
-    parsed = urllib.parse.urlparse(egress_proxy_url)
-    host, port = parsed.hostname or "", parsed.port or 8806
-    non_proxy = "localhost|127.0.0.1|*.svc|*.cluster.local"
-    proxies = "".join(
-        f"<proxy><id>dse-egress-{scheme}</id><active>true</active>"
-        f"<protocol>{scheme}</protocol><host>{host}</host><port>{port}</port>"
-        f"<nonProxyHosts>{non_proxy}</nonProxyHosts></proxy>"
-        for scheme in ("https", "http")
-    )
-    servers = ""
-    if feed_id and feed_token:
-        # `escape`: o PAT é gerado por terceiro e pode conter `&`, `<`, `>`. Um
-        # deles cru quebraria o XML, e o Maven falharia com erro de parse — que
-        # seria diagnosticado como qualquer outra coisa menos a credencial.
-        servers = (
-            "<servers><server>"
-            f"<id>{xml_escape(feed_id)}</id>"
-            f"<username>{xml_escape(feed_username or 'dse')}</username>"
-            f"<password>{xml_escape(feed_token)}</password>"
-            "</server></servers>"
-        )
-    return (
-        '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">'
-        f"{servers}<proxies>{proxies}</proxies></settings>"
-    )
+# O builder mudou-se para dse_validation.build_credentials (2026-08-19): o
+# preview precisa do MESMO documento e mora naquela camada — dois builders foi
+# exatamente como o pod de preview ficou sem credencial enquanto o sandbox a
+# tinha. O nome continua exportado daqui; os testes de contrato deste serviço
+# pinam por ele.
+from dse_validation.build_credentials import (  # noqa: E402
+    maven_proxy_settings_xml as maven_proxy_settings_xml,
+)
 
 
 def _label_value(v: str) -> str:
