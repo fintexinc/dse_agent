@@ -145,3 +145,18 @@ def test_the_pr_body_says_where_each_command_came_from():
     corpo = client.pr_body("acme/svc", pr["number"])
     assert "review" in corpo.lower()
     assert ".dse/validation.json" in corpo
+
+
+def test_the_worker_registry_carries_both_activities():
+    """A lista ACTIVITIES é o registro REAL do worker (worker.py lê
+    `mod.ACTIVITIES`). Um @activity.defn fora dela não existe em produção — o
+    workflow chamaria e morreria em NotFoundError retry storm. Pego ao vivo na
+    própria rc.101: o rollout subiu com 10 activities e as duas novas de fora."""
+    from sandbox_runtime import activities
+
+    nomes = {
+        getattr(fn, "__temporal_activity_definition").name  # noqa: B009
+        for fn in activities.ACTIVITIES
+    }
+    assert "probe_repo_manifest" in nomes
+    assert "bootstrap_repo_manifest" in nomes

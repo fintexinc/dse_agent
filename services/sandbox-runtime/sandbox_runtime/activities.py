@@ -3947,6 +3947,11 @@ validate_runtime_startup(
 # src/dse_orchestrator/worker.py:_load_cross_workstream_activities) — the name
 # `ACTIVITIES` and the contract the integrator expects (see its docstring).
 ACTIVITIES = [
+    # Fase A2 — o probe roda antes do Planner; fora desta lista o worker não a
+    # registra e o primeiro repo sem manifesto morre em NotFoundError retry
+    # storm (foi exatamente assim que a rc.101 quase saiu).
+    probe_repo_manifest,
+    bootstrap_repo_manifest,
     provision_sandbox,
     checkpoint_sandbox,
     rebuild_sandbox,
