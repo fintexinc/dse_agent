@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from dse_contracts import L2Verdict, PlanArtifact
+from dse_contracts.paths import first_forbidden_match
 
 from .retrieval import RetrievalHit, RetrievalService, render_untrusted_context
 from .skill_registry import Skill, read_approved_skills
@@ -86,7 +87,14 @@ def classify_risk_class(
     forbidden = forbidden_paths or []
     for f in expected_files:
         fp = f.replace("\\", "/")
-        if any(fp.startswith(fb.rstrip("*")) or fnmatch.fnmatch(fp, fb + "*") for fb in forbidden):
+        # Um matcher só, e ele mora no contrato (2026-08-19). O `startswith` +
+        # `fnmatch` que vivia aqui estava preso à raiz, enquanto o gate L1 casa
+        # segmento em qualquer profundidade: num monorepo,
+        # `packages/web/.github/workflows/ci.yml` saía "low" daqui e violação de
+        # lá. Como a política só parqueia "high", o plano nem chegava ao gate — o
+        # humano nunca era perguntado sobre o caminho protegido que o L1 ia
+        # reprovar depois.
+        if first_forbidden_match(fp, forbidden):
             return "high"
         if _matches_any(fp, _HIGH_RISK_GLOBS):
             return "high"

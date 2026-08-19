@@ -11,7 +11,11 @@ import logging
 import re
 
 from dse_contracts import GateStatus, L1Finding, PlanArtifact
-from dse_contracts.paths import is_test_path
+from dse_contracts.paths import (
+    first_forbidden_match,
+    is_test_path,
+    path_is_authorised,
+)
 
 from dse_validation.sandbox_exec import SandboxExecutor
 
@@ -112,35 +116,12 @@ def compute_diff_summary(
     )
 
 
-def _is_forbidden(path: str, forbidden_paths: list[str]) -> str | None:
-    """The first pattern in `forbidden_paths` covering `path`, or None.
-
-    Two properties, both of them bug fixes and not features:
-
-    - it matches at ANY DEPTH. The old rule was a bare `startswith`, i.e. pinned
-      to the repository root, so `packages/web/.github/workflows/ci.yml` did not
-      match `.github/workflows/`. In a monorepo the shipped defaults matched
-      nothing, and this is the ONLY hard path gate that sees the real diff
-      (`policy.py` classifies risk from `expected_files`, which stopped gating
-      the diff on 2026-07-22).
-    - it matches whole path SEGMENTS. `startswith` also let `migrations/` cover
-      `migrations_backup/0001.sql`; widening the reach without fixing that
-      would have swapped a false negative for a false positive.
-
-    Both fall out of wrapping path and pattern in "/" before comparing. A
-    pattern that STARTS with "/" is pinned to the root — .gitignore's own
-    convention, and the entire extent of the syntax: no globs, no wildcards.
-    """
-    haystack = "/" + path.replace("\\", "/").strip("/") + "/"
-    for forbidden in forbidden_paths:
-        pattern = forbidden.replace("\\", "/")
-        needle = "/" + pattern.strip("/") + "/"
-        if needle == "//":  # blank entry: a typo in the config, never "everything"
-            continue
-        hit = haystack.startswith(needle) if pattern.startswith("/") else needle in haystack
-        if hit:
-            return forbidden
-    return None
+# O matcher vive em `dse_contracts.paths` desde 2026-08-19: o classificador de
+# risco (sandbox-runtime) fazia a mesma pergunta com outra regra e dava outra
+# resposta em monorepo — "low" lá, violação aqui —, então o plano nem chegava
+# ao gate humano. Vale o mais estrito, que é este. O alias fica porque os
+# testes deste gate o nomeiam.
+_is_forbidden = first_forbidden_match
 
 
 def diff_budget_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
@@ -226,18 +207,55 @@ def diff_budget_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
 
 
 def forbidden_paths_finding(diff: DiffSummary, plan: PlanArtifact) -> L1Finding:
+    """Nenhum arquivo sob caminho protegido — exceto os que o humano autorizou.
+
+    A ISENÇÃO (2026-08-19). Até aqui este gate não tinha porta: um plano que
+    precisava escrever em `.github/workflows/` carregava a proibição do mesmo
+    caminho, e o único diff que passava era o diff que não entregava a tarefa.
+    Medido: ~US$ 4 e 40 min até `coder_not_converging`, num pedido banal de CI.
+
+    O que autoriza é o `expected_files` do plano APROVADO — este é o plano que
+    o workflow passa para o L1 (`input.plan_json`), e o gate humano grava o
+    `plan_hash` dele. Desde o mesmo dia, colisão FORÇA o gate humano (patch
+    `protected-paths-need-approval-v1`), com os arquivos nomeados no corpo da
+    mensagem: quando um arquivo protegido chega aqui isento, alguém leu o nome
+    dele e clicou aprovar.
+
+    E a porta não é buraco: a isenção é por ARQUIVO declarado, nunca pelo
+    caminho protegido inteiro. O Coder não consegue alargar depois da aprovação
+    o que foi aprovado — é o que `test_a_protected_file_nobody_approved_still_fails`
+    pina.
+    """
     violations: list[tuple[str, str]] = []
+    authorised: list[tuple[str, str]] = []
     for f in diff.files_changed:
         hit = _is_forbidden(f, plan.forbidden_paths)
-        if hit:
+        if not hit:
+            continue
+        if path_is_authorised(f, plan.expected_files):
+            authorised.append((f, hit))
+        else:
             violations.append((f, hit))
 
     if not violations:
+        liberados = (
+            "; approved at the plan gate and therefore allowed: "
+            + ", ".join(f"{f} (under '{hit}')" for f, hit in authorised)
+            if authorised
+            else ""
+        )
         return L1Finding(
             check="forbidden_paths",
             passed=True,
-            detail=f"no file touched under the plan's forbidden_paths ({plan.forbidden_paths})",
-            summary="no file touched under the plan's forbidden_paths",
+            detail=(
+                f"no unapproved file touched under the plan's forbidden_paths "
+                f"({plan.forbidden_paths}){liberados}"
+            ),
+            summary=(
+                f"{len(authorised)} approved file(s) under a protected path, no violation"
+                if authorised
+                else "no file touched under the plan's forbidden_paths"
+            ),
         )
 
     detail = "; ".join(
