@@ -2515,30 +2515,51 @@ def _model_authored_test_script(
             "skills) — mirror its TestBed/store setup exactly:\n"
             + ctx.reference_spec
         )
-    try:
-        result = chat_completion(
-            headers=headers, virtual_key=virtual_key, model=model,
-            messages=[{"role": "user", "content": prompt}],
-            # 8000: found in the real run with Haiku — 4000 truncated the JSON in
-            # the middle of the content ("Unterminated string") and the whole
-            # authoring pass fell over.
-            timeout=_AUTHORING_CALL_TIMEOUT_SECONDS, max_tokens=8000, temperature=0,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _raise_if_permanent_provider_error(exc)  # billing/auth: the right message on the issue
-        logger.warning("tester via model failed (%s: %s)", type(exc).__name__, str(exc)[:200])
-        return None, 0.0
+    # DUAS tentativas, não uma (wi_95a54cb4, rc.101): o JSON do modelo veio
+    # cortado no meio de uma string, o parse falhou, e `None` aqui virou
+    # `tests_ran=false` → item TERMINAL, com o turno de Coder já pago. O
+    # precedente estava escrito logo abaixo (4000→8000 "resolveu" com Haiku) —
+    # uma spec Java real estourou os 8000. Subir o teto adia; o retry com o
+    # erro na cara e a ordem de ENCOLHER é o que fecha. Custo soma pelas duas:
+    # a chamada é cobrada no instante em que o gateway responde.
+    cost_usd = 0.0
+    files = None
+    parse_feedback = ""
+    for _tentativa in range(2):
+        attempt_prompt = prompt + parse_feedback
+        try:
+            result = chat_completion(
+                headers=headers, virtual_key=virtual_key, model=model,
+                messages=[{"role": "user", "content": attempt_prompt}],
+                # 8000: found in the real run with Haiku — 4000 truncated the
+                # JSON in the middle of the content ("Unterminated string").
+                timeout=_AUTHORING_CALL_TIMEOUT_SECONDS, max_tokens=8000, temperature=0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _raise_if_permanent_provider_error(exc)  # billing/auth: the right message on the issue
+            logger.warning("tester via model failed (%s: %s)", type(exc).__name__, str(exc)[:200])
+            return None, cost_usd
 
-    cost_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
-    text = (result.content or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`\n")
-        text = text[4:] if text.startswith("json") else text
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(text.strip())
-        files = parsed.get("files") or []
-    except json.JSONDecodeError as exc:
-        logger.warning("test authoring did not parse (%s); response: %.200s", exc, text)
+        cost_usd += float(getattr(result, "cost_usd", 0.0) or 0.0)
+        text = (result.content or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`\n")
+            text = text[4:] if text.startswith("json") else text
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(text.strip())
+            files = parsed.get("files") or []
+            break
+        except json.JSONDecodeError as exc:
+            logger.warning("test authoring did not parse (%s); response: %.200s", exc, text)
+            files = None
+            parse_feedback = (
+                "\n\n## YOUR PREVIOUS RESPONSE WAS REJECTED\n"
+                f"It was not valid JSON ({exc.msg}) — most likely truncated at the "
+                "output limit. Respond again with STRICT JSON only, and make it "
+                "SMALLER: at most 2 files, each under 150 lines, covering only "
+                "the most important assertions.\n"
+            )
+    if files is None:
         return None, cost_usd
 
     script: list[dict[str, Any]] = []

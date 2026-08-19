@@ -382,12 +382,16 @@ def test_the_turn_reports_what_the_authoring_call_cost(monkeypatch, audits):
 
 def test_an_unusable_answer_costs_exactly_as_much_as_a_usable_one(monkeypatch, audits):
     """The gateway billed the moment it answered. Reporting 0.0 because the JSON
-    did not parse is how the money left both the ceiling and the reconciliation."""
+    did not parse is how the money left both the ceiling and the reconciliation.
+
+    Desde 2026-08-19 (wi_95a54cb4) uma resposta imprestável ganha UM retry com
+    o erro na cara — então a fatura de duas respostas ruins é o custo das DUAS
+    chamadas, nunca zero e nunca só a primeira."""
     _fake_gateway(monkeypatch, "sorry, I cannot do that", 0.0077)
     result = _run_bridge(monkeypatch, suite=_done([], 0), reused=())
 
     assert result.tests_ran is False
-    assert result.cost_usd == pytest.approx(0.0077)
+    assert result.cost_usd == pytest.approx(0.0154)
 
 
 def test_reusing_the_previous_round_costs_nothing(monkeypatch, audits):
