@@ -42,6 +42,11 @@ ACTIVITY_EMIT_AUDIT = "emit_audit_event"
 # session is built in WS-C by the de-duplication decision of master plan §7;
 # WS-E orchestrates the fix-retry loop around it); WS-B calls them by name.
 ACTIVITY_RUN_PLANNER_TURN = "run_planner_turn"
+# Fase A2 (2026-08-19) — bootstrap do manifesto: o probe roda antes do Planner
+# (uma chamada de API contra 4 estágios pagos), e o bootstrap abre a PR de
+# arquivo único quando o manifesto está confirmadamente ausente.
+ACTIVITY_PROBE_REPO_MANIFEST = "probe_repo_manifest"
+ACTIVITY_BOOTSTRAP_REPO_MANIFEST = "bootstrap_repo_manifest"
 ACTIVITY_RUN_TESTER_TURN = "run_tester_turn"
 ACTIVITY_RUN_L2_REVIEW = "run_l2_review"
 

@@ -1658,6 +1658,56 @@ def _read_repo_manifest_text(repo: str, ref: str) -> str | None:
     return reader(repo, L1_MANIFEST_PATH, ref)
 
 
+@activity.defn(name="probe_repo_manifest")
+async def probe_repo_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fase A2 — o manifesto existe no base branch? Roda ANTES do Planner:
+    custa uma chamada de API contra os quatro estágios pagos que hoje queimam
+    até o L1 dar a notícia. Três respostas — presente, ausente (404
+    confirmado, o único gatilho de bootstrap) e inalcançável (fail-open)."""
+    from .manifest_bootstrap import probe_manifest
+
+    return probe_manifest(
+        _planner_github_client(), payload["repo"], payload.get("base_branch") or "main"
+    )
+
+
+@activity.defn(name="bootstrap_repo_manifest")
+async def bootstrap_repo_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fase A2 — abre a PR de bootstrap do .dse/validation.json. A saída do
+    modelo só vira PR depois de o parser REAL do L1 aceitar (a regra que faz
+    o DSE nunca propor manifesto que ele próprio rejeitaria)."""
+    from .manifest_bootstrap import bootstrap_manifest
+
+    repo = payload["repo"]
+    tenant = payload.get("tenant_id") or "unknown"
+    headers = GatewayCallHeaders(
+        tenant_id=tenant, work_item_id=f"repo-bootstrap:{repo}", stage=Stage.planner
+    )
+    model = os.environ.get("DSE_PLANNER_MODEL") or os.environ.get(
+        "DSE_CODER_MODEL", "anthropic/claude"
+    )
+
+    from model_gateway_client.gateway_call import chat_completion
+
+    def _complete(prompt: str) -> str:
+        vk = mint_virtual_key(headers)
+        result = chat_completion(
+            headers=headers,
+            virtual_key=vk.virtual_key,
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=120.0,
+            max_tokens=1_400,
+            temperature=0,
+        )
+        return result.content or ""
+
+    return bootstrap_manifest(
+        _planner_github_client(), repo, payload.get("base_branch") or "main",
+        complete=_complete,
+    )
+
+
 def _forbidden_paths_for(repo: str, base_sha: str | None) -> list[str]:
     """Os caminhos protegidos deste plano: os do REPO, ou o default da plataforma.
 

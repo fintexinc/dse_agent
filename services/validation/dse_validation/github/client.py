@@ -52,6 +52,16 @@ class GitHubClient(Protocol):
 
     def get_tree_paths(self, repo: str, ref: str, *, limit: int = 300) -> list[str]: ...
 
+    # Fase A2 — o conjunto de escrita da PR-de-arquivo-único (repo_doc e o
+    # bootstrap do manifesto). Estavam implementation-only; o Protocol passa a
+    # declará-los para o Fake e os testes pararem de inventar doubles próprios.
+    def get_ref_sha(self, repo: str, ref: str) -> str | None: ...
+
+    def create_branch(self, repo: str, branch: str, from_sha: str) -> None: ...
+
+    def put_file(self, repo: str, path: str, *, content: str, message: str,
+                 branch: str) -> None: ...
+
     def get_file_text(self, repo: str, path: str, ref: str) -> str | None:
         """One file's text at `ref`, or None when it does not exist there.
 
@@ -515,6 +525,44 @@ class FakeGitHubClient:
 
     def authenticated_remote_url(self, repo: str) -> str:
         return f"https://x-access-token:fake-local-token@github.com/{repo}.git"
+
+    # Fase A2 (bootstrap do manifesto) — os métodos de escrita que o fluxo de
+    # PR-de-arquivo-único usa (o mesmo conjunto do repo_doc). O Protocol os
+    # declara desde 2026-08-19; antes eram implementation-only e o Fake não os
+    # tinha, o que forçava cada teste novo a inventar o próprio double.
+    _trees: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    _refs: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    def set_tree_paths(self, repo: str, ref: str, paths: list[str]) -> None:
+        """Test-only — a árvore de blobs que `get_tree_paths` devolve."""
+        self._trees[(repo, ref)] = list(paths)
+        self._refs.setdefault((repo, ref), "a" * 40)
+
+    def get_tree_paths(self, repo: str, ref: str, *, limit: int = 300) -> list[str]:
+        return list(self._trees.get((repo, ref), []))[:limit]
+
+    def get_ref_sha(self, repo: str, ref: str) -> str | None:
+        return self._refs.get((repo, ref))
+
+    def create_branch(self, repo: str, branch: str, from_sha: str) -> None:
+        # 422 (branch já existe) é sucesso idempotente no cliente real; aqui a
+        # reatribuição tem a mesma semântica.
+        self._refs[(repo, branch)] = from_sha
+        base = next((r for (rp, r), sha in list(self._refs.items())
+                     if rp == repo and sha == from_sha and r != branch), None)
+        if base is not None:
+            for (rp, path, ref), texto in list(self._files.items()):
+                if rp == repo and ref == base:
+                    self._files.setdefault((repo, path, branch), texto)
+
+    def put_file(self, repo: str, path: str, *, content: str, message: str,
+                 branch: str) -> None:
+        self._files[(repo, path, branch)] = content
+
+    def pr_body(self, repo: str, pr_number: int) -> str:
+        """Test-only — o corpo da PR, para asserções de mensagem."""
+        pr = self._pr_by_number.get((repo, pr_number))
+        return (pr or {}).get("body") or ""
 
 
 def build_github_client(cfg: GitHubConfig | None = None) -> GitHubClient:

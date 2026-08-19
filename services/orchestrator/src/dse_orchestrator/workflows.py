@@ -31,6 +31,8 @@ with workflow.unsafe.imports_passed_through():
     # one home rather than a copy on each side.
     from dse_contracts.paths import is_documentation_only, protected_expected_files
     from dse_contracts.activities import (
+        ACTIVITY_BOOTSTRAP_REPO_MANIFEST,
+        ACTIVITY_PROBE_REPO_MANIFEST,
         ACTIVITY_CHECKPOINT_SANDBOX,
         ACTIVITY_CONSUME_CI_STATUS,
         ACTIVITY_EMIT_AUDIT,
@@ -2194,6 +2196,57 @@ class WorkItemLifecycleWorkflow:
         # implementation; re_plan re-enters with sandbox_id None and an empty
         # plan_json).
         if not input.sandbox_id:
+            # Fase A2 (patch repo-bootstrap-manifest-v1): repo sem
+            # .dse/validation.json não entra na esteira — hoje a ausência só
+            # aparecia no L1, com Planner + sandbox + Coder + Tester já pagos
+            # (o freio l1-manifest-escalates-v1 nasceu de ~$8 queimados nesse
+            # beco). O probe custa UMA chamada de API; confirmada a ausência
+            # (404, nunca API instável — fail-open), o DSE abre a PR de
+            # bootstrap com o manifesto espelhado do CI do próprio repo e o
+            # item encerra com a instrução na reason (é ela que vira o
+            # comentário terminal no canal). Reenvio com a PR aberta reusa a
+            # PR — o gerador é idempotente por branch.
+            if workflow.patched("repo-bootstrap-manifest-v1"):
+                probe = await workflow.execute_activity(
+                    ACTIVITY_PROBE_REPO_MANIFEST,
+                    {"repo": input.repo, "base_branch": input.base_branch},
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                )
+                if probe.get("reachable") and not probe.get("present"):
+                    boot = await workflow.execute_activity(
+                        ACTIVITY_BOOTSTRAP_REPO_MANIFEST,
+                        {"repo": input.repo, "base_branch": input.base_branch,
+                         "tenant_id": input.tenant_id,
+                         "work_item_id": input.work_item_id},
+                        start_to_close_timeout=timedelta(seconds=240),
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
+                    if boot.get("ok"):
+                        await self._audit(
+                            "repo_bootstrap_pr_opened",
+                            {"pr_number": boot.get("pr_number"),
+                             "url": boot.get("url"),
+                             "existing": bool(boot.get("existing"))},
+                        )
+                        raise _EscalateNow(
+                            "this repository has no .dse/validation.json — "
+                            f"bootstrap PR #{boot.get('pr_number')} "
+                            + ("already " if boot.get("existing") else "")
+                            + "opened with a proposed contract mirrored from the "
+                            "repo's own CI; review, merge, and resend the task "
+                            f"({boot.get('url')})"
+                        )
+                    await self._audit(
+                        "repo_bootstrap_generation_failed",
+                        {"reason": str(boot.get("reason") or "")[:300]},
+                    )
+                    raise _EscalateNow(
+                        "this repository has no .dse/validation.json and a "
+                        "bootstrap manifest could not be drafted "
+                        f"({str(boot.get('reason') or '')[:200]}); add one by "
+                        "hand — see docs/DSE-VALIDATION-MANIFEST.md"
+                    )
             await self._run_planner_and_gate()
             # rc.93 (decisão do operador, auditoria de 08-14): a barreira do
             # GRUPO fica entre o gate próprio e o sandbox — antes de gastar

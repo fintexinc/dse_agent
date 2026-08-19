@@ -258,6 +258,14 @@ the sandbox image ships more than one JDK. That belongs to that repository's
 environment, not to the manifest format — which is exactly the point of the
 `["sh", "-c", ...]` shape.
 
+## Don't have this file yet?
+
+You may not need to write it by hand: send any task to the DSE on a repository
+without the manifest and it opens a **bootstrap PR** with a proposed contract —
+commands mirrored from the repository's own CI files, validated by the same
+parser that will enforce them. Review it, adjust it, merge it, then resend your
+task. (An open bootstrap PR is reused, never duplicated.)
+
 ## Checklist before you commit it
 
 1. It is valid JSON and under 64 KiB.
