@@ -179,6 +179,10 @@ class FakeControlPlane:
     # estimativa, o caso de todo o histórico).
     plan_estimated_lines: int | None = None
     plan_expected_files: list[str] = field(default_factory=lambda: ["app.py"])
+    #: `forbidden_paths` do plano. None = o default do contrato, que é o que
+    #: todo plano do histórico carrega. A lista explícita é o caso do repo que
+    #: DECLARA a própria proteção no `.dse/validation.json`.
+    plan_forbidden_paths: list[str] | None = None
     planner_cost_usd: float = 0.0
     tester_cost_usd: float = 0.0
     tester_tests_ran: bool = True
@@ -271,6 +275,8 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
             work_item_id=payload["work_item_id"],
             steps=["step 1", "step 2"],
             expected_files=list(state.plan_expected_files),
+            **({"forbidden_paths": list(state.plan_forbidden_paths)}
+               if state.plan_forbidden_paths is not None else {}),
             estimated_lines=state.plan_estimated_lines,
             test_plan="covers the happy path",
             risk_class=state.plan_risk_class,
