@@ -62,3 +62,59 @@ def test_it_returns_the_pattern_that_matched_not_a_boolean():
 
 def test_it_normalises_the_windows_separator():
     assert _match("packages\\web\\migrations\\0001.sql") == "migrations/"
+
+
+# ---------------------------------------------------------------------------
+# A AUTORIZAÇÃO: o que o plano aprovado libera
+# ---------------------------------------------------------------------------
+# `path_is_authorised` e `protected_expected_files` são consumidas por serviços
+# diferentes (o gate L1 e o workflow), e cada um as exercita pelo próprio lado.
+# Aqui elas são pinadas onde moram — foi o gate de cobertura do contrato que
+# cobrou isso, e cobrou certo: as duas decidem se um caminho protegido pode ser
+# escrito, que é a pergunta mais cara deste sistema.
+
+try:
+    from dse_contracts.paths import path_is_authorised, protected_expected_files
+except ImportError:  # pragma: no cover
+    path_is_authorised = protected_expected_files = None  # type: ignore[assignment]
+
+
+def test_a_declared_file_authorises_itself_and_nothing_else():
+    assert path_is_authorised(".github/workflows/ci.yml", [".github/workflows/ci.yml"]) is True
+    assert path_is_authorised(".github/workflows/release.yml", [".github/workflows/ci.yml"]) is False
+
+
+def test_a_declared_directory_authorises_what_is_under_it():
+    """Com barra no fim é diretório — é o que o humano leu no gate. Sem essa
+    forma, um plano que declara `.github/workflows/` recria a armadilha."""
+    assert path_is_authorised(".github/workflows/ci.yml", [".github/workflows/"]) is True
+    assert path_is_authorised(".github/workflows", [".github/workflows/"]) is True
+    assert path_is_authorised(".github/other.yml", [".github/workflows/"]) is False
+
+
+def test_the_comparison_survives_the_shapes_a_planner_writes():
+    assert path_is_authorised("src/app.py", ["./src/app.py"]) is True
+    assert path_is_authorised("src/app.py", ["/src/app.py"]) is True
+    assert path_is_authorised("src\\app.py", ["src/app.py"]) is True
+
+
+def test_an_empty_entry_authorises_nothing():
+    """Uma entrada vazia normaliza para "a raiz" — se ela autorizasse, o plano
+    inteiro passaria a poder escrever em qualquer caminho protegido."""
+    assert path_is_authorised("migrations/0001.sql", ["", "   ", "/"]) is False
+
+
+def test_the_contradiction_names_the_file_and_the_rule():
+    pares = protected_expected_files(
+        [".github/workflows/ci.yml", "src/app.py", "migrations/0001.sql"], _SHIPPED
+    )
+    assert pares == [
+        (".github/workflows/ci.yml", ".github/workflows/"),
+        ("migrations/0001.sql", "migrations/"),
+    ]
+
+
+def test_no_contradiction_is_an_empty_list():
+    assert protected_expected_files(["src/app.py"], _SHIPPED) == []
+    assert protected_expected_files([], _SHIPPED) == []
+    assert protected_expected_files([".github/workflows/ci.yml"], []) == []
