@@ -1641,8 +1641,6 @@ def _model_plan_proposer(
         return None
 
 
-@activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)
-
 def _read_repo_manifest_text(repo: str, ref: str) -> str | None:
     """O `.dse/validation.json` do repo em `ref`, pela API do GitHub.
 
@@ -1697,6 +1695,7 @@ def _forbidden_paths_for(repo: str, base_sha: str | None) -> list[str]:
     return padrao if declarado is None else declarado
 
 
+@activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)
 async def run_planner_turn(inp: RunPlannerTurnInput) -> PlanArtifact:
     """Thin wrapper registered as the Temporal Activity (same pattern as
     `run_coder_turn`). The logic and the test injection points live in
