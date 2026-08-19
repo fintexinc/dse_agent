@@ -48,6 +48,10 @@ AUDIT_EVENT_MAP: dict[str, str] = {
     "planner_completed": "plan",
     "plan_auto_approved": "plan",
     "awaiting_plan_approval": "plan",
+    # O plano precisa escrever em caminho protegido e por isso PARA no gate,
+    # qualquer que seja a classe de risco. Sem esta linha cairia em `note`, que
+    # o console rotula como observação — e isto é decisão de gate, não remark.
+    "plan_requires_protected_paths": "plan",
     "planner_contract_rejected": "error",
     "coder_turn_completed": "file_change",
     "coder_fix_applied": "file_change",
