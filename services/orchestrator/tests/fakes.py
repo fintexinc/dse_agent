@@ -179,6 +179,16 @@ class FakeControlPlane:
     # estimativa, o caso de todo o histórico).
     plan_estimated_lines: int | None = None
     plan_expected_files: list[str] = field(default_factory=lambda: ["app.py"])
+    #: Fase A2 — o probe do manifesto: True = repo com .dse/validation.json
+    #: (o caso de todo o histórico, e o default que mantém cada teste antigo
+    #: intocado). `reachable=False` simula API fora do ar (fail-open).
+    repo_manifest_present: bool = True
+    repo_manifest_reachable: bool = True
+    #: O que o fake de bootstrap_repo_manifest devolve quando o probe dá
+    #: ausente.
+    bootstrap_result: dict = field(default_factory=lambda: {
+        "ok": True, "pr_number": 1, "existing": False,
+        "url": "https://github.com/x/y/pull/1", "reason": ""})
     #: `forbidden_paths` do plano. None = o default do contrato, que é o que
     #: todo plano do histórico carrega. A lista explícita é o caso do repo que
     #: DECLARA a própria proteção no `.dse/validation.json`.
@@ -266,6 +276,16 @@ class FakeControlPlane:
 
 
 def build_fake_activities(state: FakeControlPlane) -> list[Any]:
+    async def probe_repo_manifest(payload: dict) -> dict:
+        state.calls_log.append("probe_repo_manifest")
+        return {"present": state.repo_manifest_present,
+                "reachable": state.repo_manifest_reachable}
+
+    async def bootstrap_repo_manifest(payload: dict) -> dict:
+        state.calls_log.append("bootstrap_repo_manifest")
+        return dict(state.bootstrap_result)
+
+
     async def run_planner_turn(payload: dict) -> PlanArtifact:
         state.planner_calls += 1
         state.calls_log.append("run_planner_turn")
@@ -617,6 +637,8 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         )
 
     return [
+        activity.defn(name="probe_repo_manifest")(probe_repo_manifest),
+        activity.defn(name="bootstrap_repo_manifest")(bootstrap_repo_manifest),
         activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)(triage_preview_failure),
         activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)(update_base_branch),
         activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)(run_planner_turn),
