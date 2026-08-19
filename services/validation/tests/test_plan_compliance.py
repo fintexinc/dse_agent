@@ -47,10 +47,15 @@ def test_diff_touching_unexpected_file_now_passes(sandbox, feature_branch, git_s
 
 
 def test_diff_touching_forbidden_path_fails(sandbox, feature_branch, git_sha):
+    # `expected_files` deixou de ser decoração aqui: desde 2026-08-19 um arquivo
+    # protegido DECLARADO no plano é um arquivo que o humano autorizou no gate, e
+    # o L1 o deixa passar (ver a seção "A PORTA", no fim do arquivo). Este teste
+    # cobre o caso que continua reprovando — o arquivo que ninguém aprovou —, e
+    # por isso o plano declara outra coisa.
     feature_branch("migrations/0099_evil.sql", "DROP TABLE audit_log;\n")
     plan = PlanArtifact(
         work_item_id="wi4",
-        expected_files=["migrations/0099_evil.sql"],
+        expected_files=["src/app.py"],
         diff_budget_lines=400,
     )
     diff = compute_diff_summary(sandbox, git_sha("main"), git_sha())
@@ -224,3 +229,97 @@ def test_lockfile_churn_passes_like_any_other_file():
 # sobrou daquele gate — a consistência `no_code_change` e o tamanho como
 # INFORMAÇÃO — está pinado em test_diff_size_is_not_a_verdict.py, com o
 # incidente que motivou a mudança escrito por extenso.
+
+
+# ---------------------------------------------------------------------------
+# A PORTA: caminho protegido que o humano autorizou no gate
+# ---------------------------------------------------------------------------
+# Medido 2026-08-19 (wi do `calculation-engine-service`, ~US$ 4 e 40 min até
+# `coder_not_converging`): "adicione um workflow do GitHub Actions" era uma
+# tarefa IMPOSSÍVEL POR CONSTRUÇÃO. O Planner declarava
+# `expected_files=[".github/workflows/ci.yml"]` — corretíssimo —, a plataforma
+# ANEXAVA `forbidden_paths=[".github/workflows/"]` ao mesmo plano, e o único
+# diff que passaria neste gate era o diff que não entrega o pedido. Nem o
+# Planner nem o Coder sabem que a lista existe: ela não está em nenhum prompt.
+#
+# A decisão do operador não foi apagar o gate nem deixar "a tarefa vencer": a
+# colisão passa a PARAR NO GATE HUMANO (workflows.py, patch
+# protected-paths-need-approval-v1), e aqui o L1 honra ESSA autorização — e só
+# ela. O plano que chega ao L1 é o plano APROVADO (workflows.py passa
+# `input.plan_json`, e o gate grava o `plan_hash`), então `expected_files` é
+# literalmente a lista que o humano leu na mensagem de aprovação.
+#
+# O teste que mais importa nesta seção é o segundo: ele é o que impede a porta
+# de virar buraco.
+
+
+def test_a_protected_file_the_human_approved_is_allowed_through():
+    plan = PlanArtifact(
+        work_item_id="wi_ci",
+        expected_files=[".github/workflows/ci.yml"],
+    )  # forbidden_paths shipped: .github/workflows/
+    finding = forbidden_paths_finding(_mk_diff([".github/workflows/ci.yml"]), plan)
+    assert finding.passed is True, finding.detail
+    assert "ci.yml" in finding.detail, "a isenção tem que ficar LEGÍVEL na evidência"
+
+
+def test_a_protected_file_nobody_approved_still_fails():
+    """O buraco que não pode existir: aprovar `ci.yml` não autoriza o Coder a
+    escrever OUTRO arquivo sob o mesmo caminho protegido."""
+    plan = PlanArtifact(
+        work_item_id="wi_ci",
+        expected_files=[".github/workflows/ci.yml"],
+    )
+    diff = _mk_diff([".github/workflows/ci.yml", ".github/workflows/release.yml"])
+    finding = forbidden_paths_finding(diff, plan)
+    assert finding.passed is False, finding.detail
+    assert "release.yml" in finding.detail
+    assert "ci.yml" not in finding.detail.split("release.yml")[0], (
+        "o arquivo autorizado não pode aparecer como violação"
+    )
+    assert finding.summary == "1 file(s) under a path forbidden by the plan"
+
+
+def test_approving_one_protected_file_does_not_approve_another_protected_area():
+    plan = PlanArtifact(
+        work_item_id="wi_ci", expected_files=[".github/workflows/ci.yml"]
+    )
+    assert forbidden_paths_finding(_mk_diff(["migrations/0001.sql"]), plan).passed is False
+
+
+def test_the_authorisation_reaches_a_monorepo_package():
+    """Mesma normalização do matcher, à mesma profundidade em que ele acusa."""
+    plan = PlanArtifact(
+        work_item_id="wi_mono",
+        expected_files=["packages/web/.github/workflows/ci.yml"],
+    )
+    diff = _mk_diff(["packages/web/.github/workflows/ci.yml"])
+    assert forbidden_paths_finding(diff, plan).passed is True
+
+
+def test_a_declared_directory_authorises_what_is_under_it():
+    """Quando o plano declara um DIRETÓRIO (barra no fim), é isso que o humano
+    leu no gate — e é isso que ele autorizou. Sem esta regra, um plano que
+    declara `.github/workflows/` recria exatamente a armadilha de origem."""
+    plan = PlanArtifact(
+        work_item_id="wi_dir", expected_files=[".github/workflows/"]
+    )
+    diff = _mk_diff([".github/workflows/ci.yml", ".github/workflows/release.yml"])
+    assert forbidden_paths_finding(diff, plan).passed is True
+
+
+def test_a_declared_file_does_not_authorise_its_siblings():
+    """A contrapartida do teste acima: SEM a barra, a autorização é do arquivo,
+    não da pasta dele."""
+    plan = PlanArtifact(
+        work_item_id="wi_file", expected_files=["migrations/0001_init.sql"]
+    )
+    diff = _mk_diff(["migrations/0002_drop_audit.sql"])
+    assert forbidden_paths_finding(diff, plan).passed is False
+
+
+def test_without_a_protected_file_in_the_plan_nothing_changes():
+    """Rede de segurança: o gate de sempre, para o diff de sempre."""
+    plan = PlanArtifact(work_item_id="wi_plain", expected_files=["src/app.py"])
+    assert forbidden_paths_finding(_mk_diff(["src/app.py"]), plan).passed is True
+    assert forbidden_paths_finding(_mk_diff(["migrations/0001.sql"]), plan).passed is False

@@ -50,3 +50,33 @@ def test_forbidden_and_high_globs_still_dominate():
     """Uma estimativa pequena não rebaixa o que os caminhos dizem."""
     assert classify_risk_class(["migrations/0099_x.sql"], 10, _FORBIDDEN) == "high"
     assert classify_risk_class(["src/core/auth_service.py"], 10, _FORBIDDEN) == "high"
+
+
+# ---------------------------------------------------------------------------
+# O matcher de `forbidden_paths` é UM só (2026-08-19)
+# ---------------------------------------------------------------------------
+# Este classificador usava `startswith`/`fnmatch` ancorado na raiz enquanto o
+# gate L1 (`plan_compliance._is_forbidden`) casa segmento em qualquer
+# profundidade. Em monorepo os dois davam respostas OPOSTAS para o mesmo
+# arquivo: aqui "low", lá violação. O efeito prático não é de rótulo — com
+# "low" o plano nem chega ao gate humano (a política parqueia só "high"), e o
+# caminho protegido só aparece depois, quando o L1 reprova um diff que ninguém
+# autorizou. O matcher do gate, que é o mais estrito e o que decide de verdade,
+# virou a implementação única (dse_contracts.paths.first_forbidden_match).
+
+
+def test_a_protected_path_inside_a_monorepo_package_is_high():
+    assert classify_risk_class(
+        ["packages/web/.github/workflows/ci.yml"], 40, _FORBIDDEN
+    ) == "high"
+
+
+def test_a_directory_named_like_a_protected_one_is_not_high():
+    """Alcançar mais fundo não pode trocar o falso negativo por falso positivo.
+
+    `medium` e não `low` porque `**/*.sql` está em _MEDIUM_RISK_GLOBS — outra
+    regra, que este teste não julga. O que ele pina é que `migrations_backup/`
+    NÃO é `migrations/`."""
+    assert classify_risk_class(
+        ["services/api/migrations_backup/0001.sql"], 40, _FORBIDDEN
+    ) != "high"
