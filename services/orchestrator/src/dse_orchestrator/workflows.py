@@ -29,7 +29,7 @@ with workflow.unsafe.imports_passed_through():
     # Pure path predicates. The Tester skip and the L1 gates must reach
     # the SAME answer about what counts as documentation, so the list has
     # one home rather than a copy on each side.
-    from dse_contracts.paths import is_documentation_only
+    from dse_contracts.paths import is_documentation_only, protected_expected_files
     from dse_contracts.activities import (
         ACTIVITY_CHECKPOINT_SANDBOX,
         ACTIVITY_CONSUME_CI_STATUS,
@@ -3027,12 +3027,47 @@ class WorkItemLifecycleWorkflow:
                 )
                 raise _EscalateNow("planner_expected_files_empty_without_no_code_change")
 
+        # A CONTRADIÇÃO DO PLANO VIRA UMA PERGUNTA (2026-08-19).
+        #
+        # `expected_files` ("vou escrever aqui") e `forbidden_paths` ("aqui não
+        # se escreve") vinham no MESMO plano sem que ninguém as correlacionasse.
+        # Quando se cruzam, a tarefa é impossível por construção: o L1 reprova o
+        # entregável e o único diff que passaria é o que não faz o pedido.
+        # Medido num pedido banal de CI: ~US$ 4 e 40 min até
+        # `coder_not_converging`. A interseção JÁ era calculada em dois lugares
+        # antes de gastar um centavo — e só virava rótulo ("high"), nunca uma
+        # decisão.
+        #
+        # Aqui ela força o gate humano, qualquer que seja a classe de risco: um
+        # auto-approve de risco baixo não pode autorizar caminho protegido. Não
+        # escala, de propósito — escalar tornaria QUALQUER tarefa de CI
+        # impossível, que é o defeito de hoje com outro nome. Quem decide é a
+        # pessoa, e o corpo da mensagem nomeia os arquivos (`_plan_gate_extra_lines`).
+        #
+        # Os defaults embarcados (`.github/workflows/`, `migrations/`) já caíam
+        # em "high" por `policy._HIGH_RISK_PATH_MARKERS`, então para eles isto é
+        # a MENSAGEM. O que muda de veredito é o caminho que o REPO declara no
+        # `.dse/validation.json`, que nenhum marcador fixo conhece.
+        protegidos: list[tuple[str, str]] = []
+        if workflow.patched("protected-paths-need-approval-v1"):
+            protegidos = protected_expected_files(plan.expected_files, plan.forbidden_paths)
+            if protegidos:
+                input.protected_paths = [arquivo for arquivo, _ in protegidos]
+                await self._audit(
+                    "plan_requires_protected_paths",
+                    {"files": input.protected_paths,
+                     "forbidden_paths": sorted({padrao for _, padrao in protegidos}),
+                     "risk_class": effective_risk},
+                )
+
         # Postgres receives plan/risk before the Coder. The hash and the
         # expected_files list are derived by the Activity server-side.
         if workflow.patched("persist-plan-before-coder-v1"):
             await self._persist_status()
 
-        if not policy.requires_plan_approval(effective_risk, input.require_approval_risk_classes):
+        if not protegidos and not policy.requires_plan_approval(
+            effective_risk, input.require_approval_risk_classes
+        ):
             # Low risk -> auto-approve BY POLICY (never because an approver is
             # missing). Project and audit.
             await self._record_gate(status="approved", auto_approved=True,
@@ -3117,6 +3152,8 @@ class WorkItemLifecycleWorkflow:
             # rc.89: com previsão/estimativa, o corpo é NOSSO (body > template
             # no servidor — o precedente é o reminder). Sem extras, payload
             # idêntico ao de sempre: o template do servidor segue dono do texto.
+            # A linha dos caminhos protegidos NÃO depende do patch do custo: ela
+            # é a razão pela qual este item está parado aqui.
             extra_lines = self._plan_gate_extra_lines() if gate_cost_patched else []
             if extra_lines:
                 gate_payload["body"] = "\n".join(
@@ -3220,11 +3257,26 @@ class WorkItemLifecycleWorkflow:
         raise _EscalateNow(f"unknown_plan_verdict:{verdict!r}")
 
     def _plan_gate_extra_lines(self) -> list[str]:
-        """rc.89 — as linhas extras da mensagem do gate (custo previsto + diff
-        estimado). Determinístico a partir do input: replay-safe por
-        construção, e runs antigos (sem `cost_estimate`/`estimated_lines`)
-        produzem lista vazia — corpo idêntico ao de sempre."""
+        """As linhas extras da mensagem do gate: caminhos protegidos que a
+        aprovação autoriza (2026-08-19) e custo previsto (rc.89).
+
+        Determinístico a partir do input: replay-safe por construção, e runs
+        antigos (sem `protected_paths`/`cost_estimate`) produzem lista vazia —
+        corpo idêntico ao de sempre."""
         lines: list[str] = []
+        # Primeiro, porque é a razão pela qual o item está parado: sem esta
+        # linha o aprovador lê duas listas contraditórias no modal (os arquivos
+        # que o plano vai tocar, os caminhos que ele não pode tocar) sem nenhuma
+        # correlação entre elas, e o "Risk: high" não diz por quê — o que fazia
+        # a contradição PARECER justificativa para aprovar.
+        protegidos = self._input.protected_paths or []
+        if protegidos:
+            alvos = ", ".join(f"`{p}`" for p in protegidos)
+            lines.append(
+                f"⚠️ Protected paths: this plan must write to {alvos}. "
+                "Approving authorizes exactly these files — anything else under "
+                "a protected path still fails the gate."
+            )
         est = self._input.cost_estimate or {}
         if est.get("available"):
             cap = self._input.budget_max_usd

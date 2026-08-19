@@ -156,6 +156,12 @@ class WorkItemLifecycleInput:
     # histórica em USD). None = indisponível/não estimado. Vive no input para
     # o lembrete re-renderizar o MESMO número após continue_as_new.
     cost_estimate: dict | None = None
+    #: Os arquivos do plano que caem sob `forbidden_paths` — a contradição que
+    #: FORÇA o gate humano (patch `protected-paths-need-approval-v1`). Vive no
+    #: input pelo mesmo motivo do `cost_estimate`: o lembrete re-renderiza a
+    #: MESMA lista depois de um continue_as_new. Lista vazia = plano sem
+    #: colisão, que é o caso de sempre.
+    protected_paths: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # Configurable caps/timers (WSB-E3-T1 / E2-T3 / E5-T1). They are part of the
