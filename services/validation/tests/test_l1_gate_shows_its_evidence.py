@@ -297,3 +297,90 @@ def test_the_two_dialects_already_covered_keep_working():
     assert "7 failed" in jest.summary or "2 failed" in jest.summary
     pytest_run = run_test_check(_Stub(1, "", "== 272 passed, 3 failed in 12.4s =="), _test_cfg())
     assert "3 failed" in pytest_run.summary
+
+
+# ---------------------------------------------------------------------------
+# Multi-módulo: o rodapé VERDE maior apagou o módulo que falhou (2026-08-19)
+# ---------------------------------------------------------------------------
+# Medido no wi_8c26a5e7 (`calculation-engine-service`, reator Maven de vários
+# módulos): o módulo verde imprimiu `Tests run: 1141` e o `bootstrap` imprimiu
+# `Tests run: 151, Failures: 1, Errors: 7`. A regra "vence o rodapé de maior
+# executed" — correta DENTRO de um módulo, onde o total nunca é menor que a
+# linha de classe — escolheu o 1141 e o gate publicou "no test failed, but the
+# command exited 1: the suite's own policy rejected the run (coverage threshold
+# or similar)". Esse texto foi para o audit_log e daí para o próximo turno do
+# Coder via _l1_failure_context: ele caçou um problema de cobertura que não
+# existe, fez um no-op, e o freio de fingerprint matou o item. A
+# não-convergência foi fabricada pelo resumo.
+#
+# A regra nova: entre rodapés, um que NOMEIA falha vence o verde maior; entre
+# os que falham, continua vencendo o de maior executed (o total do módulo ≥
+# suas linhas de classe nas duas métricas, então as guardas de 10/08 acima
+# continuam valendo por construção). Nunca se soma: linha de classe + total do
+# próprio módulo dobrariam a conta.
+
+_SUREFIRE_MULTI_MODULE_RED = (
+    # módulo 1 (verde, o maior do reator — o que apagava a falha)
+    "[INFO] Results:\n"
+    "[INFO] \n"
+    "[INFO] Tests run: 1141, Failures: 0, Errors: 0, Skipped: 252\n"
+    "[INFO] \n"
+    # módulo 2 (bootstrap): linha por classe primeiro, total do módulo depois
+    "[ERROR] Tests run: 8, Failures: 1, Errors: 7, Skipped: 0, Time elapsed: 0.173 s "
+    "<<< FAILURE! -- in com.fintex.ce.workflow.GitHubActionsWorkflowTest\n"
+    "[ERROR] Failures: \n"
+    "[ERROR]   GitHubActionsWorkflowTest.testWorkflowFileExists:19 Workflow file should "
+    "exist at .github/workflows/ci.yml ==> expected: <true> but was: <false>\n"
+    "[ERROR] Tests run: 151, Failures: 1, Errors: 7, Skipped: 5\n"
+    "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.2.5:test "
+    "(default-test) on project bootstrap: There are test failures.\n"
+)
+
+
+def test_a_failing_module_is_not_erased_by_a_bigger_green_one():
+    finding = run_test_check(
+        _Stub(1, _SUREFIRE_MULTI_MODULE_RED, ""), L1Config(test_cmd=["mvn", "test"]),
+    )
+    assert finding.status is GateStatus.FAIL
+    assert "Tests run: 151" in finding.summary, (
+        f"o módulo que FALHOU tem que aparecer no resumo, não o verde maior: "
+        f"{finding.summary!r}"
+    )
+    assert "Failures: 1" in finding.summary and "Errors: 7" in finding.summary
+    assert "coverage threshold" not in finding.summary, (
+        "o ramo 'no test failed…' disparou sobre uma suíte com 8 testes "
+        "quebrados — é exatamente o diagnóstico errado que o Coder recebeu"
+    )
+
+
+def test_between_failing_footers_the_module_total_still_wins():
+    """A guarda de 10/08 (wi_82254f59) reafirmada sob a regra nova: a linha de
+    classe (8) e o total do módulo (151) falham ambos — vence o total."""
+    finding = run_test_check(
+        _Stub(1, _SUREFIRE_MULTI_MODULE_RED, ""), L1Config(test_cmd=["mvn", "test"]),
+    )
+    assert "Tests run: 8," not in finding.summary
+
+
+def test_an_all_green_reactor_still_reports_the_biggest_footer():
+    """Verde continua verde: sem rodapé falhando, a regra de hoje."""
+    verde = (
+        "[INFO] Tests run: 1141, Failures: 0, Errors: 0, Skipped: 252\n"
+        "[INFO] Tests run: 151, Failures: 0, Errors: 0, Skipped: 5\n"
+        "[INFO] BUILD SUCCESS\n"
+    )
+    finding = run_test_check(_Stub(0, verde, ""), L1Config(test_cmd=["mvn", "test"]))
+    assert finding.status is GateStatus.PASS
+    assert "Tests run: 1141" in finding.summary
+
+
+def test_a_genuine_suite_policy_rejection_still_says_so():
+    """O ramo 'coverage threshold or similar' existe para o caso real: TODOS os
+    rodapés verdes e mesmo assim exit != 0. Ele continua."""
+    verde_exit1 = (
+        "[INFO] Tests run: 1141, Failures: 0, Errors: 0, Skipped: 252\n"
+        "[ERROR] Rule violated for bundle ce: instructions covered ratio is 0.79\n"
+    )
+    finding = run_test_check(_Stub(1, verde_exit1, ""), L1Config(test_cmd=["mvn", "test"]))
+    assert finding.status is GateStatus.FAIL
+    assert "coverage threshold or similar" in finding.summary
