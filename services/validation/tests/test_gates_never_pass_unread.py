@@ -149,3 +149,32 @@ def test_a_real_bandit_run_still_reports_normally():
     """A rede: bandit que RODOU continua sendo lido como sempre."""
     f = sast_check(_SastStub(0, '{"results": [], "metrics": {}}'), L1Config())
     assert f.passed is True and f.status is GateStatus.PASS
+
+
+def test_the_modern_ruff_arrow_format_is_read():
+    """Descoberto pelo próprio conserto (2026-08-20): o ruff instalado NESTE
+    repositório imprime o formato `full`, com a localização numa linha de seta.
+    O gate não falava esse dialeto — antes virava verde falso; sem esta leitura
+    passaria a escalar TODO repo Python. Um ERROR honesto expõe o dialeto que
+    falta; um PASS o esconde."""
+    saida = (
+        "F401 [*] `os` imported but unused\n"
+        " --> src/app.py:1:8\n"
+        "  |\n"
+        "1 | import os\n"
+        "  |        ^^\n"
+        "help: Remove unused import: `os`\n"
+        "\nFound 1 error.\n"
+    )
+    f = lint_check(_Stub(1, saida), L1Config(lint_cmd=["ruff", "check", "."]),
+                   {"src/app.py"})
+    assert f.status is GateStatus.FAIL, f.summary
+    assert "1 lint issue" in f.summary
+
+
+def test_the_arrow_format_still_respects_the_changed_files_filter():
+    """A normalização existe para isto: a comparação com o diff acontece no
+    começo da linha, e a forma de seta começa em `-->`."""
+    saida = "F401 unused\n --> other/legacy.py:1:8\n"
+    f = lint_check(_Stub(1, saida), L1Config(lint_cmd=["ruff", "check", "."]), _TOCADO)
+    assert f.passed is True, f"dívida fora do diff virou problema desta mudança: {f.summary!r}"

@@ -310,6 +310,15 @@ _TS_SPEC_SUFFIX = re.compile(r"\.(?:spec|test)\.(?:ts|tsx|js|jsx)$")
 #: não importa o serviço de validação — mesma razão de `_TESTER_INFRA_RETURNCODES`
 #: abaixo. Se um dos dois mudar lá, este recorte volta a pegar a cauda.
 _COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$", re.M)
+#: rc.104 — quanto tempo o laço espera antes de aceitar "este repositório não
+#: tem CI" como veredito. Os workflows de `on: pull_request` são criados pelo
+#: GitHub no instante em que a PR abre, e a primeira consulta roda sem sleep
+#: nenhum: sem esta janela, o DSE escreve uma afirmação FALSA na PR do cliente
+#: ("You are the only gate") por ter perguntado cedo demais. Dois polls de
+#: custo no repo que realmente não tem CI, contra uma mentira publicada no
+#: repo que tem.
+_NO_CI_GRACE_SECONDS = 90.0
+
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
 
@@ -330,13 +339,26 @@ def _l1_infra_gates(findings) -> list[str]:
     resolver, porque a causa era o `--max-old-space-size=1024` do próprio
     `.dse/validation.json`.
 
+    `NOT_CONFIGURED` entrou aqui em 2026-08-20 pela mesma lógica: um estágio
+    sem comando declarado também não produziu veredito, e o Coder NÃO PODE
+    consertar — o manifesto é lido do base SHA (`git show
+    {base_sha}:.dse/validation.json`) e o base SHA não se move dentro do laço.
+    Ele editava o arquivo, o gate seguia lendo a versão antiga, o `detail` era
+    constante, o fingerprint hasheava igual e o item morria em
+    `coder_not_converging` — diagnóstico errado, ao preço de 2 rodadas
+    Coder+Tester e 3 pipelines de L1 por comando ausente. A saída correta é
+    humana e está no repositório: declarar o comando ou pôr o nome em
+    `disabled_stages`. Com N linguagens (Ruby sem typecheck, Go sem lint) isto
+    deixa de ser exceção.
+
     Lê `status` como enum OU como a string crua que um payload decodificado
     carrega, igual ao `_tester_infra_outcome`: os dois lados atravessam a
     mesma fronteira de serialização."""
+    NAO_RODOU = (GateStatus.ERROR.value, GateStatus.NOT_CONFIGURED.value)
     out: list[str] = []
     for f in findings or []:
         status = getattr(f, "status", None)
-        if getattr(status, "value", status) == GateStatus.ERROR.value:
+        if getattr(status, "value", status) in NAO_RODOU:
             out.append(getattr(f, "check", "?"))
     return out
 
@@ -3874,6 +3896,22 @@ class WorkItemLifecycleWorkflow:
                 raise _ActivityRetriesExhausted(
                     ACTIVITY_CONSUME_CI_STATUS, str(exc.cause or exc)[:300]
                 )
+            # rc.104 (patch no-ci-needs-a-window-v1): "nada reportou AINDA" e
+            # "nada vai reportar" são fatos diferentes, e o laço tratava os dois
+            # como o segundo — na PRIMEIRA leitura, sem piso de tempo. O
+            # contraste estava no mesmo arquivo: `pending` tem teto de 1440
+            # polls e deadline de 6h. A paciência existia para "ainda não
+            # terminou" e não para "ainda não apareceu", que é justamente a que
+            # publica uma afirmação falsa na PR do cliente. Dentro da janela, o
+            # laço trata como `pending` e usa o relógio que ele já mantém.
+            if (fine_states and ci.status == "no_ci"
+                    and workflow.patched("no-ci-needs-a-window-v1")):
+                if input.ci_wait_started_at_epoch is None:
+                    input.ci_wait_started_at_epoch = workflow.now().timestamp()
+                if (workflow.now().timestamp()
+                        - input.ci_wait_started_at_epoch) < _NO_CI_GRACE_SECONDS:
+                    ci = ci.model_copy(update={"status": "pending"})
+
             input.ci_status = ci.status
             if not quiet_ci_poll:
                 await self._audit("ci_status_observed", {"status": ci.status})
@@ -4012,6 +4050,12 @@ class WorkItemLifecycleWorkflow:
                     "status": ci.status,
                     "pr_number": input.pr_number,
                     "head_sha": input.head_sha,
+                    # Quanto tempo o laço esperou antes de aceitar a ausência —
+                    # é o que separa este veredito de um palpite (rc.104).
+                    "waited_seconds": (
+                        int(workflow.now().timestamp() - input.ci_wait_started_at_epoch)
+                        if input.ci_wait_started_at_epoch else 0
+                    ),
                 })
                 # Body override on the real status, the shape the plan-approval
                 # reminder already uses: the reviewer must not read the ordinary

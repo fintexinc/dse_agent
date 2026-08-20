@@ -8,6 +8,7 @@ import json
 from dse_contracts import GateStatus, L1Finding
 
 from dse_validation.config import default_scan_timeout_seconds
+from dse_validation.l1.quality_checks import _infra_failure
 from dse_validation.sandbox_exec import SandboxExecutor
 
 _SEVERITY_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
@@ -86,9 +87,28 @@ def sast_check(
             ),
         )
 
+    # Infra ANTES do parse: um OOM ou um exec quebrado não são veredito sobre o
+    # código do cliente, e a mensagem nomeada vale mais que "JSON inválido".
+    # Este gate era o ÚNICO dos seis que não consultava `_infra_failure`.
+    if (infra := _infra_failure(result)) is not None:
+        return L1Finding(
+            check="sast",
+            passed=False,
+            status=GateStatus.ERROR,
+            detail=f"bandit: {infra} (exit={result.returncode})\n{(result.stderr or '')[:2000]}",
+            summary=f"bandit could not run: {infra}",
+        )
+
     # bandit exits with returncode 1 when it finds issues (not an execution error).
+    #
+    # SEM `or "{}"` (2026-08-20). Aqueles seis caracteres eram o mecanismo
+    # inteiro do falso verde que o comentário acima já descrevia: stdout vazio
+    # virava `{}`, que virava zero findings, que virava PASS num gate de
+    # segurança que não escaneou uma linha. O tratamento correto já existia
+    # logo abaixo — bastava deixar a ausência de saída chegar até ele. Um
+    # bandit que RODOU sempre imprime um objeto JSON.
     try:
-        payload = json.loads(result.stdout or "{}")
+        payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         return L1Finding(
             check="sast",

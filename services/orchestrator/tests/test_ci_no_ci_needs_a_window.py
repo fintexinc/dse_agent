@@ -21,6 +21,7 @@ repo realmente não tem CI, custa um poll.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 import pytest
 from temporalio.worker import Worker
@@ -47,7 +48,12 @@ def _reset_codeowners():
     policy.set_codeowners_reader(None)
 
 
-async def _corre(env, state: FakeControlPlane, ledger: _Ledger):
+async def _corre(env, state: FakeControlPlane, ledger: _Ledger, *, avanco_s: float):
+    """`avanco_s` é CONTROLE EXPLÍCITO DE RELÓGIO, não folga: o servidor
+    time-skipping só adianta o relógio em janela ociosa, e `wait_for_status`
+    consulta sem parar — sem o `sleep` explícito o `workflow.sleep` do laço de
+    CI nunca dispara e o item fica parado em `ci_pending` para sempre (a mesma
+    disciplina de `test_approval_just_before_expiry_proceeds_normally`)."""
     work_item_id = new_work_item_id("nocijanela")
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
     policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
@@ -57,6 +63,8 @@ async def _corre(env, state: FakeControlPlane, ledger: _Ledger):
         handle = await env.client.start_workflow(
             WorkItemLifecycleWorkflow.run,
             _gate_input(work_item_id), id=work_item_id, task_queue=task_queue)
+        await wait_for_status(handle, {"ci_pending", "review_ready"})
+        await env.sleep(timedelta(seconds=avanco_s))
         await wait_for_status(handle, {"review_ready"})
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
@@ -69,7 +77,7 @@ async def test_ci_that_appears_a_little_late_is_not_declared_absent(time_skippin
     workflow de `on: pull_request` já registrado e verde."""
     state = FakeControlPlane(ci_sequence=["no_ci", "green"])
     ledger = _Ledger()
-    result = await _corre(time_skipping_env, state, ledger)
+    result = await _corre(time_skipping_env, state, ledger, avanco_s=70)
 
     assert result.status == WorkItemStatus.done.value
     assert "ci_no_ci_detected" not in ledger.audit_actions, (
@@ -86,7 +94,7 @@ async def test_a_repo_that_really_has_no_ci_still_gets_the_notice(time_skipping_
     da janela, não no primeiro segundo."""
     state = FakeControlPlane(ci_sequence=["no_ci", "no_ci", "no_ci"])
     ledger = _Ledger()
-    result = await _corre(time_skipping_env, state, ledger)
+    result = await _corre(time_skipping_env, state, ledger, avanco_s=140)
 
     assert result.status == WorkItemStatus.done.value
     assert "ci_no_ci_detected" in ledger.audit_actions

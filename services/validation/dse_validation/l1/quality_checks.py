@@ -112,6 +112,40 @@ _OOM_MARKERS = (
 )
 
 
+#: Os DOIS formatos do ruff, e a razão de o segundo existir aqui. O `concise`
+#: (`path:line:col: CODE msg`) era o único que este gate conhecia — e o ruff
+#: instalado neste próprio repositório imprime, por padrão, o formato `full`:
+#:
+#:     F401 [*] `os` imported but unused
+#:      --> bad.py:1:8
+#:       |
+#:     1 | import os
+#:
+#: Descoberto em 2026-08-20 pela própria mudança que fez o gate parar de dizer
+#: PASS sobre saída que não entende: sem ler a seta, TODO repositório Python
+#: com ruff moderno passaria a escalar por "não consegui ler". A lição não é
+#: "acrescente dialetos" — é que um parser cego devolve `ERROR`, e um ERROR
+#: honesto expõe o dialeto que falta em vez de escondê-lo num verde.
+_LINT_CONCISE_RE = re.compile(r"^\S+:\d+:\d+:\s")
+_LINT_ARROW_RE = re.compile(r"^\s*-->\s+(?P<loc>\S+:\d+:\d+)\s*$")
+
+
+def _lint_diagnostics(text: str) -> list[str]:
+    """Uma linha por diagnóstico, normalizada para começar em `path:line:col`.
+
+    A normalização não é cosmética: `_only_in_changed_files` compara o caminho
+    do começo da linha com o diff, e a forma de seta começa em `-->`."""
+    out: list[str] = []
+    for ln in text.splitlines():
+        if _LINT_CONCISE_RE.match(ln):
+            out.append(ln)
+            continue
+        m = _LINT_ARROW_RE.match(ln)
+        if m:
+            out.append(f"{m.group('loc')}: {ln.strip()}")
+    return out
+
+
 def _infra_failure(result: ExecResult) -> str | None:
     """Names an INFRASTRUCTURE failure, or None if the tool merely disagreed
     with the code.
@@ -239,7 +273,10 @@ def lint_check(
     timeout = cfg.timeout_for("lint")
     result = _run(executor, cfg.lint_cmd, timeout)
     # ruff/flake8: 1 line per issue, formatted as "path:line:col: CODE msg".
-    issue_lines = [ln for ln in result.stdout.splitlines() if re.match(r"^\S+:\d+:\d+:\s", ln)]
+    # `_output`, não `result.stdout`: ruff e várias ferramentas escrevem o
+    # diagnóstico no stderr quando o stdout está tomado, e ler um stream só é
+    # a mesma aposta que custou dois dias no #60.
+    issue_lines = _lint_diagnostics(_output(result))
     all_issues = len(issue_lines)
     issue_lines = _only_in_changed_files(issue_lines, changed_files)
     # `result.ok` is dropped from the verdict ON PURPOSE when the diff is known:
@@ -262,6 +299,31 @@ def lint_check(
         # and have that script dump the sandbox's environment to stderr before
         # exiting 127. That is the leak this field exists to close.
         summary = "lint command not found (exit 127)"
+        passed = False
+        status = GateStatus.ERROR
+    elif not result.ok and all_issues == 0:
+        # A ferramenta REPROVOU a árvore e não imprimiu uma única linha no
+        # formato que este parser conhece — então não sabemos o que ela viu.
+        # Ausência de evidência não é evidência de ausência: sem esta cláusula,
+        # `passed` sai True (o exit code é descartado de propósito quando há
+        # diff) e o gate publica "no lint issues" sobre uma ferramenta que nem
+        # rodou (spotless sem rede, eslint com outro formatter, go vet no
+        # stderr — 4/4 reproduzidos na auditoria de 2026-08-20).
+        #
+        # ERROR e não FAIL, deliberadamente: FAIL entra em `failed_checks` e
+        # compra turno de Coder. Num repo com dívida de formatação
+        # pré-existente esse turno é impagável — é o incidente que
+        # `_only_in_changed_files` existe para impedir, entrando pela outra
+        # porta. ERROR entra em `_l1_infra_gates` e escala nomeando o estágio.
+        detail = (
+            f"lint exited {result.returncode} and printed no diagnostic in the "
+            f"'path:line:col: CODE msg' format this gate parses — no verdict on "
+            f"the change was possible\n" + _tail(_output(result))
+        )
+        summary = (
+            f"lint could not be read (exit={result.returncode}): no diagnostic "
+            "matched the expected format"
+        )
         passed = False
         status = GateStatus.ERROR
     else:
@@ -318,7 +380,7 @@ def typecheck_check(
     # COUNT only — `passed` is the command's exit code either way.
     error_lines = [
         ln
-        for ln in result.stdout.splitlines()
+        for ln in _output(result).splitlines()
         if ": error:" in ln or _TSC_ERROR_RE.search(ln)
     ]
     if (infra := _infra_failure(result)) is not None:
@@ -338,6 +400,23 @@ def typecheck_check(
             summary="typecheck command not found (exit 127)",
         )
     all_errors = len(error_lines)
+    if not result.ok and all_errors == 0:
+        # Mesma regra do lint, e pela mesma razão (ver o comentário lá): o
+        # typechecker reprovou e não falamos o dialeto dele.
+        return L1Finding(
+            check="typecheck",
+            passed=False,
+            status=GateStatus.ERROR,
+            detail=(
+                f"typecheck exited {result.returncode} and printed no diagnostic "
+                f"this gate parses (mypy's ': error:' or tsc's 'path(l,c): error') "
+                f"— no verdict on the change was possible\n" + _tail(_output(result))
+            ),
+            summary=(
+                f"typecheck could not be read (exit={result.returncode}): no "
+                "diagnostic matched the expected format"
+            ),
+        )
     error_lines = _only_in_changed_files(error_lines, changed_files)
     # Same reasoning as lint: with a diff in hand the question is not "does this
     # repository typecheck" — it is "did this change break the typecheck".
