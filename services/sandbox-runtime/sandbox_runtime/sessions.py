@@ -16,7 +16,6 @@ carries the Coder's history into it (proven by construction in
 """
 from __future__ import annotations
 
-import fnmatch
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -24,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from dse_contracts import L2Verdict, PlanArtifact
-from dse_contracts.paths import first_forbidden_match
+from dse_contracts.paths import file_matches_glob, first_forbidden_match
 
 from .retrieval import RetrievalHit, RetrievalService, render_untrusted_context
 from .skill_registry import Skill, read_approved_skills
@@ -59,8 +58,14 @@ _MEDIUM_RISK_GLOBS = [
 
 
 def _matches_any(path: str, globs: list[str]) -> bool:
+    """Alias do primitivo único (`dse_contracts.paths.file_matches_glob`).
+
+    A implementação local usava `g.lstrip('*/')`, que remove TODO `*` e `/` do
+    começo: `**/*payment*` virava `payment*` e um arquivo de pagamento NA RAIZ
+    saía `low` — plano auto-aprovado, ninguém perguntado (medido 2026-08-20).
+    O nome fica porque os consumidores deste módulo o usam."""
     p = path.replace("\\", "/")
-    return any(fnmatch.fnmatch(p, g) or fnmatch.fnmatch(p, g.lstrip("*/")) for g in globs)
+    return any(file_matches_glob(p, g) for g in globs)
 
 
 def classify_risk_class(

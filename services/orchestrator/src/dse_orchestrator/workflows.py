@@ -29,7 +29,11 @@ with workflow.unsafe.imports_passed_through():
     # Pure path predicates. The Tester skip and the L1 gates must reach
     # the SAME answer about what counts as documentation, so the list has
     # one home rather than a copy on each side.
-    from dse_contracts.paths import is_documentation_only, protected_expected_files
+    from dse_contracts.paths import (
+        is_documentation_only,
+        is_test_path,
+        protected_expected_files,
+    )
     from dse_contracts.activities import (
         ACTIVITY_BOOTSTRAP_REPO_MANIFEST,
         ACTIVITY_PROBE_REPO_MANIFEST,
@@ -406,10 +410,12 @@ def _client_spec_conflict_note(
 _PATH_IN_OUTPUT = re.compile(
     r"[\w./\-]+\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|py|go|rb|cs|vue|svelte)\b"
 )
-#: As convenções de teste dos dois testbeds. Duplicadas aqui pelo mesmo motivo
-#: dos marcadores acima (`dse_contracts.paths.is_test_path` é a fonte única, e
-#: o workflow não a importa).
-_TEST_PATH_HINTS = (".spec.", ".test.", "/tests/", "/test/", "__tests__/")
+#: A duplicata que vivia aqui ("as convenções de teste dos dois testbeds",
+#: cujo próprio comentário admitia ser inércia de import) saiu em 2026-08-20:
+#: o workflow passa a chamar `dse_contracts.paths.is_test_path`, que já era
+#: declarada a fonte única. O alargamento é deliberado — a lista local via
+#: substring conhecia dois ecossistemas, e a fonte única conhece pytest, go,
+#: jest/vitest, rspec e .NET.
 
 
 def _failure_blames_the_coder(failure_output: str | None) -> bool:
@@ -431,7 +437,7 @@ def _failure_blames_the_coder(failure_output: str | None) -> bool:
         return False
     matches = _PATH_IN_OUTPUT.finditer(failure_output or "")
     return not any(
-        any(h in m.group(0) for h in _TEST_PATH_HINTS) for m in matches
+        is_test_path(m.group(0)) for m in matches
     )
 
 

@@ -9,6 +9,7 @@ lists them — test files cannot count as "out of plan" (found on a real run
 from __future__ import annotations
 
 import re
+from fnmatch import fnmatch
 from typing import Iterable
 
 # Covers the common layouts: pytest (`tests/`, `test_*.py`, `*_test.py`,
@@ -22,6 +23,13 @@ _TEST_PATH_RES = [
     re.compile(r"(^|/)conftest\.py$"),
     re.compile(r"\.(test|spec)\.[jt]sx?$"),
     re.compile(r"_test\.go$"),
+    # Ruby (rspec) e .NET, 2026-08-20. Não é contabilidade: `TesterToolset`
+    # recusa escrita fora de caminho de teste, então sem estas linhas o Tester
+    # NÃO CONSEGUE escrever `spec/foo_spec.rb` num repo Ruby — o item morre
+    # sem teste. `spec/` ancorado em segmento não pega `docs/specification.md`.
+    re.compile(r"(^|/)spec/"),
+    re.compile(r"_spec\.rb$"),
+    re.compile(r"Tests?\.cs$"),
 ]
 
 
@@ -166,6 +174,30 @@ def is_documentation_only(changed_files) -> bool:
         if ("." + name.rsplit(".", 1)[1].lower()) not in DOC_EXTENSIONS:
             return False
     return True
+
+
+# --- GLOB MATCHING (uma implementação, e ela mora aqui) --------------------
+# Existiam TRÊS: `preview/paths_filter.file_matches_glob`,
+# `evidence/publication._matches_any` (byte-equivalente) e
+# `sandbox_runtime/sessions._matches_any` — esta última com `g.lstrip('*/')`,
+# que remove TODO `*` e `/` do começo e transforma `**/*payment*` em
+# `payment*`. Consequência medida (2026-08-20): um `process_payment.py` na
+# RAIZ do repositório saía `low` do classificador de risco, o plano
+# auto-aprovava e nenhum humano era perguntado; o mesmo arquivo um diretório
+# abaixo casava. Vale a que estava certa.
+
+
+def file_matches_glob(path: str, glob: str) -> bool:
+    """`path` casa com `glob`, com `**/` significando "em qualquer
+    profundidade, INCLUSIVE nenhuma".
+
+    O segundo ramo é a razão de esta função existir: `fnmatch` sozinho exige a
+    barra que o `**/` promete tornar opcional."""
+    if fnmatch(path, glob):
+        return True
+    if glob.startswith("**/") and fnmatch(path, glob[3:]):
+        return True
+    return False
 
 
 # --- PROTECTED PATHS (`PlanArtifact.forbidden_paths`) -----------------------

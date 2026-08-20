@@ -25,7 +25,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
-from fnmatch import fnmatch
+from dse_contracts.paths import file_matches_glob
 
 from dse_validation import db
 from dse_validation.evidence.garage import resolve_artifact_url
@@ -49,10 +49,8 @@ def non_behavior_globs() -> list[str]:
 
 
 def _matches_any(path: str, globs: list[str]) -> bool:
-    for glob in globs:
-        if fnmatch(path, glob) or (glob.startswith("**/") and fnmatch(path, glob[3:])):
-            return True
-    return False
+    """Alias do primitivo único (`dse_contracts.paths.file_matches_glob`)."""
+    return any(file_matches_glob(path, g) for g in globs)
 
 
 @dataclass(frozen=True)

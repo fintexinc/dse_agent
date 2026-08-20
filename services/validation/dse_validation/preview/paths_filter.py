@@ -12,15 +12,13 @@ Glob semantics (documented — stdlib fnmatch, P7):
 """
 from __future__ import annotations
 
-from fnmatch import fnmatch
+from dse_contracts.paths import file_matches_glob as _file_matches_glob
 
 
-def file_matches_glob(path: str, glob: str) -> bool:
-    if fnmatch(path, glob):
-        return True
-    if glob.startswith("**/") and fnmatch(path, glob[3:]):
-        return True
-    return False
+# Esta implementação era a CORRETA das três e por isso foi a promovida ao
+# contrato (2026-08-20). O nome continua exportado daqui: os testes deste
+# serviço o nomeiam.
+file_matches_glob = _file_matches_glob
 
 
 def is_ui_touching(files_changed: list[str], ui_path_globs: list[str]) -> bool:
