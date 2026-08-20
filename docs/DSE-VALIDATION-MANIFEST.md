@@ -135,7 +135,6 @@ declares nothing sees no change.
 | `port` | int | the port the app listens on inside the container |
 | `ready_timeout_s` | int | how long to wait for readiness; **maximum 1050** |
 | `start` | argv array | **how the process boots and serves** — e.g. `["sh","-c","java -jar bootstrap/target/*.jar"]`, `["./bin/server"]`, `["npx","vite","preview","--host","0.0.0.0"]` |
-| `install` | argv array | a dependency step the build command does not already do — e.g. `["pnpm","install","--frozen-lockfile"]` |
 
 **`start` is the field that makes previews work outside the JVM and npm.**
 Without it the platform has to guess, and its guess is one of two shapes: find
@@ -146,6 +145,46 @@ is not Angular. Declare it and the platform stops guessing.
 If your repository already has a manifest without it, you do not have to write
 the amendment yourself: the DSE opens a PR proposing it the next time it works
 on the repository, and the task it was running carries on meanwhile.
+
+## `install` — the dependency step (top level)
+
+```json
+{ "install": ["npm", "install", "--no-audit", "--no-fund"] }
+```
+
+One repository installs its dependencies one way, so this key sits at the top
+of the manifest and has **two consumers**: the sandbox where the DSE writes and
+runs tests, and the preview Pod. It is memoized per Pod — declaring it costs one
+install per work item, not one per step.
+
+It is not inside `preview`. Preparation that only the preview needs belongs in
+`preview.build`, which already runs there.
+
+## `commands.test_subset` — the suite, restricted to given files
+
+```json
+{ "commands": { "test": ["npx", "jest", "--ci"],
+                "test_subset": ["npx", "jest", "--ci", "--coverage=false"] } }
+```
+
+After the DSE writes a test it asks a small question: *do the tests I just
+wrote execute and pass?* — not *is this whole repository green*, which is the
+L1 gate's question minutes later. `test_subset` answers the small one: the
+platform appends the paths of the files it just authored.
+
+Two things belong to you and not to the platform:
+
+- **Whatever flag a partial run needs.** A jest with `collectCoverage: true`
+  and global thresholds fails *any* subset on coverage while every test passes
+  — measured at 9.83% against a floor of 80%. `--coverage=false` is a fact
+  about your jest config, so it lives here, in your manifest.
+- **Whether to declare it at all.** Runners that take filters rather than paths
+  (maven, dotnet, cargo) should omit it. The DSE then runs the whole
+  `commands.test` — slower, but never a command it invented.
+
+`test_subset` is a command, not a gate: it has no `timeouts.test_subset`, it
+cannot be listed in `disabled_stages`, and it never produces a verdict of its
+own.
 
 Unknown fields inside the block are an ERROR — a typo (`imagen:`) must be an
 explained failure, not a silent default.

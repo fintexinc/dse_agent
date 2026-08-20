@@ -11,9 +11,13 @@ Este arquivo pina duas coisas:
   - o turno roda o typecheck DECLARADO PELO REPO (`.dse/validation.json`, a
     mesma régua do L1 — a do build, não a das specs) e uma falha entra no
     RESULTADO do Tester (vermelho antes do fix);
-  - o run parcial da suíte continua carregando `--coverage=false`, sem o qual
-    qualquer subconjunto reprova por cobertura global e não por teste (isso já
-    era verdade; aqui vira regressão pinada).
+  - o typecheck reprovado não gasta a suíte inteira depois.
+
+O `--coverage=false` era pinado aqui e SAIU na rc.106: a plataforma parou de
+injetar flag de ferramenta. O fato (`collectCoverage: true` com piso global de
+80% reprova qualquer subconjunto — medido em 9,83%) é do jest daquele
+repositório, e agora vive no `commands.test_subset` do manifesto dele. Ver
+test_repo_declares_how_it_tests.py.
 """
 from __future__ import annotations
 
@@ -66,7 +70,7 @@ def _cluster(*, typecheck, manifest=_MANIFEST, suite=None, seen=None):
             return _done(argv, 0, stdout="tests/app-dse.spec.ts\n")
         if "git log --format=%s" in joined:
             return _done(argv, 0, stdout="tester(wi): authored\n")
-        if any(m in joined for m in ("npm test", "python3 -m pytest")):
+        if any(m in joined for m in ("npx jest", "npm test", "python3 -m pytest")):
             return suite if suite is not None else _done(argv, 0, stdout="Tests: 1 passed, 1 total\n")
         return _done(argv, 0, stdout="deadbeef\n")
 
@@ -85,7 +89,12 @@ def _run(monkeypatch, **cluster):
 
 
 def _suite_ran(seen) -> bool:
-    return any("npm test" in " ".join(a) for a, _k in seen)
+    # rc.106: a suíte é o `commands.test` DECLARADO no manifesto do fake
+    # (`npx jest --ci`); sem manifesto, a escada de fallback ainda responde
+    # `npm test`. Os dois contam como "a suíte rodou" — o que estes testes
+    # observam é o typecheck deixar (ou não) a suíte acontecer.
+    return any(("npx jest --ci" in " ".join(a)) or ("npm test" in " ".join(a))
+               for a, _k in seen)
 
 
 def test_a_type_error_in_the_authored_spec_fails_the_turn(monkeypatch):
@@ -131,15 +140,3 @@ def test_a_repo_without_a_declared_typecheck_is_unchanged(monkeypatch):
 
     assert _suite_ran(seen)
     assert result.status is GateStatus.PASS
-
-
-def test_the_scoped_suite_run_still_disables_coverage(monkeypatch):
-    """Regressão pinada: `collectCoverage: true` com thresholds globais reprova
-    QUALQUER subconjunto (medido: 9,83% contra um piso de 80%), então o run
-    parcial do Tester tem de carregar --coverage=false — senão o Coder é mandado
-    consertar um teste que passou."""
-    _result, seen = _run(monkeypatch, typecheck=_done([], 0))
-
-    npm = [" ".join(a) for a, _k in seen if "npm test" in " ".join(a)]
-    assert npm, "a suíte tem de rodar"
-    assert "--coverage=false" in npm[0]

@@ -27,6 +27,14 @@ if TYPE_CHECKING:
 L1_MANIFEST_PATH = ".dse/validation.json"
 _FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 _COMMAND_NAMES = ("lint", "typecheck", "test", "build")
+#: `test_subset` é a suíte restrita aos arquivos que o Tester acabou de
+#: escrever, e passa pela mesma porta de argv dos outros — mas NÃO é um quinto
+#: estágio: não tem gate, não tem `timeouts.test_subset`, não entra em
+#: `disabled_stages`. Só o turno do Tester o lê, com o clock dele. Manter as
+#: duas listas separadas é o que impede uma chave de conveniência de virar um
+#: veredito do L1 por descuido.
+_EXTRA_COMMAND_NAMES = ("test_subset",)
+_ALLOWED_COMMAND_NAMES = _COMMAND_NAMES + _EXTRA_COMMAND_NAMES
 # The two scans belong to the platform, not to the repository, but they run in
 # the same activity and therefore spend the same budget. Their timeouts used to
 # be literal defaults inside `l1/sast.py` and `l1/secret_scan.py`, reachable
@@ -396,7 +404,7 @@ class L1ManifestError(ValueError):
 #: Campos do bloco `preview` do manifesto. Fechado de propósito: um typo
 #: (`imagen:`) tem que ser erro explicado, não default silencioso.
 _PREVIEW_FIELDS = ("image", "artifact_glob", "env", "port", "ready_timeout_s",
-                   "start", "install")
+                   "start")
 #: Teto do timeout que o repo pode pedir. A activity do trigger_preview morre
 #: em 1200s (workflows.py, patch preview-trigger-timeout-headroom-v1) e a folga
 #: paga captura de log, escrita no banco e comentário na PR — pedir mais que
@@ -499,12 +507,28 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
     declaração vazia (todos os defaults de hoje)."""
     if not isinstance(payload, dict):
         raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
+    # `install` vem do TOPO do manifesto, não do bloco preview: é um fato do
+    # repositório, e o sandbox lê a mesma chave. A declaração continua sendo o
+    # único objeto que o código do preview consome — ela é que busca a chave no
+    # lugar certo.
+    install = _validate_command("install", payload.get("install")) or None
     raw = payload.get("preview")
     if raw is None:
-        return RepoPreviewDeclaration()
+        return RepoPreviewDeclaration(install=install)
     if not isinstance(raw, dict):
         raise L1ManifestError(GateStatus.ERROR, f"manifest {source} preview must be an object")
     unknown = sorted(set(raw) - set(_PREVIEW_FIELDS))
+    if "install" in unknown:
+        # Nomear o destino, não só recusar: "unknown field" faz o autor do
+        # manifesto chutar outro nome. A chave existiu por uma hora na rc.105 e
+        # foi dobrada na de topo, que o sandbox lê também.
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: preview.install moved to the top-level "
+            "`install` — one repository installs its dependencies one way, and "
+            "the sandbox reads the same key",
+            summary="preview.install moved to the top-level `install`",
+        )
     if unknown:
         raise L1ManifestError(
             GateStatus.ERROR,
@@ -578,7 +602,7 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
         # Clampado, não recusado — mesma disciplina de `timeout_seconds`.
         ready_timeout_s=_positive_int("ready_timeout_s", _PREVIEW_MAX_READY_TIMEOUT_S),
         start=_argv("start"),
-        install=_argv("install"),
+        install=install,
     )
 
 
@@ -690,6 +714,8 @@ class L1Config:
         typecheck_cmd: list[str] | None = None,
         test_cmd: list[str] | None = None,
         build_cmd: list[str] | None = None,
+        test_subset_cmd: list[str] | None = None,
+        install_cmd: list[str] | None = None,
         timeout_seconds: int | None = None,
         timeouts: dict[str, int] | None = None,
         sast_severity_gate: str | None = None,
@@ -703,6 +729,9 @@ class L1Config:
         self.typecheck_cmd = list(typecheck_cmd or [])
         self.test_cmd = list(test_cmd or [])
         self.build_cmd = list(build_cmd or [])
+        #: Lidos pelo turno do Tester (sandbox), não pelos gates do L1.
+        self.test_subset_cmd = list(test_subset_cmd or [])
+        self.install_cmd = list(install_cmd or [])
         # Clamped, never refused: a repository whose scalar is above the ceiling
         # is asking for more than the activity has, but refusing it here would
         # escalate a work item over a manifest that was valid yesterday.
@@ -816,7 +845,7 @@ class L1Config:
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
         allowed = {"version", "commands", "timeout_seconds", "timeouts",
                    "sast_severity_gate", "preview", "forbidden_paths",
-                   "disabled_stages"}
+                   "disabled_stages", "install"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(
@@ -838,7 +867,7 @@ class L1Config:
                 GateStatus.ERROR,
                 f"manifest {source} requires a commands object",
             )
-        unknown_commands = sorted(set(commands) - set(_COMMAND_NAMES))
+        unknown_commands = sorted(set(commands) - set(_ALLOWED_COMMAND_NAMES))
         if unknown_commands:
             raise L1ManifestError(
                 GateStatus.ERROR,
@@ -915,8 +944,22 @@ class L1Config:
                 )
             disabled = frozenset(disabled_raw)
 
-        parsed = {name: _validate_command(name, commands.get(name)) for name in _COMMAND_NAMES}
+        parsed = {name: _validate_command(name, commands.get(name))
+                  for name in _ALLOWED_COMMAND_NAMES}
+        # `install` é do REPOSITÓRIO, não do preview: quem instala as
+        # dependências no /workspace é o turno do Tester, e o L1 depois
+        # reaproveita a mesma árvore (o worktree do baseline chega a fazer
+        # symlink dela). O Pod do preview lê a MESMA chave. Preparo que só o
+        # preview precisa continua em `preview.build`.
+        install = _validate_command("install", payload.get("install"))
+        # O bloco `preview` passa pela mesma porta AQUI, e não só na hora de
+        # subir o preview. Este parser é o portão do bootstrap e da emenda: uma
+        # chave que ele aceita e o preview recusa vira PR mergeada que quebra
+        # dias depois, longe do diff que a causou.
+        parse_repo_preview(payload, source=source)
         return cls(
+            install_cmd=install,
+            test_subset_cmd=parsed["test_subset"],
             lint_cmd=parsed["lint"],
             typecheck_cmd=parsed["typecheck"],
             test_cmd=parsed["test"],

@@ -10,9 +10,12 @@ e o branch `ui` é uma escada npm construída para Angular. Consequência: um re
 que declara `preview.image: golang:1.23` sobe a imagem certa e a receita tenta
 rodar um jar; um FE em Vite ganha as flags do Angular CLI.
 
-`preview.start` e `preview.install` são argv, validados pelas MESMAS regras dos
+`preview.start` e `install` são argv, validados pelas MESMAS regras dos
 `commands.*` (nunca string de shell), e o script do pod vira
-`clone; credenciais; [install]; [build]; exec [start]`.
+`clone; credenciais; [install]; [build]; exec [start]`. `install` vive no TOPO
+do manifesto: quem instala dependência é o repositório, e o turno do Tester lê
+a mesma chave (a rc.105 nasceu com `preview.install` e a de topo a dobrou uma
+hora depois — ver test_install_is_one_key.py).
 
 Nesta release a escada CONTINUA como fallback, de propósito: o parser recusa
 chave desconhecida, então os repos vivos só podem declarar o campo depois que
@@ -36,7 +39,11 @@ def _cfg() -> PreviewConfig:
 
 
 def _declara(**campos):
-    return parse_repo_preview({"version": 1, "commands": {}, "preview": campos})
+    # `install` é chave de topo; o resto é bloco preview.
+    topo = {"version": 1, "commands": {}}
+    if "install" in campos:
+        topo["install"] = campos.pop("install")
+    return parse_repo_preview(dict(topo, preview=campos))
 
 
 def _deployment(**kw) -> str:

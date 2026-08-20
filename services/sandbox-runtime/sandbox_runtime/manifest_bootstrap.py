@@ -51,19 +51,30 @@ _SPEC = """The manifest is a JSON object. Rules, all binding:
 - Write "build" as ["sh", "-c", "<the whole line>"]: the preview recipe
   executes it, and chained commands must use "&&", never ";" (";" discards the
   exit status of everything but the last command).
+- "commands.test_subset" is the SAME suite restricted to given files: the DSE
+  appends the paths of the tests it just wrote. Declare it whenever the runner
+  accepts file paths as trailing arguments (jest, vitest, pytest, go test,
+  rspec, phpunit) and include whatever flag that repository needs for a PARTIAL
+  run to be meaningful — a jest with `collectCoverage: true` and global
+  thresholds needs "--coverage=false", or every subset fails on coverage while
+  every test passes. Omit it for runners that take filters rather than paths
+  (maven, dotnet, cargo): the DSE then runs the whole "test" command.
+- "install" (TOP LEVEL, not inside "preview") is the dependency step, an ARGV
+  ARRAY: ["npm","install","--no-audit","--no-fund"], ["go","mod","download"],
+  ["pip","install","-r","requirements.txt"]. Both the test sandbox and the
+  preview Pod run it. Omit it when the tree needs no install step.
 - Optional: "timeout_seconds" (int, 1..3600) when the CI shows long builds;
   "timeouts" object (lint/typecheck/test/build/sast/secret_scan -> seconds).
-- Do NOT include "preview", "forbidden_paths" or "disabled_stages" unless the
-  facts demand them — the maintainer adds those deliberately.
+- Do NOT include "forbidden_paths" or "disabled_stages" unless the facts demand
+  them — the maintainer adds those deliberately.
 - Mirror the repository's own CI commands wherever they exist. Prefer the
   repo's wrapper (./mvnw, ./gradlew) over a bare tool when the tree has one.
 - When this repository is a deployable app or a frontend, declare a "preview"
   object with "start" (an ARGV array — how the process boots and serves, e.g.
   ["sh","-c","java -jar bootstrap/target/*.jar"] or ["npx","vite","preview",
   "--host","0.0.0.0"]) and "image" when the default toolchain would be wrong.
-  Add "install" only when the repository needs a dependency step the build
-  command does not already do. Omit the whole "preview" object for a library
-  with nothing to serve — do NOT invent a start command.
+  Omit the whole "preview" object for a library with nothing to serve — do NOT
+  invent a start command.
 Return ONLY the JSON object. No markdown fences, no prose."""
 
 _PROMPT = """You are drafting `.dse/validation.json` for a repository the DSE

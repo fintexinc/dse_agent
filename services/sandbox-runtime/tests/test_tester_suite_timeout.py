@@ -308,38 +308,44 @@ def test_a_lowered_activity_clock_is_noticed_from_inside_the_worker_thread(monke
 # ---------------------------------------------------------------------------
 
 
-def test_both_runners_are_wrapped_not_just_node():
-    """A Python repo hangs the same way. The command is a shell string built
-    inline against a live Pod, so there is no seam to call — reading the source
-    is the honest check, and it is worth having: the pytest branch is the one a
-    fix like this quietly forgets."""
+def test_every_runner_is_wrapped_not_just_the_one_the_repo_declares():
+    """A Python repo hangs the same way a Node one does. O comando é uma string
+    de shell montada inline contra um Pod vivo, então não há costura para
+    chamar — ler a fonte é a checagem honesta.
+
+    O que se pina mudou de forma na rc.106 e não de conteúdo: o comando da
+    suíte agora vem do manifesto (`commands.test_subset` escopado, ou
+    `commands.test` inteiro), e o que a plataforma ainda garante é que TUDO
+    roda sob o orçamento da suíte — o caminho declarado e cada degrau da escada
+    que sobrou como fallback."""
     import inspect
 
     body = inspect.getsource(activities._tester_pod_sync)
-    # The npm command is now assembled above the exec as `npm_suite` — scoped to
-    # the files the Tester authored, or the whole suite when it authored none.
-    # What this pins is unchanged: whatever was assembled still runs under the
-    # suite budget, and both branches are still `npm test`.
-    assert re.search(r"timeout -k \d+ \{clocks\.suite\} \{npm_suite\}", body), \
-        "the npm path must run under the configured suite budget"
-    assert '"npm test --silent"' in body, "the unscoped branch is not npm test"
+    assert re.search(r"timeout -k \d+ \{clocks\.suite\} \{suite_cmd\}", body), \
+        "o comando declarado pelo repo tem de rodar sob o orçamento da suíte"
+    assert re.search(r"timeout -k \d+ \{clocks\.suite\} ", body), \
+        "a escada de fallback também"
     assert "npm test --silent -- --coverage=false" in body, (
-        "the scoped branch must disable coverage: this repo's jest declares "
-        "global thresholds, so ANY subset fails them with every test passing — "
-        "scoping without it turns a fast check into a guaranteed red one"
+        "o degrau npm da escada escopa e desliga cobertura enquanto existir: "
+        "o jest daquele repo declara thresholds globais, então QUALQUER "
+        "subconjunto reprova com todo teste passando"
     )
     assert re.search(r"timeout -k \d+ \{clocks\.suite\} python3 -m pytest", body), \
-        "the pytest path must run under it too — it hangs the same way"
+        "o degrau do pytest também pendura igual"
 
 
 def test_the_install_has_a_budget_of_its_own():
-    """It shared the exec with the suite, so whatever it did not spend belonged
-    to the suite and vice versa — and a run that died installing looked exactly
-    like a run that died testing."""
+    """Compartilhava o exec com a suíte, então o que não gastasse pertencia a
+    ela e vice-versa — e um run que morria instalando parecia exatamente um run
+    que morria testando. Saiu de dentro do exec da suíte na rc.106 e virou
+    prefixo próprio, memoizado; o orçamento separado continua."""
     import inspect
 
-    body = inspect.getsource(activities._tester_pod_sync)
-    assert re.search(r"timeout -k \d+ \{clocks\.install\} npm install", body)
+    body = inspect.getsource(activities._pod_install_prefix)
+    assert re.search(r"timeout -k 10 \{clocks\.install\} \{_shlex\.join\(declared\)\}", body), \
+        "o install declarado pelo repo roda sob o orçamento do install"
+    assert re.search(r"timeout -k 10 \{clocks\.install\} npm install", body), \
+        "e o fallback npm também, enquanto existir"
 
 
 def test_the_install_budget_covers_a_cold_install_on_the_acceptance_repo():

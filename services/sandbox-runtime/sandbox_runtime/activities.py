@@ -3018,30 +3018,96 @@ def _tail_both(proc: Any) -> str:
     ]
 
 
-def _pod_manifest_typecheck(_pod_sh) -> tuple[list[str] | None, int]:
-    """O comando de typecheck DECLARADO pelo repo em `.dse/validation.json`, que
-    é a régua que o L1 aplica depois — a do build, nunca a das specs.
+#: Marcador no Pod: `install` é pedido por dois passos (typecheck e suíte) e a
+#: instalação de um Angular real leva minutos. O marcador é o que faz a segunda
+#: chamada custar um `test -f`. Vive em /tmp porque o /workspace é commitado.
+_INSTALL_MARKER = "/tmp/dse-install-done"
 
-    Devolve `(None, _)` quando não há manifesto ou não há comando: ausência
-    declarada não vira veredito, e um repo que nunca declarou typecheck segue
-    com o turno que sempre teve."""
+
+def _pod_manifest(_pod_sh) -> dict:
+    """O `.dse/validation.json` do workspace, lido UMA vez.
+
+    Manifesto ausente ou ilegível vira `{}`: ausência declarada não é veredito,
+    e o turno segue com o que a plataforma sabe fazer sozinha."""
     r = _pod_sh("cat /workspace/.dse/validation.json 2>/dev/null")
     if r.returncode != 0 or not (r.stdout or "").strip():
-        return None, _TYPECHECK_TIMEOUT_DEFAULT_SECONDS
+        return {}
     try:
         manifest = json.loads(r.stdout)
     except (json.JSONDecodeError, TypeError):
-        logger.warning("tester: .dse/validation.json ilegível; typecheck do turno pulado")
-        return None, _TYPECHECK_TIMEOUT_DEFAULT_SECONDS
-    cmd = ((manifest.get("commands") or {}).get("typecheck")) or []
-    if not isinstance(cmd, list) or not cmd:
+        logger.warning("tester: .dse/validation.json ilegível; o turno segue sem ele")
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def _argv_from(manifest: dict, *path: str) -> list[str]:
+    """Um argv declarado, ou vazio. O parser de verdade (`L1Config`) já recusou
+    string de shell e argumento não-string quando o manifesto entrou; aqui só
+    se lê o que passou por lá."""
+    node: object = manifest
+    for key in path:
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key)
+    if not isinstance(node, list) or not node:
+        return []
+    return [str(c) for c in node]
+
+
+def _pod_install_prefix(manifest: dict, clocks) -> str:  # noqa: D401
+    """O passo de dependência DECLARADO pelo repo (`install`, no topo do
+    manifesto), memoizado por marcador.
+
+    Quem cria o `node_modules` do /workspace é este turno, e o L1 reaproveita a
+    mesma árvore depois (o worktree do baseline chega a fazer symlink dela) —
+    então a instalação não é um detalhe do Tester, é o preparo do workspace.
+
+    O fallback abaixo é a última escada npm da plataforma. Ela existe porque o
+    parser só aprendeu a chave nesta release: nenhum repo vivo pode ter
+    declarado `install` ainda. Morre quando as PRs de emenda mergearem.
+
+    Não-fatal em qualquer um dos casos: instalação parcial ainda roda a suíte, e
+    o erro vai para stderr, que o tail preserva."""
+    import shlex as _shlex
+
+    declared = _argv_from(manifest, "install")
+    if declared:
+        return (
+            f'if [ ! -f {_INSTALL_MARKER} ]; then '
+            f'timeout -k 10 {clocks.install} {_shlex.join(declared)} '
+            f'>/tmp/dse-install.log 2>&1 || '
+            f'echo "DSE: install FAILED (rc=$?) — declared `install` in '
+            f'.dse/validation.json. rc=124 means it outlived its {clocks.install}s '
+            f'budget. tail: $(tail -c 800 /tmp/dse-install.log)" >&2; '
+            f'touch {_INSTALL_MARKER}; fi; '
+        )
+    return (
+        f'if [ -f package.json ] && [ ! -f {_INSTALL_MARKER} ]; then '
+        f'timeout -k 10 {clocks.install} npm install --no-audit --no-fund '
+        '>/tmp/dse-install.log 2>&1 || '
+        'echo "DSE: npm install FAILED (rc=$?). The suite ran against an INCOMPLETE '
+        'node_modules — this is an install problem, not a test problem. '
+        f'rc=124 means the install alone outlived its own {clocks.install}s budget. '
+        'install tail: $(tail -c 800 /tmp/dse-install.log)" >&2; '
+        f'touch {_INSTALL_MARKER}; fi; '
+    )
+
+
+def _pod_manifest_typecheck(manifest: dict) -> tuple[list[str] | None, int]:
+    """O comando de typecheck DECLARADO pelo repo, que é a régua que o L1
+    aplica depois — a do build, nunca a das specs.
+
+    Devolve `(None, _)` quando não há comando: ausência declarada não vira
+    veredito, e um repo que nunca declarou typecheck segue como sempre."""
+    cmd = _argv_from(manifest, "commands", "typecheck")
+    if not cmd:
         return None, _TYPECHECK_TIMEOUT_DEFAULT_SECONDS
     timeout = (manifest.get("timeouts") or {}).get("typecheck")
     try:
         timeout = int(timeout)
     except (TypeError, ValueError):
         timeout = _TYPECHECK_TIMEOUT_DEFAULT_SECONDS
-    return [str(c) for c in cmd], max(30, timeout)
+    return cmd, max(30, timeout)
 
 
 def _suite_outcome(*, tests_ran: bool, returncode: int) -> str:
@@ -3266,85 +3332,79 @@ def _tester_pod_sync(
             else:
                 logger.warning("tester k8s: failed writing %s into the Pod: %.200s", path, (w.stderr or "")[:200])
 
-    # run the suite IN THE POD (deterministic detection: package.json with a
-    # "test" script → npm test; otherwise pytest). node/npm/pytest come from the
-    # image (rebuild).
-    # The suite runs UNDER `timeout` inside the Pod, and that is load-bearing.
+    # ---- Como se roda a suíte DESTE repositório --------------------------
+    # Vinha de uma escada de quatro degraus (npm → mvnw → mvn → pytest). Go,
+    # Ruby, .NET, Rust, PHP e Elixir caíam todos no último, e um `pytest` que
+    # não acha teste sai != 0 — que o turno reportava como "os testes que você
+    # escreveu falham". Cada linguagem nova custava um degrau; a escada não
+    # escala, a declaração escala.
     #
-    # A test that leaves a handle open — an http server the test forgot to
-    # close, a pending timer — makes the runner sit there forever. Without an
-    # inner bound the only thing that ever ended the run was the 600s activity
-    # timeout, which Temporal reports as TimeoutExpired with no output: the
-    # Tester cannot see that its own test hangs, so on the next attempt it
-    # authors ANOTHER test file, which hangs too. Observed live: six authored
-    # files, one every ~10 minutes, each one a fresh name, none of them ever
-    # terminating.
+    # Agora o repositório declara, em duas chaves com papéis distintos:
     #
-    # Node's own guards do NOT rescue this — verified in the live sandbox:
-    # `--test-timeout` and `--test-force-exit` both still hung, because they
-    # bound the tests, not whatever is holding the loop open around them.
-    # `timeout` from coreutils does, and it turns a hang into rc=124 with the
-    # output the runner already produced.
-    # The Tester's question is "do the tests I just wrote EXECUTE and pass?",
-    # not "is this whole repository green" — that is L1's question, and L1 asks
-    # it minutes later over the committed state (see the note below this exec).
-    # Running the full suite to answer the smaller question cost the Angular
-    # testbed ~400s of a ~24-minute round, and L1 then spent another ~400s on
-    # the identical 4,975 tests.
+    #   `commands.test_subset` — a suíte restrita aos arquivos que este turno
+    #   acabou de escrever. É um comando SEPARADO do `commands.test` porque o
+    #   `--coverage=false` do testbed Angular não é sintaxe, é um fato daquele
+    #   jest (`collectCoverage: true` com piso global de 80% reprova QUALQUER
+    #   subconjunto — medido em 9,83% com todo teste passando). Fato de
+    #   ferramenta pertence ao manifesto do repo, não ao código da plataforma.
     #
-    # `--coverage=false` is not optional and not a weakening: this repo sets
-    # `collectCoverage: true` with global thresholds, so ANY subset fails them —
-    # measured at 9.83% against a floor of 80% while every test passed. Scoping
-    # without it would turn a fast check into a guaranteed red one. L1 still
-    # runs the whole suite WITH coverage.
+    #   `commands.test` — a suíte inteira, quando não há subset declarado. Mais
+    #   lenta, correta em toda linguagem, e nunca uma resposta inventada. Os
+    #   paths NÃO são anexados a ela: mvn, dotnet e cargo não aceitam caminho
+    #   no fim do argv, e anexar seria a inferência de novo com outro nome.
     #
-    # Only the npm branch is scoped. Maven's `-Dtest=` takes class names rather
-    # than paths, and the Java testbed's whole suite runs in seconds, so the
-    # translation would add a failure mode to buy nothing.
+    # A pergunta do Tester é "os testes que acabei de escrever EXECUTAM e
+    # passam?", não "este repositório inteiro está verde" — essa é a do L1,
+    # minutos depois, sobre o estado commitado. Rodar a suíte inteira para
+    # responder à pergunta menor custou ~400s por rodada no testbed Angular, e
+    # o L1 gastou outros ~400s nos mesmos 4.975 testes.
+    #
+    # O `timeout` externo é carga, não higiene: um teste que deixa um handle
+    # aberto (um servidor http que ninguém fechou, um timer pendente) trava o
+    # runner para sempre, e sem limite interno só a activity de 600s terminava
+    # a corrida — como TimeoutExpired sem saída nenhuma, então o Tester não via
+    # que o próprio teste pendura e escrevia OUTRO arquivo na tentativa
+    # seguinte. Observado ao vivo: seis arquivos, um a cada ~10 minutos, cada
+    # um com nome novo, nenhum terminando. Os guardas do próprio Node não
+    # resolvem (`--test-timeout` e `--test-force-exit` limitam os testes, não o
+    # que segura o loop em volta deles); `timeout` do coreutils vira rc=124 com
+    # a saída que o runner já tinha produzido.
+    manifest = _pod_manifest(_pod_sh)
+    install_prefix = _pod_install_prefix(manifest, clocks)
     scoped = " ".join(_shlex.quote(p) for p in test_files)
-    npm_suite = (
-        f"npm test --silent -- --coverage=false {scoped}" if scoped else "npm test --silent"
-    )
+    subset_cmd = _argv_from(manifest, "commands", "test_subset")
+    full_cmd = _argv_from(manifest, "commands", "test")
+    if subset_cmd:
+        suite_cmd = _shlex.join(subset_cmd) + (f" {scoped}" if scoped else "")
+    elif full_cmd:
+        suite_cmd = _shlex.join(full_cmd)
+    else:
+        suite_cmd = ""
 
     def _run_suite():
+        if suite_cmd:
+            return _pod_sh(
+                "cd /workspace && " + install_prefix
+                + f"timeout -k 10 {clocks.suite} {suite_cmd}",
+                timeout=clocks.pod_exec,
+            )
+        # Fallback: a escada, alcancavel so por repo que nao declarou
+        # `commands.test` - o que o fluxo normal nao produz, porque o L1 exige
+        # o manifesto e o DSE abre a PR de bootstrap quando ele nao existe.
+        # Morre junto com a escada do preview, quando as emendas mergearem.
         return _pod_sh(
-        'cd /workspace && '
+        'cd /workspace && ' + install_prefix +
         'if [ -f package.json ] && grep -q \'"test"\' package.json; then '
-        # The install's output used to go to /dev/null under `|| true`. A
-        # half-installed node_modules then broke the suite with
-        # MODULE_NOT_FOUND, and the Coder was sent to fix an import the runner
-        # had broken. Still non-fatal (a failed install can leave a usable
-        # tree), but no longer invisible — and on stderr, which the tail below
-        # keeps.
-        #
-        # Its own `timeout` too: sharing one exec with the suite meant the
-        # install silently ate the suite's budget, and a run that died in the
-        # install looked exactly like a run that died in the tests.
-        f'timeout -k 10 {clocks.install} npm install --no-audit --no-fund '
-        '>/tmp/dse-npm-install.log 2>&1 || '
-        'echo "DSE: npm install FAILED (rc=$?). The suite ran against an INCOMPLETE '
-        'node_modules — this is an install problem, not a test problem. '
-        f'rc=124 means the install alone outlived its own {clocks.install}s budget. '
-        'install tail: $(tail -c 800 /tmp/dse-npm-install.log)" >&2; '
-        f'timeout -k 10 {clocks.suite} {npm_suite}; '
-        # Maven, before falling through to pytest. Without this a Java
-        # repository ran `python3 -m pytest` — which finds no tests, exits
-        # non-zero, and reports as "the tests you wrote fail". Measured: the
-        # backend work items died at `tester_retry_cap_exhausted` having never
-        # run a single Java test, and the Coder was sent to fix an assertion
-        # that never existed.
-        #
-        # `./mvnw` rather than `mvn`: the repo pins its own Maven in
-        # .mvn/wrapper, and the image deliberately ships only a JDK so it
-        # cannot disagree with that pin. `-o` is NOT used — the wrapper has to
-        # fetch Maven on the first run.
+        f'timeout -k 10 {clocks.suite} ' + (
+            f"npm test --silent -- --coverage=false {scoped}; " if scoped
+            else "npm test --silent; ") +
         'elif [ -f pom.xml ] && [ -x ./mvnw ]; then '
         f'timeout -k 10 {clocks.suite} ./mvnw -B -q test; '
         'elif [ -f pom.xml ]; then '
         f'timeout -k 10 {clocks.suite} mvn -B -q test; '
         f'else timeout -k 10 {clocks.suite} python3 -m pytest -q; fi',
         timeout=clocks.pod_exec,
-    )
+        )
 
     # O bloco de execução da ORDEM DE REESCRITA vivia aqui e SAIU em
     # 2026-08-10, com o reauthor inteiro. Ele existia porque o Coder não
@@ -3362,20 +3422,15 @@ def _tester_pod_sync(
     # nunca a das specs), e ausência declarada não vira veredito: repo sem
     # manifesto ou sem `typecheck` segue exatamente como antes.
     typecheck_output = ""
-    tc_cmd, tc_timeout = _pod_manifest_typecheck(_pod_sh)
+    tc_cmd, tc_timeout = _pod_manifest_typecheck(manifest)
     if tc_cmd:
-        # A instalação vem ANTES, e não é detalhe: quem instala `node_modules` é
-        # o script da suíte, que roda depois daqui. Sem dependência, `npx tsc`
+        # A instalação vem ANTES, e não é detalhe. Sem dependência, `npx tsc`
         # não acha o compilador local, BAIXA um pacote homônimo do npm
         # ("This is not the tsc command you are looking for") e sai != 0 — que o
         # turno reportava como erro de tipo. Medido em produção (wi_aa119e7c):
         # todo item de repo npm morreu no teto do Tester por isto.
         tc = _pod_sh(
-            "cd /workspace && "
-            "if [ -f package.json ] && [ ! -d node_modules ]; then "
-            f"timeout -k 10 {clocks.install} npm install --no-audit --no-fund "
-            ">/tmp/dse-npm-install.log 2>&1 || true; fi; "
-            + _shlex.join(tc_cmd),
+            "cd /workspace && " + install_prefix + _shlex.join(tc_cmd),
             timeout=tc_timeout + clocks.install,
         )
         if tc.returncode != 0:
