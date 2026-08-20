@@ -104,3 +104,4 @@ def test_docs_and_legitimate_files_survive(path):
 def test_normalises_the_windows_separator():
     assert is_disposable_artifact("sub\\dir\\BUG_FIX_REPORT.md") is True
     assert is_disposable_artifact("sub\\dir\\new-module.js") is False
+
