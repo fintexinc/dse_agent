@@ -63,6 +63,9 @@ ACTIVITY_TRIGGER_PREVIEW = "trigger_preview"
 # (decisão de operador, 2026-08-12: o laço fecha sem humano; política —
 # tetos, no-op, gasto — continua determinística no workflow).
 ACTIVITY_TRIAGE_PREVIEW_FAILURE = "triage_preview_failure"
+# rc.103 — o LLM decide o caminho fundo do link de preview (a plataforma
+# valida e compõe); roda antes do trigger, uma vez por rodada de evidência.
+ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK = "resolve_preview_deep_link"
 ACTIVITY_RUN_VISUAL_DIFF = "run_visual_diff"
 
 # --- Phase 4 (loop hardening & learning) ---
@@ -665,6 +668,10 @@ class TriggerPreviewInput(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     head_sha: str | None = None
     preview_enabled: bool = True
+    #: rc.103 — o caminho fundo decidido pelo LLM (validado pela plataforma) e
+    #: a nota de 1 linha. Opcionais e aditivos: payload antigo decodifica igual.
+    deep_path: str | None = None
+    deep_note: str | None = None
     # `**/*.html` is load-bearing: a plain static page is the most common shape
     # of a UI change, and without it a PR that only edits index.html was
     # classified backend-only and silently skipped the preview.
@@ -706,6 +713,8 @@ class PreviewRef(BaseModel):
     # preview (evidence in the PR/console for why this PR did or did not get
     # a preview).
     kind: str = ""
+    deep_path: str | None = None
+    deep_note: str | None = None
 
 
 class TriagePreviewFailureInput(BaseModel):

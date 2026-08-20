@@ -330,6 +330,11 @@ class WorkItemLifecycleInput:
     # migration 0014, via the local Activity record_evidence_state).
     preview_status: str | None = None   # PreviewRef.status
     preview_url: str | None = None
+    #: rc.103 — o caminho fundo decidido por LLM (validado) e a nota; compostos
+    #: com a url SÓ na apresentação (Slack/PR/console). A url crua continua
+    #: sendo o baseURL do demo evidence.
+    preview_deep_path: str | None = None
+    preview_deep_note: str | None = None
     evidence_passed: bool | None = None
     evidence_video_key: str | None = None
     evidence_trace_key: str | None = None

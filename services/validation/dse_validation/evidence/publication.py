@@ -127,7 +127,11 @@ def render_evidence_section(work_item_id: str, *, accessor: str = "system:valida
     preview = db.get_preview(work_item_id)
     if preview is not None:
         if preview["status"] == "created":
-            lines.append(f"- 🌐 Preview: {preview['url']} (namespace `{preview['namespace']}`, "
+            # rc.103 — o link cai NA mudança: url + deep_path compostos só na
+            # apresentação (a url crua segue sendo o baseURL do demo).
+            alvo = f"{preview['url']}{preview.get('deep_path') or ''}"
+            nota = f" — {preview['deep_note']}" if preview.get("deep_note") else ""
+            lines.append(f"- 🌐 Preview: {alvo}{nota} (namespace `{preview['namespace']}`, "
                          f"expires {preview['expires_at'].isoformat() if preview['expires_at'] else '?'})")
         elif preview["status"] == "skipped_backend_only":
             lines.append("- 🌐 Preview: skipped (backend-only PR, FR-20)")

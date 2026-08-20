@@ -1031,6 +1031,8 @@ def preview_body_line(
     namespace: str | None = None,
     expires_at: object | None = None,
     detail: str | None = None,
+    deep_path: str | None = None,
+    deep_note: str | None = None,
 ) -> str | None:
     """A ÚNICA frase que descreve um preview para um humano. `None` = não falar.
 
@@ -1054,8 +1056,15 @@ def preview_body_line(
 
     cause = (detail or "").strip()
     if status == "created":
+        # Deep link (rc.103): o caminho decidido por LLM e validado pela
+        # plataforma é anexado SÓ aqui, na apresentação — a URL crua continua
+        # sendo a que o demo evidence usa como baseURL.
         target = url or "(no URL)"
+        if url and deep_path:
+            target = f"{url}{deep_path}"
         extra = f" (namespace `{namespace}`)" if namespace else ""
+        if deep_path and deep_note:
+            extra += f" — {deep_note}"
         # `created` com detail não engole o detail: é o caso do preview que
         # subiu SERVINDO O BUILD porque o dev server do repo está quebrado —
         # só a URL na frase disfarçaria o defeito de dev server são.
@@ -1145,9 +1154,11 @@ def _announce_preview_provisioning(
     escondê-la até o container ficar Ready não protege de nada. A linha é
     substituída pelo desfecho quando ele chega, via o mesmo marker.
     """
+    alvo = f"{url}{inp.deep_path}" if getattr(inp, "deep_path", None) else url
+    nota = f" — {inp.deep_note}" if getattr(inp, "deep_path", None) and getattr(inp, "deep_note", "") else ""
     _put_preview_in_pr_body(
         inp,
-        f"- **Preview**: {url} (environment is starting — this can take a few minutes)",
+        f"- **Preview**: {alvo}{nota} (environment is starting — this can take a few minutes)",
         actor=actor,
     )
 
@@ -1313,6 +1324,8 @@ def trigger_preview_core(
         inp,
         preview_body_line(
             ref.status, url=ref.url, namespace=ref.namespace, detail=ref.detail,
+            deep_path=getattr(ref, "deep_path", None),
+            deep_note=getattr(ref, "deep_note", None),
         ),
         actor=actor,
     )
@@ -1579,6 +1592,7 @@ def _trigger_preview(
         pr_number=inp.pr_number, repo=inp.repo, status="created",
         namespace=namespace, url=url, ttl_seconds=ttl, expires_at=expires_at,
         detail=detail_row,
+        deep_path=inp.deep_path or "", deep_note=inp.deep_note or "",
     )
     if audit_emit is not None:
         audit_emit(
@@ -1593,6 +1607,7 @@ def _trigger_preview(
         work_item_id=inp.work_item_id, pr_number=inp.pr_number,
         status="created", namespace=namespace, url=url, kind=kind,
         detail=nota or "",
+        deep_path=inp.deep_path, deep_note=inp.deep_note,
     )
 
 

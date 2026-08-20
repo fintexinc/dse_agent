@@ -154,3 +154,18 @@ def test_without_a_deep_path_the_body_line_is_byte_identical_to_today():
 
     linha = preview_body_line("created", url="https://p.example", namespace="ns")
     assert linha == "- **Preview**: https://p.example (namespace `ns`)"
+
+
+def test_the_worker_registry_carries_the_resolver():
+    """`ACTIVITIES` é o registro REAL (worker.py lê `mod.ACTIVITIES`); um
+    @activity.defn fora dela não existe em produção — a rc.101 subiu assim e o
+    e28f955 é a cicatriz."""
+    import os
+    os.environ.setdefault("DSE_CODER_SUBSTRATE", "fake")
+    from dse_validation import activities
+
+    nomes = {
+        getattr(fn, "__temporal_activity_definition").name  # noqa: B009
+        for fn in activities.ACTIVITIES
+    }
+    assert "resolve_preview_deep_link" in nomes

@@ -33,6 +33,7 @@ with workflow.unsafe.imports_passed_through():
     from dse_contracts.activities import (
         ACTIVITY_BOOTSTRAP_REPO_MANIFEST,
         ACTIVITY_PROBE_REPO_MANIFEST,
+        ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK,
         ACTIVITY_CHECKPOINT_SANDBOX,
         ACTIVITY_CONSUME_CI_STATUS,
         ACTIVITY_EMIT_AUDIT,
@@ -4526,6 +4527,43 @@ class WorkItemLifecycleWorkflow:
             # activity bate a cada 15s) é quem detecta worker morto.
             opts_tp["start_to_close_timeout"] = timedelta(seconds=1200)
             opts_tp["heartbeat_timeout"] = timedelta(seconds=120)
+        # rc.103 (patch preview-deep-link-v1) — o LLM decide o CAMINHO que o
+        # link do preview apresenta (rota nova de API, página nova de FE), a
+        # plataforma valida e compõe. Medido no wi_aa299a51: preview perfeito,
+        # link na raiz — que numa API pura responde SYS-002; a URL certa estava
+        # no diff. Fail-open em tudo: sem caminho, o link é o de hoje. Roda a
+        # cada rodada de evidência (diff novo → rota recalculada).
+        deep_path: str | None = None
+        deep_note: str | None = None
+        if workflow.patched("preview-deep-link-v1") and preview_enabled and input.pr_number:
+            try:
+                resolved = await workflow.execute_activity(
+                    ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK,
+                    {"work_item_id": input.work_item_id,
+                     "tenant_id": input.tenant_id,
+                     "repo": input.repo,
+                     "pr_number": input.pr_number,
+                     "instruction": self._agent_instruction()[:3000],
+                     "files_changed": list(files_changed)[:40],
+                     "kind": "unknown"},
+                    start_to_close_timeout=timedelta(seconds=90),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                custo = float((resolved or {}).get("cost_usd") or 0.0)
+                if custo:
+                    await self._consume_cost(custo, source="preview_deep_link")
+                deep_path = (resolved or {}).get("path") or None
+                deep_note = (resolved or {}).get("note") or None
+                if deep_path:
+                    await self._audit(
+                        "preview_deep_link_resolved",
+                        {"path": deep_path, "note": deep_note or ""},
+                    )
+            except ActivityError:
+                logger.warning("preview deep link resolution failed; the root link stands")
+        input.preview_deep_path = deep_path
+        input.preview_deep_note = deep_note
+
         try:
             preview: PreviewRef = await workflow.execute_activity(
                 ACTIVITY_TRIGGER_PREVIEW,
@@ -4536,6 +4574,8 @@ class WorkItemLifecycleWorkflow:
                     "pr_number": input.pr_number,
                     "files_changed": list(files_changed),
                     "preview_enabled": preview_enabled,
+                    "deep_path": deep_path,
+                    "deep_note": deep_note,
                 },
                 result_type=PreviewRef,
                 **opts_tp,
@@ -4554,7 +4594,11 @@ class WorkItemLifecycleWorkflow:
             return
 
         input.preview_status = preview.status
-        input.preview_url = preview.url
+        # Console/evidência (display-only) mostram o link COMPOSTO; o baseURL
+        # do demo continua sendo preview.url cru, logo abaixo.
+        input.preview_url = (
+            f"{preview.url}{deep_path}" if preview.url and deep_path else preview.url
+        )
         await self._audit(
             "preview_triggered",
             {"status": preview.status, "url": preview.url,
@@ -4593,7 +4637,10 @@ class WorkItemLifecycleWorkflow:
         # exists (independent of demo/visual, which degrade without blocking).
         # Best-effort and patch-guarded (old histories did not post) — never blocks.
         if preview.url and workflow.patched("preview-link-in-pr-v1"):
-            await self._post_preview_link(preview.url, preview.kind)
+            await self._post_preview_link(
+                preview.url, preview.kind,
+                deep_path=deep_path, deep_note=deep_note,
+            )
 
         try:
             demo: DemoEvidenceResult = await workflow.execute_activity(
@@ -4663,15 +4710,23 @@ class WorkItemLifecycleWorkflow:
                 )
         await self._record_evidence(reason=reason, detail="ok")
 
-    async def _post_preview_link(self, url: str, kind: str) -> None:
+    async def _post_preview_link(
+        self, url: str, kind: str, *,
+        deep_path: str | None = None, deep_note: str | None = None,
+    ) -> None:
         """Plan 08 §D (D1) — posts/edits the originating surface's tracking
         comment with the clickable preview LINK. Reuses the MutableCommentWriter
         (C3) via post_tracking_comment (custom body). Best-effort — it never
         blocks (the audit ledger is the truth; the comment is convenience)."""
         input = self._input
         label = "frontend (UI)" if kind == "ui" else "service" if kind == "deployable" else "app"
+        # rc.103: o link cai NA mudança (url+deep_path) com a nota de 1 linha.
+        # Sem caminho, corpo byte-idêntico ao de sempre.
+        alvo = f"{url}{deep_path}" if deep_path else url
+        nota = f"→ {deep_note}\n\n" if deep_path and deep_note else ""
         body = (
-            f"🔗 **Preview ({label}) ready** — open it and decide:\n\n{url}\n\n"
+            f"🔗 **Preview ({label}) ready** — open it and decide:\n\n{alvo}\n\n"
+            + nota +
             "_Ephemeral per-PR environment (Argo CD, TTL). Merging remains a "
             "human decision (P1)._"
         )

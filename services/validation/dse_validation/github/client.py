@@ -52,6 +52,8 @@ class GitHubClient(Protocol):
 
     def get_tree_paths(self, repo: str, ref: str, *, limit: int = 300) -> list[str]: ...
 
+    def get_pr_files(self, repo: str, pr_number: int) -> list[dict]: ...
+
     # Fase A2 — o conjunto de escrita da PR-de-arquivo-único (repo_doc e o
     # bootstrap do manifesto). Estavam implementation-only; o Protocol passa a
     # declará-los para o Fake e os testes pararem de inventar doubles próprios.
@@ -191,6 +193,26 @@ class RealGitHubClient:
         resp.raise_for_status()
         tree = resp.json().get("tree", [])
         return [t["path"] for t in tree if t.get("type") == "blob"][:limit]
+
+    def get_pr_files(self, repo: str, pr_number: int) -> list[dict]:
+        """The PR's changed files WITH their patches (`GET /pulls/{n}/files`).
+
+        Grounding for the preview deep link (rc.103): the route string a task
+        created lives in the DIFF, and at evidence time there may be no sandbox
+        left to diff in. One page (100 files) is deliberate — grounding, not a
+        mirror; the resolver truncates further."""
+        resp = httpx.get(
+            f"{self._cfg.api_base_url}/repos/{repo}/pulls/{pr_number}/files",
+            headers=self._headers(),
+            params={"per_page": 100},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        return [
+            {"filename": f.get("filename") or "", "status": f.get("status") or "",
+             "patch": f.get("patch") or ""}
+            for f in resp.json()
+        ]
 
     def get_file_text(self, repo: str, path: str, ref: str) -> str | None:
         """One file's text at `ref`. See the Protocol for the None/raise split.
@@ -558,6 +580,15 @@ class FakeGitHubClient:
     def put_file(self, repo: str, path: str, *, content: str, message: str,
                  branch: str) -> None:
         self._files[(repo, path, branch)] = content
+
+    _pr_files: dict[tuple[str, int], list[dict]] = field(default_factory=dict)
+
+    def set_pr_files(self, repo: str, pr_number: int, files: list[dict]) -> None:
+        """Test-only — os arquivos+patches que `get_pr_files` devolve."""
+        self._pr_files[(repo, pr_number)] = [dict(f) for f in files]
+
+    def get_pr_files(self, repo: str, pr_number: int) -> list[dict]:
+        return [dict(f) for f in self._pr_files.get((repo, pr_number), [])]
 
     def pr_body(self, repo: str, pr_number: int) -> str:
         """Test-only — o corpo da PR, para asserções de mensagem."""

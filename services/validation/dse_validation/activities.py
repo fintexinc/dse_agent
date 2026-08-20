@@ -550,6 +550,27 @@ def _triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerd
     return triage_preview_failure_core(inp)
 
 
+def _resolve_preview_deep_link(payload: dict) -> dict:
+    """rc.103 — o LLM decide o caminho fundo do preview; o portão determinístico
+    e o fail-open vivem em `preview.deep_link` (o modelo nunca compõe URL)."""
+    from dse_validation.config import GitHubConfig
+    from dse_validation.github.client import build_github_client
+    from dse_validation.preview.deep_link import build_completer, resolve_deep_link
+
+    return resolve_deep_link(
+        build_github_client(GitHubConfig()),
+        repo=payload["repo"],
+        pr_number=int(payload["pr_number"]),
+        instruction=str(payload.get("instruction") or ""),
+        files_changed=list(payload.get("files_changed") or []),
+        kind=str(payload.get("kind") or "unknown"),
+        complete=build_completer(
+            str(payload.get("tenant_id") or "unknown"),
+            str(payload.get("work_item_id") or "unknown"),
+        ),
+    )
+
+
 def _record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:
     from dse_validation.review_learning import record_review_feedback_episode
 
@@ -823,6 +844,10 @@ if _HAS_TEMPORAL:
     async def triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerdict:
         return await asyncio.to_thread(_triage_preview_failure, inp)
 
+    @activity.defn(name="resolve_preview_deep_link")
+    async def resolve_preview_deep_link(payload: dict) -> dict:
+        return await asyncio.to_thread(_resolve_preview_deep_link, payload)
+
     ALL_ACTIVITIES = [
         run_l1_pipeline,
         finalize_pr,
@@ -845,6 +870,9 @@ if _HAS_TEMPORAL:
         wse_record_review_episode,
         # Preview autofix (2026-08-12)
         triage_preview_failure,
+        # Deep link do preview (rc.103) — fora desta lista o worker não
+        # registra (a lição e28f955, pinada em teste).
+        resolve_preview_deep_link,
     ]
 else:  # pragma: no cover
     ALL_ACTIVITIES = []

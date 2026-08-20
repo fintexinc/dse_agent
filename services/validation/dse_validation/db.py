@@ -515,6 +515,8 @@ def upsert_preview(
     detail: str = "",
     ttl_seconds: int = 3600,
     expires_at=None,
+    deep_path: str = "",
+    deep_note: str = "",
 ) -> None:
     conn = get_connection()
     try:
@@ -523,19 +525,20 @@ def upsert_preview(
                 """
                 INSERT INTO wse_previews
                     (work_item_id, tenant_id, pr_number, repo, status, namespace, url,
-                     detail, ttl_seconds, expires_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     detail, ttl_seconds, expires_at, deep_path, deep_note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (work_item_id) DO UPDATE SET
                     pr_number = EXCLUDED.pr_number, status = EXCLUDED.status,
                     namespace = EXCLUDED.namespace, url = EXCLUDED.url,
                     detail = EXCLUDED.detail, ttl_seconds = EXCLUDED.ttl_seconds,
                     expires_at = EXCLUDED.expires_at,
+                    deep_path = EXCLUDED.deep_path, deep_note = EXCLUDED.deep_note,
                     reaped_at = CASE WHEN EXCLUDED.status = 'created' THEN NULL
                                      ELSE wse_previews.reaped_at END,
                     updated_at = now()
                 """,
                 (work_item_id, tenant_id, pr_number, repo, status, namespace, url,
-                 detail, ttl_seconds, expires_at),
+                 detail, ttl_seconds, expires_at, deep_path, deep_note),
             )
         conn.commit()
     finally:
@@ -548,14 +551,16 @@ def get_preview(work_item_id: str) -> dict[str, Any] | None:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT work_item_id, tenant_id, pr_number, repo, status, namespace, url, "
-                "detail, ttl_seconds, expires_at, reaped_at FROM wse_previews WHERE work_item_id = %s",
+                "detail, ttl_seconds, expires_at, reaped_at, deep_path, deep_note "
+                "FROM wse_previews WHERE work_item_id = %s",
                 (work_item_id,),
             )
             row = cur.fetchone()
         if row is None:
             return None
         keys = ["work_item_id", "tenant_id", "pr_number", "repo", "status", "namespace",
-                "url", "detail", "ttl_seconds", "expires_at", "reaped_at"]
+                "url", "detail", "ttl_seconds", "expires_at", "reaped_at",
+                "deep_path", "deep_note"]
         return dict(zip(keys, row))
     finally:
         conn.close()
