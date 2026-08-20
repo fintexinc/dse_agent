@@ -133,29 +133,24 @@ def validate_runtime_profile(
     return profile
 
 
-def validate_runtime_startup(
-    *, isolated_stage_execution_available: bool | None = None
-) -> RuntimeProfile:
+def validate_runtime_startup() -> RuntimeProfile:
     """Static preflight for loading the runtime in the worker.
 
     The caller that loads the Activities may invoke this function before it
     starts polling. The provisioning Activities also invoke it, so an integrator
     that has not adopted the preflight yet stays protected.
+
+    O parâmetro `isolated_stage_execution_available` e o ramo que ele alimentava
+    saíram em 2026-08-20: ele vinha de `SandboxDriver.supports_isolated_stage_execution`,
+    constante `True` nos dois únicos drivers que existem, então a condição
+    `is False` nunca podia ser verdadeira. O que este preflight de fato protege
+    — recusar produção com sandbox in-process — mora em `validate_runtime_profile`
+    logo abaixo, e continua intacto.
     """
-    profile = validate_runtime_profile(
+    return validate_runtime_profile(
         require_real_substrate=True,
         require_real_gateway=True,
     )
-    if (
-        profile is RuntimeProfile.production
-        and isolated_stage_execution_available is False
-    ):
-        raise RuntimeProfileViolation(
-            "production profile refused by sandbox-runtime: "
-            "isolated SandboxDriver.execute_stage is not available yet; "
-            "falling back to the worker is forbidden"
-        )
-    return profile
 
 
 def reject_local_agent_execution(stage: str) -> RuntimeProfile:

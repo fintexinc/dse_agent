@@ -113,21 +113,9 @@ data:
   DSE_PREVIEW_MAX_CONCURRENT: {{ .Values.preview.maxConcurrent | quote }}
   {{- end }}
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://{{ include "dse.fullname" . }}-otel-collector:4317"
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "dse.fullname" . }}-egress-allowlist
-  namespace: {{ .Values.global.namespace }}
-  labels:
-    {{- include "dse.labels" . | nindent 4 }}
-data:
-  allowlist.yaml: |
-    # Consumed by the egress-proxy (WS-C) as the source of truth for the
-    # default-deny policy — WS-F signs off on this list (WSF-E2).
-    hosts:
-      {{- range .Values.egressProxy.allowlist }}
-      - host: {{ .host | quote }}
-        port: {{ .port }}
-        purpose: {{ .purpose | quote }}
-      {{- end }}
+# O ConfigMap `-egress-allowlist` que ficava aqui saiu em 2026-08-20: ele era
+# montado no pod do egress-proxy e NENHUM `open()` daquele serviço o lia (o
+# único é o da chave privada da App). O próprio comentário admitia que o
+# arquivo ficava montado 'for the future strict policy'. A fonte de verdade
+# sempre foi `.Values.egressProxy.allowlist`, que continua rendendo
+# DSE_EGRESS_ALLOW_HOSTS acima — e é onde uma allowlist por tenant entraria.

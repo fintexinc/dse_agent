@@ -190,10 +190,6 @@ def test_blank_ephemeral_storage_env_falls_back_to_the_default(monkeypatch):
     assert _as_bytes(resources["requests"]["ephemeral-storage"]) > 0
 
 
-def test_driver_advertises_isolated_execution():
-    assert KubernetesSandboxDriver().supports_isolated_stage_execution is True
-
-
 def test_fail_closed_without_kubectl():
     # with no kubectl on PATH, provision/execute FAIL (they never run locally)
     cfg = K8sSandboxConfig(kubectl="kubectl-that-does-not-exist-xyz")

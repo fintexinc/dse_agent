@@ -44,9 +44,6 @@ spec:
             - name: VAULT_ADDR
               value: {{ .Values.secrets.vaultAddr | quote }}
           volumeMounts:
-            - name: allowlist
-              mountPath: /etc/dse/egress-proxy
-              readOnly: true
             {{- include "dse.appTmpMount" . | nindent 12 }}
           resources:
             {{- toYaml .Values.egressProxy.resources | nindent 12 }}
@@ -61,9 +58,6 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       volumes:
-        - name: allowlist
-          configMap:
-            name: {{ include "dse.fullname" . }}-egress-allowlist
         - name: dse-runtime-tmp
           emptyDir:
             sizeLimit: {{ .Values.security.tmpSizeLimit }}

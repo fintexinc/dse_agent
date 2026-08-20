@@ -61,9 +61,6 @@ class _PodDriver:
         self._turns = list(turns)
         self.stage_calls = 0
 
-    @property
-    def supports_isolated_stage_execution(self) -> bool:
-        return True
 
     def sandbox_id_for(self, work_item_id: str) -> str:
         return f"pod-{work_item_id}"

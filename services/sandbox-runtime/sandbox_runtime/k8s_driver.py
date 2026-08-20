@@ -347,10 +347,6 @@ class KubernetesSandboxDriver:
         self._cfg = cfg or K8sSandboxConfig()
 
     @property
-    def supports_isolated_stage_execution(self) -> bool:
-        return True
-
-    @property
     def workspace_is_host_visible(self) -> bool:
         return False  # the workspace lives in the Pod volume — git/hygiene via ops
 

@@ -91,10 +91,6 @@ class SandboxDriver(Protocol):
     """Lifecycle and execution shared by the Docker/Kubernetes drivers."""
 
     @property
-    def supports_isolated_stage_execution(self) -> bool:
-        ...
-
-    @property
     def workspace_is_host_visible(self) -> bool:
         """True when the worker can see the workspace through the filesystem
         (Docker bind mount) and can run git/hygiene locally; False when the
@@ -140,10 +136,6 @@ class DockerSandboxDriver:
     unavailability (docker missing, container dead, runner missing from the
     image) is a clean failure — NEVER a fallback to executing in the worker.
     """
-
-    @property
-    def supports_isolated_stage_execution(self) -> bool:
-        return True
 
     @property
     def workspace_is_host_visible(self) -> bool:

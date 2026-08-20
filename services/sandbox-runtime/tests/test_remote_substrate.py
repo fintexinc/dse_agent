@@ -49,9 +49,6 @@ class StubDriver:
     # kubectl exec refused): nothing was measured, nothing to meter.
     fail_with: Exception | None = None
 
-    @property
-    def supports_isolated_stage_execution(self) -> bool:
-        return True
 
     def sandbox_id_for(self, work_item_id: str) -> str:
         return f"stub-sbx-{work_item_id}"

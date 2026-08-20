@@ -188,33 +188,13 @@ spec:
               app.kubernetes.io/name: temporal
       ports:
         - { protocol: TCP, port: 7233 }
----
-# Future sandboxes are born under default-deny and get only proxy/gateway.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "dse.fullname" . }}-sandbox-egress
-  namespace: {{ .Values.global.namespace }}
-  labels:
-    {{- include "dse.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      dse.sandbox: "true"
-  policyTypes: ["Egress"]
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: egress-proxy
-      ports:
-        - { protocol: TCP, port: {{ .Values.egressProxy.port }} }
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: model-gateway
-      ports:
-        - { protocol: TCP, port: {{ .Values.modelGateway.port }} }
+# A política do SANDBOX não está neste arquivo: ela vive em
+# `deploy/k8s/sandbox-isolation.yaml`, aplicada como pré-requisito do
+# runbook, porque o Pod nasce em `runtime.sandboxNamespace` e não neste
+# namespace. O que existia aqui era uma cópia MORTA — selecionava
+# `dse.sandbox: "true"`, label que nada produz (os reais são
+# `app.kubernetes.io/managed-by: dse-sandbox` e `dse.fintex/*`) — e dava a
+# impressão de que a contenção vinha do chart. Removida em 2026-08-20.
 ---
 # The only external exception. Internal networks and metadata must be listed in `except`.
 apiVersion: networking.k8s.io/v1

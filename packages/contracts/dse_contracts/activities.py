@@ -401,7 +401,6 @@ class VerifyMergeInput(BaseModel):
     repo: str
     pr_number: int
     expected_head_sha: str | None = None
-    expected_merged_by: str | None = None
 
 
 class MergeVerification(BaseModel):
@@ -510,7 +509,6 @@ class RunTesterTurnInput(BaseModel):
     head_sha: str | None = None
     task_class: str = "default"
     data_class: str = "internal"
-    run_paths: list[str] = Field(default_factory=list)
     model_override: str | None = None
     runtime_override: str | None = None
 

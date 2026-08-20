@@ -72,7 +72,6 @@ from dse_contracts import (
 from . import docker_driver, git_checkpoint, leases_store, metrics
 from .activity_heartbeat import run_sync_with_heartbeat
 from .driver import (
-    DEFAULT_SANDBOX_DRIVER,
     SandboxCheckpointRequest,
     SandboxProvisionRequest,
     SandboxRebuildRequest,
@@ -3953,15 +3952,17 @@ async def promote_skill(inp: PromoteSkillInput) -> PromoteSkillResult:
     )
 
 
-# Preflight at the moment the worker imports/registers the Activities. In
-# production, the current adapter honestly declares that it does not yet execute
-# stages inside the sandbox; so the worker refuses to boot instead of operating
-# on the local fallback. In dev/test the existing compatibility is preserved.
-validate_runtime_startup(
-    isolated_stage_execution_available=(
-        DEFAULT_SANDBOX_DRIVER.supports_isolated_stage_execution
-    )
-)
+# Preflight no instante em que o worker importa/registra as Activities: um
+# perfil de produção com sandbox in-process é RECUSADO aqui, antes de o worker
+# começar a puxar tarefa (pinado em
+# test_runtime_profile.py::test_worker_boot_in_production_requires_isolated_execution_semantics).
+#
+# O ARGUMENTO saiu em 2026-08-20, não a chamada: `supports_isolated_stage_execution`
+# era constante `True` nos dois únicos drivers que existem, então o ramo que ele
+# alimentava era inalcançável — e o comentário que estava aqui descrevia um
+# estado que não existe mais ("o adaptador ainda não executa stages dentro do
+# sandbox"). O guard vivo é o do perfil; o parâmetro era decoração.
+validate_runtime_startup()
 
 
 # Consumed by the single worker's defensive loader (services/orchestrator/

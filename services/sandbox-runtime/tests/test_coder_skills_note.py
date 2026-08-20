@@ -54,9 +54,6 @@ class SkillsAwarePodDriver:
         self.pod_workspace = pod_workspace
         self.turn_instructions: list[str] = []
 
-    @property
-    def supports_isolated_stage_execution(self) -> bool:
-        return True
 
     @property
     def workspace_is_host_visible(self) -> bool:

@@ -69,7 +69,6 @@ def test_execute_stage_is_isolated_and_fails_closed_when_unavailable():
         timeout_seconds=30,
     )
 
-    assert driver.supports_isolated_stage_execution is True
     assert driver.sandbox_id_for("wi-driver") == "dse-sandbox-wi-driver"
     with pytest.raises(IsolatedStageExecutionUnavailable, match="fallback"):
         driver.execute_stage(request)
