@@ -63,6 +63,18 @@ _SPEC = """The manifest is a JSON object. Rules, all binding:
   ARRAY: ["npm","install","--no-audit","--no-fund"], ["go","mod","download"],
   ["pip","install","-r","requirements.txt"]. Both the test sandbox and the
   preview Pod run it. Omit it when the tree needs no install step.
+- "reports": {"junit": "<relative glob>"} — where the test run leaves its JUnit
+  XML. Declare it whenever the repository's test command ALREADY writes JUnit
+  (maven/surefire and gradle always do: "target/surefire-reports/*.xml",
+  "build/test-results/test/*.xml"), or when the runner writes it with a
+  BUILT-IN flag you add to "commands.test": pytest ("--junitxml=reports/
+  junit.xml"), phpunit ("--log-junit=reports/junit.xml"), dotnet ("--logger",
+  "junit;LogFilePath=reports/junit.xml"). NEVER add a reporter that needs a
+  package the repository does not already depend on. The glob is plain: letters,
+  digits, . _ - / * ? only — no spaces, quotes or shell characters.
+  Why it matters: without it this platform reads the run's counts out of stdout,
+  and it only understands pytest, jest and surefire prose. A green Go, cargo,
+  rspec or phpunit suite then produces no readable count at all.
 - Optional: "timeout_seconds" (int, 1..3600) when the CI shows long builds;
   "timeouts" object (lint/typecheck/test/build/sast/secret_scan -> seconds).
 - Do NOT include "forbidden_paths" or "disabled_stages" unless the facts demand

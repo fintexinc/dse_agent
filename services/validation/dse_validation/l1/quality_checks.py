@@ -501,6 +501,69 @@ def _counts_from_line(line: str) -> TestCounts | None:
     )
 
 
+#: Um `<testsuite ...>` — singular. O `<testsuites>` raiz costuma repetir a
+#: soma dos filhos, e contar os dois dobraria tudo. Somar só os singulares
+#: fecha certo nos quatro formatos que importam: o pytest emite um único
+#: `<testsuite>` dentro da raiz, o jest-junit um por arquivo de spec, o
+#: surefire um por arquivo de relatório, o nextest um por binário de teste.
+_JUNIT_SUITE_RE = re.compile(r"<testsuite\s[^>]*>")
+_JUNIT_ATTR_RE = re.compile(r'\b(tests|failures|errors|skipped)\s*=\s*"(\d+)"')
+
+#: Tetos de leitura. O diretório de relatório de um monorepo tem milhares de
+#: arquivos, e isto roda dentro do orçamento do gate.
+_JUNIT_MAX_FILES = 500
+_JUNIT_MAX_BYTES_PER_FILE = 200_000
+_JUNIT_MAX_BYTES_TOTAL = 1_000_000
+
+
+def _read_junit_reports(executor: SandboxExecutor, glob: str) -> str:
+    """O conteúdo dos relatórios JUnit do workspace, capado.
+
+    O glob já saiu do parser com o alfabeto fechado (`_REPORT_GLOB_RE`): sem
+    espaço, aspas, `$`, crase ou `;`. Ainda assim ele entra numa única posição
+    do script, entre aspas simples, e o `find` é quem o expande — não o shell."""
+    script = (
+        f"find . -path './{glob}' -type f 2>/dev/null | head -n {_JUNIT_MAX_FILES} | "
+        f"while read -r f; do head -c {_JUNIT_MAX_BYTES_PER_FILE} \"$f\"; echo; done | "
+        f"head -c {_JUNIT_MAX_BYTES_TOTAL}"
+    )
+    try:
+        run = executor.run(["sh", "-c", script], timeout=60)
+    except Exception:  # noqa: BLE001 — leitura de relatório nunca derruba o gate
+        return ""
+    return run.stdout or ""
+
+
+def _counts_from_junit(text: str) -> TestCounts | None:
+    """A contagem que o RUNNER registrou, somada sobre os relatórios.
+
+    Nenhum dialeto de stdout é consultado aqui: `tests`, `failures`, `errors` e
+    `skipped` são atributos do formato, iguais em toda linguagem que o emite.
+    Um relatório sem `tests` em suíte nenhuma devolve None — arquivo vazio ou
+    truncado no meio de um atributo não é evidência."""
+    suites = _JUNIT_SUITE_RE.findall(text)
+    if not suites:
+        return None
+    total = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    viu_tests = False
+    for suite in suites:
+        for nome, valor in _JUNIT_ATTR_RE.findall(suite):
+            total[nome] += int(valor)
+            if nome == "tests":
+                viu_tests = True
+    if not viu_tests:
+        return None
+    executed = total["tests"] - total["skipped"]
+    return TestCounts(
+        executed=max(0, executed),
+        failed=total["failures"] + total["errors"],
+        rendered=(
+            f"{total['tests']} tests, {total['failures']} failures, "
+            f"{total['errors']} errors, {total['skipped']} skipped (junit)"
+        ),
+    )
+
+
 #: Linhas que os runners usam como RODAPÉ — a contagem autoritativa da execução.
 #: jest/vitest: "Tests:  3 failed, 4972 passed, 4975 total" (e "Test Suites:").
 #: pytest: a cerca "== 272 passed, 3 failed in 12.4s ==".
@@ -742,7 +805,19 @@ def test_check(
     output = _output(result)
     # Both streams: jest prints its counts and its failure blocks to STDERR,
     # and the old `stdout or stderr` never reached stderr at all.
-    counts = _test_counts(output)
+    #
+    # O RELATÓRIO vem primeiro, e a ordem é a tese desta versão: `tests`,
+    # `failures`, `errors` e `skipped` são atributos do formato JUnit, iguais
+    # em toda linguagem que o emite. O rodapé de stdout é prosa, e conhecê-la
+    # custava uma regex por ecossistema — a conta que fazia Go, cargo, dotnet,
+    # rspec e phpunit reprovarem VERDES, porque `counts is None` reprovava pela
+    # regra de evidência abaixo. Onde os dois existem e discordam, o arquivo
+    # ganha: ele é registro, o rodapé é impressão.
+    counts = None
+    if cfg.junit_reports:
+        counts = _counts_from_junit(_read_junit_reports(executor, cfg.junit_reports))
+    if counts is None:
+        counts = _test_counts(output)
     # Exit code alone is not a verdict: the gate demands EVIDENCE that at least
     # one test executed. On the Java testbed the gate's own command excluded
     # the repo's only test class, and "exit 0, no count found" passed a
@@ -810,13 +885,26 @@ def test_check(
                 "similar), not a failing test — see the detail"
             )
         status = GateStatus.PASS if passed else GateStatus.FAIL
-    elif result.ok:
-        rendered = f"({counts.rendered})" if counts is not None else "(no test count found in the output)"
-        summary = f"exit 0 without evidence of test execution {rendered}"
+    elif counts is not None:
+        # Houve leitura, e ela diz que NADA executou. Isso é veredito, não
+        # ilegibilidade: a defesa do defeito B continua inteira (o comando do
+        # gate excluía a única classe de teste do repositório e o L1 aprovava
+        # uma árvore intocada).
+        summary = f"exit {result.returncode} without evidence of test execution ({counts.rendered})"
         status = GateStatus.FAIL
     else:
-        summary = f"exit code {result.returncode} (no test count found in the output)"
-        status = GateStatus.FAIL
+        # NINGUÉM conseguiu ler. Isto era FAIL — e FAIL, no ledger e no
+        # `_l1_failure_context`, diz ao próximo turno de Coder que o diff
+        # quebrou os testes. Ele então persegue um assert que não existe até o
+        # teto de tentativas. ERROR é a verdade e tem outro dono: quem conserta
+        # é o manifesto, e a mensagem diz qual campo.
+        summary = (
+            f"the test run could not be read (exit {result.returncode}): no JUnit "
+            "report was declared and no count in the output matched a dialect this "
+            "gate knows (pytest/jest/surefire) — declare `reports.junit` in "
+            ".dse/validation.json and no verdict has to be guessed"
+        )
+        status = GateStatus.ERROR
     failing = [ln for ln in output.splitlines() if _FAILING_SUITE_RE.match(ln)]
     # Os nomes do herdado vão no detail SEMPRE — inclusive quando o gate passa,
     # onde `_detail_with` descarta as linhas de falha. Um NOT_OUR_FAILURE sem os

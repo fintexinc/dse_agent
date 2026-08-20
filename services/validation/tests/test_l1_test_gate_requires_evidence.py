@@ -84,11 +84,19 @@ def test_pytest_and_jest_dialects_still_parse_as_numbers():
 
 def test_exit_zero_with_no_count_anywhere_is_not_a_pass():
     """The old branch said "no test count found in the output" and stamped PASS
-    anyway. A gate that approves the absence of evidence is not a gate."""
+    anyway. A gate that approves the absence of evidence is not a gate.
+
+    O que este teste defende — NÃO PASSA — é o que sempre defendeu. O status
+    saiu de FAIL para ERROR na rc.107 e a diferença importa: aqui ninguém
+    conseguiu LER a execução, e FAIL, no ledger e no `_l1_failure_context`,
+    diz ao próximo turno de Coder que o diff quebrou os testes. Ele persegue um
+    assert que não existe até o teto. `executed == 0` sobre relatório legível
+    continua FAIL (test_exit_zero_with_zero_tests_executed_is_not_a_pass)."""
     finding = run_test_check(_canned("", 0), L1Config(test_cmd=["./mvnw", "test"]))
     assert finding.passed is False
-    assert finding.status == GateStatus.FAIL
-    assert "evidence" in finding.summary
+    assert finding.status == GateStatus.ERROR
+    assert "could not be read" in finding.summary
+    assert "reports.junit" in finding.summary
 
 
 def test_exit_zero_with_zero_tests_executed_is_not_a_pass():
@@ -105,11 +113,13 @@ def test_a_real_surefire_green_run_passes_with_evidence():
     assert finding.status == GateStatus.PASS
 
 
-def test_a_red_run_without_counts_still_fails_with_the_exit_code():
+def test_a_red_run_without_counts_still_names_the_exit_code():
+    """Idem: não passa, e o código de saída continua visível. O status é ERROR
+    porque a leitura falhou — não porque um teste falhou."""
     finding = run_test_check(_canned("boom, no runner summary", 1), L1Config(test_cmd=["./mvnw", "test"]))
     assert finding.passed is False
-    assert finding.status == GateStatus.FAIL
-    assert "exit code 1" in finding.summary
+    assert finding.status == GateStatus.ERROR
+    assert "exit 1" in finding.summary
 
 
 def test_the_full_real_testbed_green_log_yields_evidence_and_pass():

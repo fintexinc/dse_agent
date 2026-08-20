@@ -146,6 +146,43 @@ If your repository already has a manifest without it, you do not have to write
 the amendment yourself: the DSE opens a PR proposing it the next time it works
 on the repository, and the task it was running carries on meanwhile.
 
+## `reports.junit` — where the test run leaves its evidence
+
+```json
+{ "reports": { "junit": "target/surefire-reports/*.xml" } }
+```
+
+The test gate needs to know **how many tests ran and how many failed**. Without
+this key it has to read that out of the runner's stdout, and prose differs per
+ecosystem — it understands pytest, jest and surefire, and nothing else. A green
+Go, cargo, rspec or phpunit suite produces no count it can read, and a run
+nobody can read is reported as `ERROR` ("declare `reports.junit`"), never as a
+failing test. Declare the glob and the gate counts from the file instead, in
+any language.
+
+Declare it when your test command **already** writes JUnit XML — maven/surefire
+and gradle always do — or add the runner's own built-in flag:
+
+| runner | flag | glob |
+|---|---|---|
+| maven | *(surefire writes it)* | `target/surefire-reports/*.xml` |
+| gradle | *(built in)* | `build/test-results/test/*.xml` |
+| pytest | `--junitxml=reports/junit.xml` | `reports/junit.xml` |
+| phpunit | `--log-junit=reports/junit.xml` | `reports/junit.xml` |
+| dotnet | `--logger "junit;LogFilePath=reports/junit.xml"` | `reports/junit.xml` |
+| cargo | `cargo nextest run --profile ci` | `target/nextest/ci/junit.xml` |
+
+Never add a reporter that needs a package your repository does not already
+depend on — a missing `jest-junit` turns a green suite red.
+
+The glob is a plain relative path pattern: letters, digits, `.`, `_`, `-`, `/`,
+`*`, `?`. It is expanded by a shell inside the sandbox, so anything a shell
+could read as more than a path is refused by the parser.
+
+If the report is declared but no file is found, the gate falls back to the
+stdout dialects — a runner that died before writing its report should not
+change what the gate is allowed to say.
+
 ## `install` — the dependency step (top level)
 
 ```json

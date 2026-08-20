@@ -143,12 +143,17 @@ def test_a_mix_still_fails_for_the_items_own_suite():
 
 
 def test_the_evidence_rule_still_wins_over_inheritance():
-    """Defeito B intacto: herdado ou não, sem execução não há PASS."""
+    """Defeito B intacto: herdado ou não, sem execução não há PASS.
+
+    O status virou ERROR na rc.107 (saída ilegível é problema de configuração,
+    não acusação ao diff); o que este teste guarda — NOT_OUR_FAILURE nunca
+    alcança uma rodada sem evidência — não mudou."""
     ex = _Executor(now=_NOW_NO_EVIDENCE, base=_BASE_RED_A)
     finding = run_test_check(ex, _cfg(), None, base_sha=_BASE)
 
     assert finding.passed is False
-    assert finding.status == GateStatus.FAIL
+    assert finding.status == GateStatus.ERROR
+    assert "NOT_OUR_FAILURE" not in finding.summary
 
 
 def test_the_baseline_is_cached_and_does_not_re_run():

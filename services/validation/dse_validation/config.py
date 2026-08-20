@@ -502,6 +502,65 @@ def parse_repo_forbidden_paths(payload: Any, *, source: str = "manifest") -> lis
     return paths
 
 
+#: `reports.junit` é o ÚNICO campo do manifesto que precisa ser um padrão e não
+#: um argv, e ele é interpolado num script de shell que roda no Pod com as
+#: credenciais da plataforma. Vindo do manifesto do cliente, o alfabeto se
+#: fecha aqui, antes de a string existir: letras, dígitos, ponto, hífen,
+#: sublinhado, barra e os curingas. Nada que um shell leia como outra coisa —
+#: sem espaço, aspas, `$`, crase, ponto-e-vírgula ou quebra de linha.
+_REPORT_GLOB_RE = re.compile(r"^[A-Za-z0-9._/*?-]+$")
+_REPORT_NAMES = ("junit",)
+
+
+def _validate_report_glob(value: Any, *, source: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: reports.junit must be a non-empty string",
+            summary="reports.junit must be a non-empty string",
+        )
+    if not _REPORT_GLOB_RE.match(value):
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: reports.junit must be a plain relative glob "
+            "(letters, digits, . _ - / * ?) — it is expanded by a shell inside "
+            "the sandbox, so nothing a shell reads as more than a path is "
+            "accepted",
+            summary="reports.junit is not a plain relative glob",
+        )
+    if value.startswith("/") or ".." in value.split("/"):
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: reports.junit must stay inside the workspace "
+            "(no leading `/`, no `..`)",
+            summary="reports.junit escapes the workspace",
+        )
+    return value
+
+
+def _parse_reports(payload: Any, *, source: str) -> str | None:
+    raw = payload.get("reports")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: reports must be an object",
+            summary="reports must be an object",
+        )
+    unknown = sorted(set(raw) - set(_REPORT_NAMES))
+    if unknown:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: reports has unknown keys: {unknown} "
+            f"(valid: {sorted(_REPORT_NAMES)})",
+            summary=f"reports has {len(unknown)} unknown key(s)",
+        )
+    return _validate_report_glob(raw.get("junit"), source=source)
+
+
 def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreviewDeclaration:
     """Lê o bloco `preview` de um manifesto já decodificado. Bloco ausente =
     declaração vazia (todos os defaults de hoje)."""
@@ -716,6 +775,7 @@ class L1Config:
         build_cmd: list[str] | None = None,
         test_subset_cmd: list[str] | None = None,
         install_cmd: list[str] | None = None,
+        junit_reports: str | None = None,
         timeout_seconds: int | None = None,
         timeouts: dict[str, int] | None = None,
         sast_severity_gate: str | None = None,
@@ -732,6 +792,9 @@ class L1Config:
         #: Lidos pelo turno do Tester (sandbox), não pelos gates do L1.
         self.test_subset_cmd = list(test_subset_cmd or [])
         self.install_cmd = list(install_cmd or [])
+        #: Glob do relatório JUnit, quando o repo declara onde ele cai. É o que
+        #: deixa o gate de teste contar sem adivinhar o dialeto do runner.
+        self.junit_reports = junit_reports
         # Clamped, never refused: a repository whose scalar is above the ceiling
         # is asking for more than the activity has, but refusing it here would
         # escalate a work item over a manifest that was valid yesterday.
@@ -845,7 +908,7 @@ class L1Config:
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
         allowed = {"version", "commands", "timeout_seconds", "timeouts",
                    "sast_severity_gate", "preview", "forbidden_paths",
-                   "disabled_stages", "install"}
+                   "disabled_stages", "install", "reports"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(
@@ -952,6 +1015,7 @@ class L1Config:
         # symlink dela). O Pod do preview lê a MESMA chave. Preparo que só o
         # preview precisa continua em `preview.build`.
         install = _validate_command("install", payload.get("install"))
+        junit_reports = _parse_reports(payload, source=source)
         # O bloco `preview` passa pela mesma porta AQUI, e não só na hora de
         # subir o preview. Este parser é o portão do bootstrap e da emenda: uma
         # chave que ele aceita e o preview recusa vira PR mergeada que quebra
@@ -959,6 +1023,7 @@ class L1Config:
         parse_repo_preview(payload, source=source)
         return cls(
             install_cmd=install,
+            junit_reports=junit_reports,
             test_subset_cmd=parsed["test_subset"],
             lint_cmd=parsed["lint"],
             typecheck_cmd=parsed["typecheck"],
