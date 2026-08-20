@@ -189,6 +189,11 @@ class FakeControlPlane:
     bootstrap_result: dict = field(default_factory=lambda: {
         "ok": True, "pr_number": 1, "existing": False,
         "url": "https://github.com/x/y/pull/1", "reason": ""})
+    #: Deep link do preview (rc.103). Default: sem caminho — o comportamento
+    #: de sempre, e nenhum teste antigo muda.
+    deep_link_result: dict = field(default_factory=lambda: {
+        "path": None, "note": "", "cost_usd": 0.0})
+    deep_link_raise: bool = False
     #: `forbidden_paths` do plano. None = o default do contrato, que é o que
     #: todo plano do histórico carrega. A lista explícita é o caso do repo que
     #: DECLARA a própria proteção no `.dse/validation.json`.
@@ -284,6 +289,13 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     async def bootstrap_repo_manifest(payload: dict) -> dict:
         state.calls_log.append("bootstrap_repo_manifest")
         return dict(state.bootstrap_result)
+
+    async def resolve_preview_deep_link(payload: dict) -> dict:
+        state.calls_log.append("resolve_preview_deep_link")
+        if state.deep_link_raise:
+            raise ApplicationError("deep link model unreachable (fake)",
+                                   type="DeepLinkError", non_retryable=True)
+        return dict(state.deep_link_result)
 
 
     async def run_planner_turn(payload: dict) -> PlanArtifact:
@@ -639,6 +651,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     return [
         activity.defn(name="probe_repo_manifest")(probe_repo_manifest),
         activity.defn(name="bootstrap_repo_manifest")(bootstrap_repo_manifest),
+        activity.defn(name="resolve_preview_deep_link")(resolve_preview_deep_link),
         activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)(triage_preview_failure),
         activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)(update_base_branch),
         activity.defn(name=ACTIVITY_RUN_PLANNER_TURN)(run_planner_turn),
