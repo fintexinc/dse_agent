@@ -35,6 +35,7 @@ with workflow.unsafe.imports_passed_through():
         protected_expected_files,
     )
     from dse_contracts.activities import (
+        ACTIVITY_AMEND_REPO_MANIFEST,
         ACTIVITY_BOOTSTRAP_REPO_MANIFEST,
         ACTIVITY_PROBE_REPO_MANIFEST,
         ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK,
@@ -2276,6 +2277,36 @@ class WorkItemLifecycleWorkflow:
                         f"({str(boot.get('reason') or '')[:200]}); add one by "
                         "hand — see docs/DSE-VALIDATION-MANIFEST.md"
                     )
+                # Manifesto PRESENTE mas incompleto: a tarefa SEGUE. O gate
+                # roda; o que degrada é o preview, que cai na receita chutada
+                # (`java -jar` / escada npm). Escalar aqui trocaria preview
+                # degradado por tarefa morta — e o repo já onboardado nunca
+                # ganharia a chave nova, porque o bootstrap só dispara em
+                # manifesto AUSENTE (a lacuna que o operador apontou).
+                elif probe.get("missing"):
+                    try:
+                        emenda = await workflow.execute_activity(
+                            ACTIVITY_AMEND_REPO_MANIFEST,
+                            {"repo": input.repo, "base_branch": input.base_branch,
+                             "tenant_id": input.tenant_id,
+                             "work_item_id": input.work_item_id,
+                             "missing": list(probe.get("missing") or [])},
+                            start_to_close_timeout=timedelta(seconds=240),
+                            retry_policy=RetryPolicy(maximum_attempts=2),
+                        )
+                        await self._audit(
+                            "repo_manifest_amendment",
+                            {"missing": list(probe.get("missing") or []),
+                             "ok": bool((emenda or {}).get("ok")),
+                             "pr_number": (emenda or {}).get("pr_number"),
+                             "existing": bool((emenda or {}).get("existing")),
+                             "reason": str((emenda or {}).get("reason") or "")[:200]},
+                        )
+                    except ActivityError:
+                        logger.warning(
+                            "manifest amendment failed; the task proceeds with the "
+                            "platform's fallback recipe"
+                        )
             await self._run_planner_and_gate()
             # rc.93 (decisão do operador, auditoria de 08-14): a barreira do
             # GRUPO fica entre o gate próprio e o sandbox — antes de gastar

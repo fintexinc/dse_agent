@@ -47,6 +47,9 @@ ACTIVITY_RUN_PLANNER_TURN = "run_planner_turn"
 # arquivo único quando o manifesto está confirmadamente ausente.
 ACTIVITY_PROBE_REPO_MANIFEST = "probe_repo_manifest"
 ACTIVITY_BOOTSTRAP_REPO_MANIFEST = "bootstrap_repo_manifest"
+# rc.105 — manifesto presente mas incompleto: emenda que ACRESCENTA a chave
+# faltante. Não encerra a tarefa (o gate roda; só o preview degrada).
+ACTIVITY_AMEND_REPO_MANIFEST = "amend_repo_manifest"
 ACTIVITY_RUN_TESTER_TURN = "run_tester_turn"
 ACTIVITY_RUN_L2_REVIEW = "run_l2_review"
 

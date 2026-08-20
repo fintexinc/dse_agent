@@ -184,6 +184,12 @@ class FakeControlPlane:
     #: intocado). `reachable=False` simula API fora do ar (fail-open).
     repo_manifest_present: bool = True
     repo_manifest_reachable: bool = True
+    #: rc.105 — declarações que o manifesto presente NÃO tem. Vazio = completo,
+    #: o caso de todo teste antigo.
+    repo_manifest_missing: list[str] = field(default_factory=list)
+    amend_result: dict = field(default_factory=lambda: {
+        "ok": True, "pr_number": 2, "existing": False,
+        "url": "https://github.com/x/y/pull/2", "reason": ""})
     #: O que o fake de bootstrap_repo_manifest devolve quando o probe dá
     #: ausente.
     bootstrap_result: dict = field(default_factory=lambda: {
@@ -284,11 +290,16 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     async def probe_repo_manifest(payload: dict) -> dict:
         state.calls_log.append("probe_repo_manifest")
         return {"present": state.repo_manifest_present,
-                "reachable": state.repo_manifest_reachable}
+                "reachable": state.repo_manifest_reachable,
+                "missing": list(state.repo_manifest_missing)}
 
     async def bootstrap_repo_manifest(payload: dict) -> dict:
         state.calls_log.append("bootstrap_repo_manifest")
         return dict(state.bootstrap_result)
+
+    async def amend_repo_manifest(payload: dict) -> dict:
+        state.calls_log.append("amend_repo_manifest")
+        return dict(state.amend_result)
 
     async def resolve_preview_deep_link(payload: dict) -> dict:
         state.calls_log.append("resolve_preview_deep_link")
@@ -651,6 +662,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     return [
         activity.defn(name="probe_repo_manifest")(probe_repo_manifest),
         activity.defn(name="bootstrap_repo_manifest")(bootstrap_repo_manifest),
+        activity.defn(name="amend_repo_manifest")(amend_repo_manifest),
         activity.defn(name="resolve_preview_deep_link")(resolve_preview_deep_link),
         activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)(triage_preview_failure),
         activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)(update_base_branch),

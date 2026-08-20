@@ -59,15 +59,16 @@ def _client(tree=None, files=None, prs=None) -> FakeGitHubClient:
 # ---------------------------------------------------------------------------
 
 def test_probe_distinguishes_present_absent_and_unreachable():
+    # rc.105: o probe passou a devolver TAMBÉM o que falta declarar — a
+    # comparação vira por chave, e o terceiro caso ganhou teste próprio em
+    # test_manifest_amendment.py.
     presente = _client(files={".dse/validation.json": "{}"})
-    assert mb.probe_manifest(presente, "acme/svc", "main") == {
-        "present": True, "reachable": True,
-    }
+    r = mb.probe_manifest(presente, "acme/svc", "main")
+    assert r["present"] is True and r["reachable"] is True
 
     ausente = _client()
-    assert mb.probe_manifest(ausente, "acme/svc", "main") == {
-        "present": False, "reachable": True,
-    }
+    r = mb.probe_manifest(ausente, "acme/svc", "main")
+    assert r["present"] is False and r["reachable"] is True
 
     class _Fora:
         def get_file_text(self, repo, path, ref):

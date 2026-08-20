@@ -395,7 +395,8 @@ class L1ManifestError(ValueError):
 
 #: Campos do bloco `preview` do manifesto. Fechado de propósito: um typo
 #: (`imagen:`) tem que ser erro explicado, não default silencioso.
-_PREVIEW_FIELDS = ("image", "artifact_glob", "env", "port", "ready_timeout_s")
+_PREVIEW_FIELDS = ("image", "artifact_glob", "env", "port", "ready_timeout_s",
+                   "start", "install")
 #: Teto do timeout que o repo pode pedir. A activity do trigger_preview morre
 #: em 1200s (workflows.py, patch preview-trigger-timeout-headroom-v1) e a folga
 #: paga captura de log, escrita no banco e comentário na PR — pedir mais que
@@ -419,6 +420,12 @@ class RepoPreviewDeclaration:
     env: dict[str, str] = dataclasses.field(default_factory=dict)
     port: int | None = None
     ready_timeout_s: int | None = None
+    #: COMO o processo sobe, e como as dependências entram (rc.105). Argv, pelas
+    #: mesmas regras dos `commands.*` — nunca string de shell. Sem eles a
+    #: plataforma precisa saber o que é `java -jar` e o que é `ng serve`, e é
+    #: por isso que ela só sabia subir dois ecossistemas.
+    start: list[str] | None = None
+    install: list[str] | None = None
 
 
 #: Limites do bloco `forbidden_paths`. O manifesto vem do base SHA (revisado
@@ -520,6 +527,22 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
             )
         return value.strip()
 
+    def _argv(field: str) -> list[str] | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        # `_validate_command` é a MESMA porta dos `commands.*`: argv, no máximo
+        # 128 argumentos, cada um string não-vazia sem NUL. Reusar a validação
+        # é o que impede duas gramáticas de comando no mesmo arquivo.
+        cmd = _validate_command(f"preview.{field}", value)
+        if not cmd:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} preview.{field} must be a non-empty argv array",
+                summary=f"preview.{field} must be a non-empty argv array",
+            )
+        return cmd
+
     env_raw = raw.get("env") or {}
     if not isinstance(env_raw, dict):
         raise L1ManifestError(GateStatus.ERROR,
@@ -554,6 +577,8 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
         port=_positive_int("port"),
         # Clampado, não recusado — mesma disciplina de `timeout_seconds`.
         ready_timeout_s=_positive_int("ready_timeout_s", _PREVIEW_MAX_READY_TIMEOUT_S),
+        start=_argv("start"),
+        install=_argv("install"),
     )
 
 

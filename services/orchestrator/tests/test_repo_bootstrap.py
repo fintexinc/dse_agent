@@ -147,3 +147,60 @@ async def test_a_failed_draft_escalates_pointing_at_the_doc(time_skipping_env):
         "sem PR o humano escreve o manifesto à mão — a reason aponta o doc"
     )
     assert state.planner_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_manifest_gets_an_amendment_pr_and_the_task_goes_on(
+    time_skipping_env,
+):
+    """rc.105 — a diferença de severidade: manifesto AUSENTE impede todo gate
+    (encerra a tarefa); manifesto INCOMPLETO só degrada o preview. Escalar aqui
+    trocaria preview degradado por tarefa morta — e o repo já onboardado nunca
+    ganharia a chave nova, porque o bootstrap só dispara em manifesto ausente."""
+    work_item_id = new_work_item_id("amend")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    state = FakeControlPlane(
+        plan_risk_class="low",
+        repo_manifest_present=True,
+        repo_manifest_missing=["preview.start"],
+    )
+    ledger = _Ledger()
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id), id=work_item_id, task_queue=task_queue)
+        await _wait_for_audit(ledger, "plan_auto_approved")
+        await handle.terminate()
+
+    assert "amend_repo_manifest" in state.calls_log
+    assert "repo_manifest_amendment" in ledger.audit_actions
+    detalhe = ledger.audit_details("repo_manifest_amendment")
+    assert detalhe["missing"] == ["preview.start"] and detalhe["pr_number"] == 2
+    # e a tarefa SEGUIU: o Planner rodou
+    assert state.planner_calls == 1
+    assert "repo_bootstrap_pr_opened" not in ledger.audit_actions
+
+
+@pytest.mark.asyncio
+async def test_a_complete_manifest_never_opens_an_amendment(time_skipping_env):
+    work_item_id = new_work_item_id("amend-none")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    state = FakeControlPlane(plan_risk_class="low")  # missing vazio por default
+    ledger = _Ledger()
+
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id), id=work_item_id, task_queue=task_queue)
+        await _wait_for_audit(ledger, "plan_auto_approved")
+        await handle.terminate()
+
+    assert "amend_repo_manifest" not in state.calls_log
+    assert "repo_manifest_amendment" not in ledger.audit_actions

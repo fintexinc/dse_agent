@@ -1678,6 +1678,38 @@ async def probe_repo_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+@activity.defn(name="amend_repo_manifest")
+async def amend_repo_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    """rc.105 — manifesto que existe mas não declara o que a plataforma precisa.
+    Abre uma PR que ACRESCENTA a chave, preservando o resto. Diferente do
+    bootstrap, isto NÃO encerra a tarefa: o gate roda, só o preview degrada."""
+    from .manifest_bootstrap import amend_manifest
+
+    repo = payload["repo"]
+    tenant = payload.get("tenant_id") or "unknown"
+    headers = GatewayCallHeaders(
+        tenant_id=tenant, work_item_id=f"repo-amend:{repo}", stage=Stage.planner
+    )
+    model = os.environ.get("DSE_PLANNER_MODEL") or os.environ.get(
+        "DSE_CODER_MODEL", "anthropic/claude"
+    )
+    from model_gateway_client.gateway_call import chat_completion
+
+    def _complete(prompt: str) -> str:
+        vk = mint_virtual_key(headers)
+        result = chat_completion(
+            headers=headers, virtual_key=vk.virtual_key, model=model,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=120.0, max_tokens=1_400, temperature=0,
+        )
+        return result.content or ""
+
+    return amend_manifest(
+        _planner_github_client(), repo, payload.get("base_branch") or "main",
+        missing=list(payload.get("missing") or []), complete=_complete,
+    )
+
+
 @activity.defn(name="bootstrap_repo_manifest")
 async def bootstrap_repo_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     """Fase A2 — abre a PR de bootstrap do .dse/validation.json. A saída do
@@ -3974,6 +4006,7 @@ ACTIVITIES = [
     # storm (foi exatamente assim que a rc.101 quase saiu).
     probe_repo_manifest,
     bootstrap_repo_manifest,
+    amend_repo_manifest,
     provision_sandbox,
     checkpoint_sandbox,
     rebuild_sandbox,

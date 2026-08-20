@@ -37,7 +37,7 @@ import base64
 import json
 import logging
 import re
-import shlex
+import shlex as _shlex
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -443,13 +443,27 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         # `null` que ele devolvia num manifesto sem build agora falha NOMEADO
         # em vez de `sh -c null` silencioso.
         if build_cmd:
-            build_step = shlex.join(build_cmd) + "; "
+            build_step = _shlex.join(build_cmd) + "; "
         else:
             build_step = (
                 "BUILD_CMD=$(jq -r '.commands.build[2] // empty' .dse/validation.json); "
                 "[ -n \"$BUILD_CMD\" ] || { echo 'DSE preview: no build command "
                 "declared in .dse/validation.json'; exit 1; }; "
                 "sh -c \"$BUILD_CMD\"; "
+            )
+        # rc.105 — COMO o processo sobe é do REPO. Sem declaração, a receita de
+        # sempre (localizar o jar e `java -jar`), que morre na release seguinte,
+        # depois que as PRs de emenda entrarem: nesta o parser acabou de
+        # aprender a chave, então nenhum repo vivo pode tê-la declarado ainda.
+        install_step = (
+            _shlex.join(decl.install) + "; " if decl.install else ""
+        )
+        if decl.start:
+            start_step = "exec " + _shlex.join(decl.start)
+        else:
+            start_step = (
+                f"JAR=$(ls {artifact_glob} | grep -v plain | head -1); "
+                "exec java -jar \"$JAR\""
             )
         script = (
             "set -eu; "
@@ -462,9 +476,9 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
             + cred_prelude
-            + build_step +
-            f"JAR=$(ls {artifact_glob} | grep -v plain | head -1); "
-            "exec java -jar \"$JAR\""
+            + install_step
+            + build_step
+            + start_step
         )
         # Contrato de datasource MEDIDO no repo (2026-08-09, timebox de uma
         # passada): o app usa `spring.datasource.jdbc-url` (estilo Hikari), e
@@ -580,14 +594,23 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             "but produced no index.html under dist/ or build/'; exit 1; fi; "
             f"exec npx --yes serve@14 -s \"$(dirname \"$DIST\")\" -l tcp://0.0.0.0:{port}"
         )
+        # rc.105 — idem no branch ui: o repo declara `install`/`start` e a
+        # escada npm (npm start → npm run dev → ng serve → build+serve) vira
+        # fallback de quem ainda não declarou.
+        install_step = (
+            _shlex.join(decl.install) + "; " if decl.install
+            else "npm install --no-audit --no-fund --loglevel=error; "
+        )
+        if decl.start:
+            start = "exec " + _shlex.join(decl.start)
         script = (
             "set -eu; "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
             + git_env +
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
-            + cred_prelude +
-            "npm install --no-audit --no-fund --loglevel=error; "
+            + cred_prelude
+            + install_step
             + proxy_step + start
         )
         env_yaml = f"""            - name: PORT

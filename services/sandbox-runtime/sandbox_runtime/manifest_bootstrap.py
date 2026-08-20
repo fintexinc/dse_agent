@@ -28,6 +28,9 @@ logger = logging.getLogger("sandbox_runtime.manifest_bootstrap")
 #: Idempotency by branch name, like repo_doc: an open PR is reused, never
 #: duplicated — resending the task while it is open costs zero model calls.
 BRANCH = "dse/bootstrap-validation-manifest"
+#: Branch PRÓPRIA da emenda: bootstrap CRIA o arquivo, emenda o ALTERA, e um
+#: repositório pode precisar dos dois em momentos diferentes.
+BRANCH_AMEND = "dse/amend-validation-manifest"
 
 MANIFEST_PATH = ".dse/validation.json"
 
@@ -54,6 +57,13 @@ _SPEC = """The manifest is a JSON object. Rules, all binding:
   facts demand them — the maintainer adds those deliberately.
 - Mirror the repository's own CI commands wherever they exist. Prefer the
   repo's wrapper (./mvnw, ./gradlew) over a bare tool when the tree has one.
+- When this repository is a deployable app or a frontend, declare a "preview"
+  object with "start" (an ARGV array — how the process boots and serves, e.g.
+  ["sh","-c","java -jar bootstrap/target/*.jar"] or ["npx","vite","preview",
+  "--host","0.0.0.0"]) and "image" when the default toolchain would be wrong.
+  Add "install" only when the repository needs a dependency step the build
+  command does not already do. Omit the whole "preview" object for a library
+  with nothing to serve — do NOT invent a start command.
 Return ONLY the JSON object. No markdown fences, no prose."""
 
 _PROMPT = """You are drafting `.dse/validation.json` for a repository the DSE
@@ -97,8 +107,45 @@ def probe_manifest(client, repo: str, base_branch: str) -> dict:
         texto = client.get_file_text(repo, MANIFEST_PATH, base_branch)
     except Exception as exc:  # noqa: BLE001 — API hiccup must not kill a task
         logger.info("manifest probe failed for %s@%s: %s", repo, base_branch, exc)
-        return {"present": False, "reachable": False}
-    return {"present": texto is not None, "reachable": True}
+        return {"present": False, "reachable": False, "missing": []}
+    if texto is None:
+        return {"present": False, "reachable": True, "missing": []}
+    return {"present": True, "reachable": True, "missing": missing_declarations(texto)}
+
+
+#: O que a plataforma precisa que o repositório declare, e o que ela é obrigada
+#: a adivinhar sem isso. SÓ entra aqui o que degrada de verdade — um campo
+#: "seria bom ter" viraria uma PR de emenda por repositório por release, que é
+#: ruído, não onboarding.
+_REQUIRED = (
+    (
+        "preview.start",
+        "how the application boots — without it the platform falls back to "
+        "`java -jar <artifact>` (JVM) or an npm dev-server ladder, which is "
+        "wrong for every other ecosystem",
+    ),
+)
+
+
+def missing_declarations(manifest_text: str) -> list[str]:
+    """As declarações que faltam NESTE manifesto, na ordem de `_REQUIRED`.
+
+    Manifesto ilegível devolve lista vazia — quem reprova manifesto inválido é
+    o L1, com mensagem própria; não é papel da emenda dar essa notícia.
+
+    Repo SEM bloco `preview` não é cobrado: quem não tem preview não precisa
+    declarar como sobe."""
+    try:
+        payload = json.loads(manifest_text)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    preview = payload.get("preview")
+    faltando: list[str] = []
+    if isinstance(preview, dict) and preview and not preview.get("start"):
+        faltando.append("preview.start")
+    return faltando
 
 
 def _ci_snippets(client, repo: str, base_branch: str, tree: list[str]) -> str:
@@ -192,6 +239,118 @@ def bootstrap_manifest(client, repo: str, base_branch: str, *, complete) -> dict
         repo, BRANCH, base_branch,
         "Bootstrap .dse/validation.json — the DSE's validation contract",
         _PR_BODY.format(facts=facts.as_bullets()),
+    )
+    return {"ok": True, "pr_number": pr["number"], "url": pr.get("html_url"),
+            "existing": False, "reason": ""}
+
+
+_AMEND_PROMPT = """This repository already has a `.dse/validation.json`, but it
+does not declare everything the DSE needs. Amend it.
+
+Missing, and why each one matters:
+{faltando}
+
+The current file, VERBATIM — keep every key it already has, change nothing you
+were not asked to change:
+
+{atual}
+
+{spec}
+
+These facts were derived from the repository's file tree. They are true.
+
+{facts}
+
+{ci_block}"""
+
+_AMEND_PR_BODY = """The DSE needs one declaration this repository's
+`.dse/validation.json` does not have yet:
+
+{faltando}
+
+Without it the platform has to GUESS, and its guess is the shape of another
+ecosystem — `java -jar <artifact>` for a service, an npm dev-server ladder for a
+frontend. That is why this file, and not a platform release, is the right place
+to answer.
+
+This is a **draft, not a decision**. Everything in it was mirrored from this
+repository's own CI and build files where they exist, the rest of the file was
+left untouched, and the result was accepted by the same parser that enforces it.
+
+Review it, adjust it, merge it. Nothing breaks while it is open — the preview
+keeps working the way it works today.
+"""
+
+
+def amend_manifest(
+    client, repo: str, base_branch: str, *, missing: list[str], complete,
+) -> dict:
+    """Open a PR that ADDS the missing declarations to an existing manifest.
+
+    The difference from `bootstrap_manifest` is severity, and it is the whole
+    reason this is a separate flow: a MISSING manifest means no gate can run at
+    all, so the task ends and the human is asked to merge before resending. An
+    INCOMPLETE manifest only degrades the preview — the task goes on, and this
+    PR waits for a human whenever they get to it.
+
+    Two gates, not one. The draft must (a) be accepted by the REAL L1 parser,
+    like the bootstrap, and (b) actually CONTAIN what was missing — a model can
+    return perfectly valid JSON that does not solve the problem, and without
+    this second check the PR would open without fixing anything and the next
+    task would open another one just like it."""
+    existing = client.get_open_pr_for_branch(repo, BRANCH_AMEND)
+    if existing:
+        return {"ok": True, "pr_number": existing["number"],
+                "url": existing.get("html_url"), "existing": True, "reason": ""}
+
+    atual = client.get_file_text(repo, MANIFEST_PATH, base_branch)
+    if not atual:
+        return {"ok": False, "pr_number": None, "url": None, "existing": False,
+                "reason": "the manifest disappeared between the probe and the amendment"}
+
+    tree = client.get_tree_paths(repo, base_branch, limit=200_000)
+    facts = derive_facts(tree)
+    faltando_txt = "\n".join(
+        f"- `{nome}`: {porque}" for nome, porque in _REQUIRED if nome in missing
+    ) or "\n".join(f"- `{n}`" for n in missing)
+    prompt = _AMEND_PROMPT.format(
+        faltando=faltando_txt,
+        atual=atual[:8_000],
+        spec=_SPEC,
+        facts=facts.as_bullets(),
+        ci_block=_ci_snippets(client, repo, base_branch, tree),
+    )
+    draft = _strip_fences(complete(prompt))
+    payload, reason = _parser_verdict(draft)
+    if payload is None:
+        logger.warning("manifest amendment refused for %s: %s", repo, reason)
+        return {"ok": False, "pr_number": None, "url": None,
+                "existing": False, "reason": reason}
+
+    ainda_faltando = missing_declarations(json.dumps(payload))
+    if any(nome in ainda_faltando for nome in missing):
+        motivo = (
+            f"the draft parses but still does not declare {sorted(set(missing) & set(ainda_faltando))}"
+        )
+        logger.warning("manifest amendment refused for %s: %s", repo, motivo)
+        return {"ok": False, "pr_number": None, "url": None,
+                "existing": False, "reason": motivo}
+
+    base_sha = client.get_ref_sha(repo, base_branch)
+    if not base_sha:
+        return {"ok": False, "pr_number": None, "url": None, "existing": False,
+                "reason": f"base branch {base_branch!r} has no resolvable SHA"}
+    client.create_branch(repo, BRANCH_AMEND, base_sha)
+    client.put_file(
+        repo, MANIFEST_PATH,
+        content=json.dumps(payload, indent=2) + "\n",
+        message="Declare how this app boots in the DSE manifest (proposed by the DSE)",
+        branch=BRANCH_AMEND,
+    )
+    pr = client.create_pr(
+        repo, BRANCH_AMEND, base_branch,
+        "Amend .dse/validation.json — declare how this app boots",
+        _AMEND_PR_BODY.format(faltando=faltando_txt),
     )
     return {"ok": True, "pr_number": pr["number"], "url": pr.get("html_url"),
             "existing": False, "reason": ""}

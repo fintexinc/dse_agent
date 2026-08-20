@@ -134,6 +134,18 @@ declares nothing sees no change.
 | `env` | object | environment variables for the preview process; values are stringified |
 | `port` | int | the port the app listens on inside the container |
 | `ready_timeout_s` | int | how long to wait for readiness; **maximum 1050** |
+| `start` | argv array | **how the process boots and serves** — e.g. `["sh","-c","java -jar bootstrap/target/*.jar"]`, `["./bin/server"]`, `["npx","vite","preview","--host","0.0.0.0"]` |
+| `install` | argv array | a dependency step the build command does not already do — e.g. `["pnpm","install","--frozen-lockfile"]` |
+
+**`start` is the field that makes previews work outside the JVM and npm.**
+Without it the platform has to guess, and its guess is one of two shapes: find
+an artifact and `java -jar` it, or walk an npm dev-server ladder. Both are
+wrong for Go, Python, Ruby, .NET, Rust and PHP — and wrong for a frontend that
+is not Angular. Declare it and the platform stops guessing.
+
+If your repository already has a manifest without it, you do not have to write
+the amendment yourself: the DSE opens a PR proposing it the next time it works
+on the repository, and the task it was running carries on meanwhile.
 
 Unknown fields inside the block are an ERROR — a typo (`imagen:`) must be an
 explained failure, not a silent default.

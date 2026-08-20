@@ -210,6 +210,24 @@ def _gate_input(work_item_id: str, **overrides: Any) -> WorkItemLifecycleInput:
     return WorkItemLifecycleInput(**base)
 
 
+async def _wait_for_comment(ledger: _Ledger, status: str, attempts: int = 400) -> None:
+    """Espera o COMENTÁRIO, não o audit.
+
+    A ordem no workflow é `_set_raw_status` (que audita) e só depois o render
+    pelos adapters. Quem espera o audit e lê `ledger.comments` na linha seguinte
+    está numa corrida: ganha por milissegundos de escalonamento, e qualquer
+    trabalho novo antes do gate a perde. O que o teste inspeciona é a mensagem —
+    então é nela que ele espera. A asserção não afrouxa: comentário que nunca
+    chega estoura aqui em vez de virar uma lista vazia."""
+    for _ in range(attempts):
+        if any(st == status for st, _ in ledger.comments):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(
+        f"nenhum comentário com status {status!r} apareceu; "
+        f"vistos={[st for st, _ in ledger.comments]}")
+
+
 async def _wait_for_audit(ledger: _Ledger, action: str, attempts: int = 400) -> None:
     for _ in range(attempts):
         if action in ledger.audit_actions:
@@ -924,7 +942,7 @@ async def test_the_gate_message_names_the_effective_risk(time_skipping_env):
             WorkItemLifecycleWorkflow.run,
             _gate_input(work_item_id),
             id=work_item_id, task_queue=task_queue)
-        await _wait_for_audit(ledger, "awaiting_plan_approval")
+        await _wait_for_comment(ledger, STATUS_AWAITING_PLAN_APPROVAL)
 
         gate_msgs = [body for status, body in ledger.comments
                      if status == STATUS_AWAITING_PLAN_APPROVAL]
