@@ -24,6 +24,7 @@ import os
 from collections import deque
 from typing import Protocol
 
+from dse_validation.model_json import ModelJsonError, complete_json
 from dse_contracts import L2Verdict, PlanArtifact
 from pydantic import BaseModel
 
@@ -115,7 +116,6 @@ class ModelL2ReviewSession:
     at the source)."""
 
     def review(self, inp: L2ReviewInput) -> L2Verdict:
-        import json as _json
         import os as _os
 
         from dse_contracts.gateway_contract import GatewayCallHeaders, Stage
@@ -133,23 +133,37 @@ class ModelL2ReviewSession:
         prompt = _L2_PROMPT.format(
             plan=inp.plan.model_dump_json()[:4000], diff=(inp.diff or "(empty diff)")[:20000]
         )
-        result = chat_completion(
-            headers=headers, virtual_key=vk_key, model=model,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=120.0, max_tokens=1500, temperature=0,
-        )
-        text = (result.content or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`\n")
-            text = text[4:] if text.startswith("json") else text
-        # raw_decode: the model sometimes keeps writing AFTER the JSON
-        # (caught by the shadow-run — "Extra data") — take the 1st object and ignore the rest.
-        verdict, _ = _json.JSONDecoder().raw_decode(text.strip())
+        # `complete_json` (rc.104) faz o parse, UM retry com o erro na cara e a
+        # ordem de encolher, e devolve o custo de TODAS as tentativas. Antes
+        # daqui: `raw_decode` cru contra `max_tokens=1500` e um prompt de até
+        # 20.000 chars de diff, sob `maximum_attempts=0` — com `temperature=0`,
+        # a mesma entrada produzia a mesma saída truncada e a activity retentava
+        # até o `schedule_to_close` de 7200s, com o custo de cada tentativa fora
+        # do orçamento do item.
+        cobrado = {"usd": 0.0}
+
+        def _chama(texto_prompt: str) -> tuple[str, float]:
+            r = chat_completion(
+                headers=headers, virtual_key=vk_key, model=model,
+                messages=[{"role": "user", "content": texto_prompt}],
+                timeout=120.0, max_tokens=1500, temperature=0,
+            )
+            custo = float(r.cost_usd or 0.0)
+            cobrado["usd"] += custo
+            return (r.content or ""), custo
+
+        try:
+            verdict, custo_total = complete_json(_chama, prompt)
+        except ModelJsonError as exc:
+            # O custo já faturado viaja no erro; o chamador o consome antes de
+            # deixar a exceção subir (a activity a marca como não-retentável).
+            exc.cost_usd = cobrado["usd"]
+            raise
         return L2Verdict(
             work_item_id=inp.work_item_id,
             passed=bool(verdict.get("passed")),
             objections=[str(o) for o in (verdict.get("objections") or [])][:10],
-            cost_usd=float(result.cost_usd or 0.0),
+            cost_usd=custo_total,
         )
 
 

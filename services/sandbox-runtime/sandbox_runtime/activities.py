@@ -1348,7 +1348,11 @@ def _select_tree_directories(
         max_tokens=300,
         temperature=0,
     )
-    payload, _ = json.JSONDecoder().raw_decode(_strip_json_fence(result.content or ""))
+    from dse_validation.model_json import parse_model_json
+
+    payload, _motivo = parse_model_json(result.content or "")
+    if payload is None:
+        raise ValueError(f"the model answer did not parse: {_motivo}")
     dirs = [d for d in payload.get("directories", []) if str(d).strip()]
     if not dirs:
         raise ValueError("the model named no directory")
@@ -1615,9 +1619,13 @@ def _model_plan_proposer(
         logger.warning("planner via model failed (%s: %s) — fixture", type(exc).__name__, str(exc)[:200])
         return None
 
-    text = _strip_json_fence(result.content or "")
+    from dse_validation.model_json import parse_model_json
+
+    text = result.content or ""
     try:
-        proposal, _ = json.JSONDecoder().raw_decode(text)
+        proposal, _motivo = parse_model_json(text)
+        if proposal is None:
+            raise ValueError(f"the plan answer did not parse: {_motivo}")
         steps = [str(s) for s in proposal.get("steps", []) if str(s).strip()]
         files = [str(f) for f in proposal.get("expected_files", []) if str(f).strip()]
         if not steps or not files:
@@ -2521,43 +2529,35 @@ def _model_authored_test_script(
     # uma spec Java real estourou os 8000. Subir o teto adia; o retry com o
     # erro na cara e a ordem de ENCOLHER é o que fecha. Custo soma pelas duas:
     # a chamada é cobrada no instante em que o gateway responde.
-    cost_usd = 0.0
-    files = None
-    parse_feedback = ""
-    for _tentativa in range(2):
-        attempt_prompt = prompt + parse_feedback
-        try:
-            result = chat_completion(
-                headers=headers, virtual_key=virtual_key, model=model,
-                messages=[{"role": "user", "content": attempt_prompt}],
-                # 8000: found in the real run with Haiku — 4000 truncated the
-                # JSON in the middle of the content ("Unterminated string").
-                timeout=_AUTHORING_CALL_TIMEOUT_SECONDS, max_tokens=8000, temperature=0,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _raise_if_permanent_provider_error(exc)  # billing/auth: the right message on the issue
-            logger.warning("tester via model failed (%s: %s)", type(exc).__name__, str(exc)[:200])
-            return None, cost_usd
+    # `complete_json` (rc.104) — o laço de duas tentativas que vivia aqui foi o
+    # primeiro a existir (rc.102, depois de uma resposta truncada matar um item
+    # com o turno de Coder pago) e virou o helper compartilhado. Continua sendo
+    # DUAS tentativas, com o erro na cara e a ordem de encolher; o que mudou é
+    # que as outras cinco cópias de `raw_decode` do sistema passaram a ter a
+    # mesma política.
+    from dse_validation.model_json import ModelJsonError, complete_json
 
-        cost_usd += float(getattr(result, "cost_usd", 0.0) or 0.0)
-        text = (result.content or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`\n")
-            text = text[4:] if text.startswith("json") else text
-        try:
-            parsed, _ = json.JSONDecoder().raw_decode(text.strip())
-            files = parsed.get("files") or []
-            break
-        except json.JSONDecodeError as exc:
-            logger.warning("test authoring did not parse (%s); response: %.200s", exc, text)
-            files = None
-            parse_feedback = (
-                "\n\n## YOUR PREVIOUS RESPONSE WAS REJECTED\n"
-                f"It was not valid JSON ({exc.msg}) — most likely truncated at the "
-                "output limit. Respond again with STRICT JSON only, and make it "
-                "SMALLER: at most 2 files, each under 150 lines, covering only "
-                "the most important assertions.\n"
-            )
+    cost_usd = 0.0
+
+    def _chama(texto_prompt: str) -> tuple[str, float]:
+        nonlocal_result = chat_completion(
+            headers=headers, virtual_key=virtual_key, model=model,
+            messages=[{"role": "user", "content": texto_prompt}],
+            # 8000: found in the real run with Haiku — 4000 truncated the JSON
+            # in the middle of the content ("Unterminated string").
+            timeout=_AUTHORING_CALL_TIMEOUT_SECONDS, max_tokens=8000, temperature=0,
+        )
+        return (nonlocal_result.content or ""), float(getattr(nonlocal_result, "cost_usd", 0.0) or 0.0)
+
+    try:
+        parsed, cost_usd = complete_json(_chama, prompt)
+        files = parsed.get("files") or []
+    except ModelJsonError as exc:
+        return None, exc.cost_usd
+    except Exception as exc:  # noqa: BLE001
+        _raise_if_permanent_provider_error(exc)  # billing/auth: a mensagem certa na issue
+        logger.warning("tester via model failed (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return None, cost_usd
     if files is None:
         return None, cost_usd
 

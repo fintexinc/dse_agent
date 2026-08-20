@@ -767,7 +767,29 @@ if _HAS_TEMPORAL:
 
     @activity.defn(name=WSE_ACTIVITY_RUN_L2_REVIEW)
     async def wse_run_l2_review(inp: RunL2ReviewInput) -> L2Verdict:
-        return await asyncio.to_thread(_run_l2_review, inp)
+        # rc.104 — DESARMAR ANTES DE LIGAR. Esta activity roda sob
+        # `RetryPolicy(maximum_attempts=0)` (`_run_model_activity`), cuja
+        # política é: falha permanente é levantada `non_retryable` NA FONTE;
+        # o resto retenta sob o teto de relógio de ~2h. Uma resposta de modelo
+        # que não parseia é permanente por construção — `temperature=0`, mesmo
+        # prompt, mesma saída — então sem esta tradução ela retentaria por duas
+        # horas, faturando cada tentativa fora do orçamento do item.
+        #
+        # O custo que JÁ foi faturado viaja no erro e vai no primeiro detail,
+        # que é o que o workflow lê para cobrar.
+        from temporalio.exceptions import ApplicationError
+
+        from dse_validation.model_json import ModelJsonError
+
+        try:
+            return await asyncio.to_thread(_run_l2_review, inp)
+        except ModelJsonError as exc:
+            raise ApplicationError(
+                f"l2_answer_never_parsed: {exc}",
+                {"cost_usd": exc.cost_usd},
+                type="ModelAnswerUnparseable",
+                non_retryable=True,
+            ) from exc
 
     @activity.defn(name=WSE_ACTIVITY_RECORD_FIX_LOOP)
     async def wse_record_fix_loop(inp: RecordFixLoopInput) -> dict:

@@ -19,7 +19,6 @@ there would silently re-root every navigation.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -125,14 +124,11 @@ def resolve_deep_link(
         logger.warning("deep link resolution failed (%s: %s)", type(exc).__name__, str(exc)[:200])
         return {"path": None, "note": "", "cost_usd": cost}
 
-    texto = (resposta or "").strip()
-    if texto.startswith("```"):
-        texto = texto.strip("`\n")
-        texto = texto[4:] if texto.startswith("json") else texto
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(texto.strip())
-    except json.JSONDecodeError:
-        logger.warning("deep link output did not parse: %.200s", texto)
+    from dse_validation.model_json import parse_model_json
+
+    parsed, motivo = parse_model_json(resposta or "")
+    if parsed is None:
+        logger.warning("deep link output did not parse (%s): %.200s", motivo, resposta)
         return {"path": None, "note": "", "cost_usd": cost}
 
     path = _validate_path(parsed.get("path"))

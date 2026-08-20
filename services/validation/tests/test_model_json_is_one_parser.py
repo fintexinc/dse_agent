@@ -113,3 +113,21 @@ def test_a_good_first_answer_never_pays_for_a_second():
     payload, custo = complete_json(completa, "julgue")
     assert payload == {"passed": True} and len(chamadas) == 1
     assert abs(custo - 0.01) < 1e-9
+
+
+def test_the_l2_activity_marks_an_unparseable_answer_as_non_retryable():
+    """DESARMAR ANTES DE LIGAR (o revisor real entra na rc.105): a activity
+    roda sob `maximum_attempts=0`, e uma resposta que não parseia é permanente
+    por construção — `temperature=0`, mesmo prompt, mesma saída. Sem a
+    tradução, ela retentaria por duas horas faturando cada tentativa."""
+    import inspect
+    import os
+
+    os.environ.setdefault("DSE_CODER_SUBSTRATE", "fake")
+    from dse_validation import activities
+
+    src = inspect.getsource(activities)
+    assert "ModelJsonError" in src and "non_retryable=True" in src, (
+        "o erro de parse do L2 não é traduzido para não-retentável na fronteira "
+        "do Temporal — a mina continua armada para a rc.105"
+    )

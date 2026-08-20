@@ -83,9 +83,9 @@ class ModelPreviewTriageSession:
     triage é uma decisão de revisão sobre o trabalho já feito."""
 
     def decide(self, prompt: str) -> tuple[dict, float]:
-        import json as _json
 
         from dse_contracts.gateway_contract import GatewayCallHeaders, Stage
+        from dse_validation.model_json import parse_model_json
         from model_gateway_client.gateway_call import chat_completion
         from model_gateway_client.virtual_keys import mint_virtual_key
 
@@ -109,7 +109,9 @@ class ModelPreviewTriageSession:
         if text.startswith("```"):
             text = text.strip("`\n")
             text = text[4:] if text.startswith("json") else text
-        raw, _ = _json.JSONDecoder().raw_decode(text.strip())
+        raw, _motivo = parse_model_json(text)
+        if raw is None:
+            raise ValueError(f"preview triage answer did not parse: {_motivo}")
         return raw, float(result.cost_usd or 0.0)
 
     def __init__(self, tenant_id: str = "", work_item_id: str = ""):
