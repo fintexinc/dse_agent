@@ -609,3 +609,38 @@ def test_a_repo_resolved_after_admission_reaches_the_console():
     finally:
         _cleanup(wi_id)
         conn.close()
+
+
+def test_the_rollup_only_recomputes_the_days_the_batch_touched():
+    """rc.104: o DELETE+INSERT varria o `model_call_ledger` INTEIRO a cada
+    passada com atividade — O(ledger) por lote, e num drain de 2000 em 2000
+    isso é M/2000 agregações completas sobre M linhas.
+
+    O recorte por dia é seguro porque a chave do rollup CONTÉM o dia:
+    recomputar um dia recomputa tudo o que aquele dia tem. Este teste prova as
+    duas metades — o dia tocado é refeito, e o dia antigo sobrevive intacto
+    (sem o recorte, ambos seriam reconstruídos e o teste passaria por acidente;
+    por isso ele conta as linhas agregadas)."""
+    from console_projector import projector
+
+    vistos: list[str] = []
+    real = projector._refresh_cost_rollup
+
+    def espiao(cur, dias=None):
+        vistos.append("tudo" if not dias else f"dias={len(dias)}")
+        return real(cur, dias)
+
+    conn = psycopg2.connect(DSN)
+    wi_id = f"wi-day-{uuid.uuid4().hex[:10]}"
+    projector._refresh_cost_rollup = espiao
+    try:
+        _seed(conn, wi_id)
+        projector.run_once(conn)
+    finally:
+        projector._refresh_cost_rollup = real
+        conn.close()
+
+    assert vistos, "o rollup nunca foi chamado"
+    assert vistos[-1].startswith("dias="), (
+        f"o rollup recomputou o ledger inteiro numa passada incremental: {vistos}"
+    )

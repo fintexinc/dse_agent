@@ -358,6 +358,11 @@ def _project_ledger(cur) -> int:
             ),
         )
     _advance(cur, "model_call_ledger", last_id=rows[-1]["id"])
+    # Os DIAS que este lote tocou: é o recorte do rollup abaixo. Sem eles a
+    # agregação varria o ledger inteiro a cada passada.
+    _project_ledger.dias_tocados = sorted({
+        r["created_at"].date() for r in rows if r.get("created_at")
+    })
     return len(rows)
 
 
@@ -365,16 +370,32 @@ def _project_ledger(cur) -> int:
 # API
 # ---------------------------------------------------------------------------
 
-def _refresh_cost_rollup(cur) -> int:
+def _refresh_cost_rollup(cur, dias=None) -> int:
     """Plan 08 §E — recomputes the cost rollup from the SoR (model_call_ledger,
     the P8 cost truth), aggregating by day x repo x model x task_class. Full
     recompute (DELETE+INSERT) -> idempotent by construction (the reconciliation
     test guarantees rollup == ledger). Called only when the ledger advanced in
     this pass (cheap enough at dev scale; an incremental rollup is the upgrade
     once volume demands it). Returns the number of rollup cells."""
-    cur.execute("DELETE FROM console_rm.cost_rollup")
+    # `dias` = None recomputa TUDO (o caminho do drain/DR, que precisa
+    # reconstruir o rollup inteiro). Com uma lista, o recorte é por dia: o
+    # DELETE+INSERT sobre o ledger INTEIRO a cada passada com atividade era
+    # O(ledger) por lote — num drain de 2000 em 2000, M/2000 agregações
+    # completas sobre M linhas. Idempotente do mesmo jeito, porque a chave do
+    # rollup contém o dia: recomputar um dia é recomputar tudo o que aquele dia
+    # tem.
+    filtro = ""
+    args: tuple = ()
+    if dias:
+        filtro = "WHERE (l.created_at AT TIME ZONE 'UTC')::date = ANY(%s)"
+        args = (list(dias),)
+        cur.execute(
+            "DELETE FROM console_rm.cost_rollup WHERE day = ANY(%s)", (list(dias),)
+        )
+    else:
+        cur.execute("DELETE FROM console_rm.cost_rollup")
     cur.execute(
-        """
+        f"""
         INSERT INTO console_rm.cost_rollup
             (tenant_id, day, repo, model, task_class, run_count, cost_usd, tokens_in, tokens_out)
         SELECT l.tenant_id,
@@ -386,8 +407,10 @@ def _refresh_cost_rollup(cur) -> int:
                COALESCE(sum(l.tokens_in), 0), COALESCE(sum(l.tokens_out), 0)
         FROM model_call_ledger l
         LEFT JOIN work_items wi ON wi.id = l.work_item_id
+        {filtro}
         GROUP BY 1, 2, 3, 4, 5
-        """
+        """,
+        args,
     )
     return cur.rowcount
 
@@ -408,7 +431,7 @@ def run_once(conn) -> dict[str, int]:
             # work on every idle tick). Does NOT count toward drain convergence
             # (it is derived, not a cursor-backed source).
             if counts["model_call_ledger"] > 0:
-                _refresh_cost_rollup(cur)
+                _refresh_cost_rollup(cur, getattr(_project_ledger, "dias_tocados", None))
     return counts
 
 
