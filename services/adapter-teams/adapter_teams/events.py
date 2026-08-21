@@ -209,3 +209,24 @@ def task_fetch_work_item(activity: dict[str, Any]) -> str | None:
         return None
     item = data.get("work_item_id")
     return str(item) if item else None
+
+
+def correlation_ref(activity: dict[str, Any]) -> dict[str, str]:
+    """O ref que a correlação usa para achar (ou não) uma tarefa existente.
+
+    NÃO é o `source_ref`: aquele é o endereço de RESPOSTA, gravado no banco e
+    igual para toda a conversa. Este decide *com o que a mensagem casa*.
+
+      menção        -> conversa + id DESTA activity. Nenhum item existente tem
+                       essa chave no `source_ref`, então nada casa e o pedido
+                       vira tarefa nova. É o análogo do `thread_ts` próprio que
+                       uma mensagem-raiz tem no Slack.
+      sem menção    -> só a conversa, casando com a tarefa mais recente dela:
+                       falar sem chamar o bot é dirigir o que ele já faz.
+
+    `service_url` fica de fora dos dois: ele varia por região e por tenant, e
+    entrar aqui transformaria uma troca de região em "nenhuma tarefa casou"."""
+    ref = {"conversation_id": conversation_id(activity)}
+    if is_mention(activity):
+        ref["root_activity_id"] = activity_id(activity)
+    return ref

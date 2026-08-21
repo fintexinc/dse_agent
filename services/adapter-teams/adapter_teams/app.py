@@ -138,13 +138,18 @@ def _plan_dialog_for(activity: dict) -> dict:
 
 
 def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
-                               extra_payload: dict | None = None) -> dict:
+                               extra_payload: dict | None = None,
+                               correlation_ref: dict | None = None) -> dict:
     conv_id = conv_event.source_ref["conversation_id"]
     sanitized = sanitize_content(conv_event.content_snapshot)
 
     conn = get_connection()
     try:
-        result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
+        # `correlation_ref` (e não o `source_ref` do evento): menção abre
+        # tarefa nova, mensagem simples dirige a mais recente da conversa.
+        result = correlate(conn, tenant_id=tenant_id, event=conv_event,
+                           requester_principal=principal,
+                           correlation_ref=correlation_ref)
 
 
         if result.kind == "signal":
@@ -292,7 +297,8 @@ async def teams_messages(request: Request):
     tenant_id = _resolve_tenant_for(activity)
     conv_event = events.build_conversation_event(activity, resolved_principal=principal)
     return _handle_conversation_event(conv_event, principal=principal, tenant_id=tenant_id,
-                                      extra_payload=extra_payload)
+                                      extra_payload=extra_payload,
+                                      correlation_ref=events.correlation_ref(activity))
 
 
 class StatusCommentRequest(BaseModel):
