@@ -2943,6 +2943,18 @@ class WorkItemLifecycleWorkflow:
                     details={"attempt": input.coder_retry_count,
                              "failed": [f.check for f in failed_checks]},
                 )
+                # E a superfície volta junto. `_set_status` grava a coluna e
+                # audita; quem fala com o humano é esta chamada, e sem ela o
+                # card ficava em "Validate" por toda a vida do laço — meia hora
+                # medida em wi_c2686b91b84, com o operador concluindo que a
+                # validação era o gargalo quando o L1 custava 5 dos 24 minutos.
+                # O detalhe diz QUAIS gates reprovaram e em que tentativa: é o
+                # que faz "Build" contar alguma coisa em vez de piscar.
+                await self._post_status_comment(
+                    "implementing",
+                    detail=(f"attempt {input.coder_retry_count} — fixing: "
+                            + ", ".join(f.check for f in failed_checks)),
+                )
                 continue  # new Coder turn on the same sandbox/branch
 
             # L1 passed -> fresh-context Reviewer L2 (WSC-E3-T5/WSE-E2).
