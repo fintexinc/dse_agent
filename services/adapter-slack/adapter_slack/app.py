@@ -31,7 +31,6 @@ from ingest_gateway import (
     recorded_work_item_id,
     correlate,
     get_connection,
-    is_authorized_to_steer,
     pending_reply_work_items,
     record_signal_event,
     resolve_tenant,
@@ -369,9 +368,6 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
         if result is None:
             result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         # `signal_only` is the reconciler's leash (/internal/reconcile): that
         # caller recovers REPLIES to an existing task and must never manufacture
@@ -630,20 +626,6 @@ async def slack_interactions(request: Request) -> dict:
     # a primeira. As três estão pinadas em `test_plan_details_modal.py`.
     if action.get("action_id") == "dse_plan_details":
         channel = payload["channel"]["id"]
-        # MESMO gate dos outros botões. A primeira versão não tinha, com o
-        # argumento de que "ler não injeta direção" — verdadeiro sobre
-        # INTEGRIDADE e irrelevante aqui, porque a questão é
-        # CONFIDENCIALIDADE. O modal mostra o que a mensagem do canal não
-        # mostra: caminhos reais do repo do cliente, o teto de diff e — pior —
-        # `forbidden_paths`, que é o mapa das guardas. Entregar isso a um
-        # convidado de canal é reconhecimento de guarda por um clique.
-        if not is_authorized_to_steer(tenant_id, principal):
-            audit_emit(actor=principal, action="plan_details_refused_unauthorized",
-                       tenant_id=tenant_id,
-                       details={"channel": channel})
-            _notify_ephemeral(channel, user_id,
-                              "You are not allowed to read this task's plan.")
-            return {"ok": True, "path": "unauthorized"}
         message = payload.get("message") or {}
         work_item_id, plan, risk, item_repo, siblings, outcome = _plan_for_message(
             tenant_id, channel, message)
@@ -703,20 +685,6 @@ async def slack_interactions(request: Request) -> dict:
                 "Pick a repository from the menu, then hit *Confirm*.",
             )
             return {"ok": True, "path": "repo_select_noop"}
-        # Security parity with correlate's clarification_answer gate (steering
-        # allowlist). Without this, anyone in the channel could pick the repo.
-        if not is_authorized_to_steer(tenant_id, principal):
-            audit_emit(actor=principal, action="steering_rejected_unauthorized",
-                       tenant_id=tenant_id,
-                       details={"kind": "repo_select", "work_item_id": work_item_id})
-            # The gate denies by default; whoever clicked has to know they were
-            # refused, not that the button is broken. This leaks nothing: the
-            # person is already in the channel and already saw the message.
-            _notify_ephemeral(
-                channel, user_id,
-                "You don't have permission to choose the repository for this task.",
-            )
-            return {"ok": True, "path": "unauthorized"}
         conn = get_connection()
         try:
             # The repo arrives via the message `state`; confining it to the

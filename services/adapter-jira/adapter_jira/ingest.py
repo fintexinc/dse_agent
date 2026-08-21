@@ -56,9 +56,6 @@ def ingest_task_trigger(
     try:
         result = correlate(conn, tenant_id=tenant_id, event=ev, requester_principal=resolved_principal)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         if result.kind == "signal":
             record_signal_event(
@@ -529,9 +526,6 @@ def ingest_comment(
 
         result = correlate(conn, tenant_id=tenant_id, event=ev, requester_principal=resolved_principal)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         if result.kind == "signal":
             record_signal_event(

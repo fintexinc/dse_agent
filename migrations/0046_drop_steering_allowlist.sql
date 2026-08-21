@@ -1,0 +1,17 @@
+-- A allowlist de DIREÇÃO sai (decisão do operador, 2026-08-21).
+--
+-- Ela decidia quem podia falar com uma tarefa em voo — dirigir, responder
+-- clarificação, comentar review. Quem não estivesse nela via o próprio
+-- comentário virar `steering_rejected_unauthorized` e sumir em silêncio.
+--
+-- O convite ao canal passou a ser a autorização: quem tem acesso ao canal já
+-- lê tudo que o DSE escreve ali (plano, arquivos tocados, veredito dos gates),
+-- e a assimetria de poder ler sem poder responder custava mais do que
+-- protegia. O custo era recorrente, não pontual: cada superfície nova recriava
+-- o problema, porque a mesma pessoa tem uma identidade por plataforma e
+-- nenhuma delas nasce na lista — foi o que aconteceu no primeiro dia do Teams.
+--
+-- A APROVAÇÃO DE PLANO não sai com isto e nunca dependeu desta tabela: quem
+-- pode aprovar continua sendo resolvido pela cascata própria (CODEOWNERS →
+-- aprovadores designados do access bundle).
+DROP TABLE IF EXISTS tenant_steering_allowlist;

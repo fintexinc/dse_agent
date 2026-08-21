@@ -259,31 +259,6 @@ def test_a_missing_plan_does_not_break_the_button(fake_slack):
     assert "not available" in rendered.lower() or "no plan" in rendered.lower()
 
 
-def test_an_unauthorized_click_reads_nothing(fake_slack):
-    """A pergunta que os outros testes NÃO faziam.
-
-    Eles provavam que o autorizado consegue ler o plano; nenhum perguntava se o
-    NÃO autorizado também consegue — e a resposta, na primeira versão deste
-    botão, era sim. O argumento era "ler não injeta direção": verdadeiro sobre
-    integridade, irrelevante aqui, porque a questão é confidencialidade.
-
-    O que o modal mostra e a mensagem do canal não mostra: caminhos reais do
-    repositório do cliente, o teto de diff e `forbidden_paths` — o mapa das
-    guardas. Um convidado de canal único sairia sabendo quais caminhos evitar
-    para não escalar o risco e cair no gate."""
-    _, post = _item_at_the_plan_gate(fake_slack, ts="7006.000100")
-    before = len(fake_slack.views_open_calls)
-
-    result = _click_details(post, user="U_STRANGER")
-
-    assert result.get("path") == "unauthorized", result
-    assert len(fake_slack.views_open_calls) == before, (
-        "o modal abriu para quem não pode dirigir a tarefa — e ele carrega o "
-        "mapa das guardas do repositório do cliente"
-    )
-    assert fake_slack.ephemeral_calls, "quem clicou merece saber por que nada aconteceu"
-
-
 def test_the_modal_shows_the_EFFECTIVE_risk_not_the_declared_one(fake_slack):
     """`policy.classify_risk` só escala PARA CIMA: um plano que declara `low` e
     toca `.github/workflows/` é `high` de verdade, e é por isso que o gate

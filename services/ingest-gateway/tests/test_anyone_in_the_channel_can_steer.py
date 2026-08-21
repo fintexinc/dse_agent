@@ -83,10 +83,16 @@ def test_the_refusal_verb_is_gone_from_the_vocabulary():
     """`unauthorized` era um dos três resultados possíveis da correlação, e
     todo adapter tinha um ramo para ele. Deixar o verbo vivo sem quem o
     produza é o tipo de resto que volta a ser lido como regra."""
-    from ingest_gateway import correlate as mod
+    import typing
+
+    # `ingest_gateway.correlate` resolve para a FUNÇÃO reexportada no
+    # `__init__`, que sombreia o submódulo — daí o import_module.
+    import importlib
+
+    mod = importlib.import_module("ingest_gateway.correlate")
 
     assert not hasattr(mod, "_STEERING_GATED_KINDS")
-    assert "unauthorized" not in getattr(mod, "CorrelationKind").__args__
+    assert "unauthorized" not in typing.get_args(mod.CorrelationKind)
 
 
 def test_plan_approval_still_has_its_own_gate():

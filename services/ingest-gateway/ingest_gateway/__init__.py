@@ -11,7 +11,6 @@ from .db import get_connection
 from .kill_switch import is_channel_killed
 from .gateway import admit_work_item, record_signal_event, AdmissionBlocked, NonTaskAdmissionRefused
 from .correlate import correlate, CorrelationResult
-from .steering import is_authorized_to_steer
 from .security import (
     verify_slack_signature,
     verify_github_signature,
@@ -63,7 +62,6 @@ __all__ = [
     "NonTaskAdmissionRefused",
     "correlate",
     "CorrelationResult",
-    "is_authorized_to_steer",
     "verify_slack_signature",
     "verify_github_signature",
     "verify_jira_signature",

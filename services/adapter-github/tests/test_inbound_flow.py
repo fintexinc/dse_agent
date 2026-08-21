@@ -205,46 +205,6 @@ def test_pr_comment_on_active_work_item_correlates_as_signal_zero_new_work_items
     conn.close()
 
 
-def test_pr_comment_by_unauthorized_principal_is_rejected_not_signaled():
-    """WSA-E6-T2a: a review_comment from a principal outside the tenant's
-    allowlist is rejected (does not become a signal), even when there is a
-    matching active WorkItem."""
-    created = _post(
-        {
-            "action": "labeled",
-            "issue": {"number": 450, "title": "t", "body": "b"},
-            "label": {"name": "dse"},
-            "repository": {"full_name": "acme/widgets"},
-            "sender": {"login": "alice"},
-        },
-        "issues",
-        "delivery-450",
-    )
-    work_item_id = created["work_item_id"]
-
-    review = _post(
-        {
-            "action": "created",
-            "issue": {"number": 450, "pull_request": {"url": "https://api.github.com/x"}},
-            "comment": {"id": 5010, "body": "do something else entirely", "user": {"login": "random_outsider"}},
-            "repository": {"full_name": "acme/widgets"},
-        },
-        "issue_comment",
-        "delivery-451",
-    )
-    assert review["path"] == "unauthorized"
-
-    conn = psycopg2.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM audit_log WHERE tenant_id=%s AND action='steering_rejected_unauthorized' "
-            "AND work_item_id=%s",
-            (TENANT_ID, work_item_id),
-        )
-        assert cur.fetchone()[0] == 1
-    conn.close()
-
-
 def test_pull_request_review_comment_event_correlates_as_signal():
     created = _post(
         {

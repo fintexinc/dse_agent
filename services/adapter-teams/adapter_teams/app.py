@@ -34,7 +34,6 @@ from ingest_gateway import (
     admit_work_item,
     correlate,
     get_connection,
-    is_authorized_to_steer,
     record_signal_event,
     resolve_repo,
     resolve_tenant,
@@ -103,31 +102,21 @@ def _resolve_tenant_for(activity: dict) -> str:
 def _plan_dialog_for(activity: dict) -> dict:
     """O diálogo do plano — leitura pura, gateada.
 
-    O MESMO gate dos botões (`is_authorized_to_steer`): não é integridade, é
-    confidencialidade. O diálogo mostra caminhos reais do repositório do
-    cliente e o risco efetivo; entregar isso a um convidado da conversa é
-    reconhecimento por um clique."""
+    Quem está na conversa lê o plano — a allowlist de direção saiu em
+    2026-08-21 (decisão do operador) e este diálogo saiu com ela: o convite ao
+    canal é a autorização, e quem tem acesso já lê tudo que o DSE escreve
+    ali."""
     work_item_id = events.task_fetch_work_item(activity)
     if not work_item_id:
         return refusal_dialog("I could not find the task for this message.")
 
-    _user_id, _display = events.actor_of(activity)
-    try:
-        principal = resolve_principal(platform="teams", platform_user_id=_user_id)
-    except Exception:  # noqa: BLE001 — sem identidade não há leitura
-        logger.warning("teams: principal unresolved for a plan dialog", exc_info=True)
-        return refusal_dialog("I could not identify you for this request.")
-
+    # Sem resolução de identidade aqui: a leitura do plano deixou de depender
+    # de QUEM clicou quando a allowlist de direção saiu. O que ainda escopa a
+    # leitura é o par (tenant, source) no SELECT abaixo.
     conn = get_connection()
     try:
         tenant_id = resolve_tenant(
             conn, platform="teams", binding_key=events.aad_tenant_id(activity)).tenant_id
-        if not is_authorized_to_steer(tenant_id, principal):
-            audit_emit(actor=principal, action="plan_details_refused_unauthorized",
-                       tenant_id=tenant_id, work_item_id=work_item_id,
-                       details={"surface": "teams"})
-            conn.commit()
-            return refusal_dialog("You are not allowed to read this task's plan.")
         with conn.cursor() as cur:
             # Escopado por tenant E por source, como TODA leitura de
             # `work_items` neste repositório.
@@ -157,9 +146,6 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
     try:
         result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         if result.kind == "signal":
             record_signal_event(

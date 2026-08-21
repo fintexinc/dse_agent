@@ -132,9 +132,6 @@ def _handle_task_creating_event(conv_event, *, principal: str, tenant_id: str,
 
         result = correlate(conn, tenant_id=tenant_id, event=conv_event, requester_principal=principal)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         # The reconciler's leash. It recovers REPLIES to a task that already
         # exists and must never manufacture work: a re-read thread can stop
@@ -261,9 +258,6 @@ def _handle_pr_comment_event(conv_event, *, principal: str, tenant_id: str) -> d
         result = correlate(conn, tenant_id=tenant_id, event=conv_event,
                            requester_principal=principal, correlation_ref=ref)
 
-        if result.kind == "unauthorized":
-            conn.commit()
-            return {"ok": True, "path": "unauthorized"}
 
         if result.kind == "signal":
             recorded = record_signal_event(

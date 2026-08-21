@@ -272,23 +272,6 @@ def test_confirm_refuses_a_repo_the_tenant_never_offered(tenant_id, fake_slack):
     assert len(fake_slack.ephemeral_calls) == 1  # refusal explained, not silent
 
 
-def test_confirm_requires_steering_authorization(tenant_id, fake_slack):
-    """Parity with correlate's clarification_answer gate: without this, anyone in
-    the channel could pick the repo for someone else's task."""
-    _seed_repos(tenant_id)
-    work_item_id = _make_work_item(tenant_id)  # U_OUTSIDER never enters the allowlist
-
-    data = _post_interaction(
-        _interaction(work_item_id, action_id="dse_repo_confirm",
-                     user="U_OUTSIDER", selected={"value": REPO_A})
-    )
-
-    assert data["path"] == "unauthorized"
-    assert _clarification_snapshots(work_item_id) == []
-    # refused != broken: whoever clicked needs to understand why nothing happened
-    assert len(fake_slack.ephemeral_calls) == 1
-
-
 def test_confirm_falls_back_to_the_button_value_when_block_id_is_missing(tenant_id, fake_slack):
     """The button's `value` duplicates the work_item_id precisely for this case."""
     _seed_repos(tenant_id)
