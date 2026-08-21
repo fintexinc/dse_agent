@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import Any
 
 from dse_contracts import Actor, ConversationEvent, EventKind, Platform
+from dse_contracts.surface import REJECT_TOKENS as _REJECT_TOKENS  # noqa: F401
+from dse_contracts.surface import parse_approval_click
 
 
 def _actor_from_user_id(user_id: str, resolved_principal: str, display_name: str | None = None) -> Actor:
@@ -57,8 +59,6 @@ def build_event_from_thread_message(event: dict[str, Any], *, resolved_principal
     )
 
 
-from dse_contracts.surface import REJECT_TOKENS as _REJECT_TOKENS  # noqa: F401
-from dse_contracts.surface import parse_approval_click
 
 
 def parse_slack_approval(action_id: str, value: str) -> tuple[str, str | None]:

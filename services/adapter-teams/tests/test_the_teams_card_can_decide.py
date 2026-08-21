@@ -15,8 +15,6 @@ ele passa pela mesma porta assinada de sempre, sem rota nova no endpoint.
 """
 from __future__ import annotations
 
-import pytest
-
 from adapter_teams.card import status_card
 from adapter_teams import events
 

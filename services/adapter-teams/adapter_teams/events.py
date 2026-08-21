@@ -35,12 +35,14 @@ import re
 from typing import Any
 
 from dse_contracts import Actor, ConversationEvent, EventKind
-from dse_contracts.surface import ACTION_DETAILS, parse_approval_click
-
-#: O marcador que este bot põe em todo `Action.Submit` que desenha.
-CARD_MARKER = "dse"
 
 from .platform_compat import teams_platform
+from dse_contracts.surface import ACTION_DETAILS, parse_approval_click
+
+#: O marcador que este bot põe em todo `Action.Submit` que desenha — é o
+#: que separa clique de conversa e barra `value` de outra extensão.
+CARD_MARKER = "dse"
+
 
 _AT_TAG = re.compile(r"<at\b[^>]*>.*?</at>", re.IGNORECASE | re.DOTALL)
 

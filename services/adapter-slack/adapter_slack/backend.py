@@ -17,7 +17,16 @@ import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from dse_contracts.surface import STAGE_FOR_STATUS as _STAGE_FOR_STATUS  # noqa: F401
+from dse_contracts.surface import STAGES as _STAGES  # noqa: F401
+from dse_contracts.surface import progress_line as _progress_line
+
 from .ratelimit import RateLimitedSlackClient
+
+#: rc.90 — a barra de etapas; rc.111 — ela mora em `dse_contracts.surface`, com
+#: o Teams lendo a MESMA fonte. Cópia por adapter é o defeito que a regra do
+#: `core.hooksPath` pagou três vezes; aqui seria pior, porque duas superfícies
+#: mostrando etapas diferentes para o mesmo item não dá erro em lugar nenhum.
 
 
 class _SlackClientLike(Protocol):
@@ -26,15 +35,6 @@ class _SlackClientLike(Protocol):
     def chat_postEphemeral(self, *, channel: str, user: str, text: str) -> dict: ...
     def conversations_replies(self, *, channel: str, ts: str) -> dict: ...
     def views_open(self, *, trigger_id: str, view: dict) -> dict: ...
-
-
-#: rc.90 — a barra de etapas; rc.111 — ela mora em `dse_contracts.surface`,
-#: com o Teams lendo a MESMA fonte. Cópia por adapter é o defeito que a regra do
-#: `core.hooksPath` pagou três vezes; aqui seria pior, porque duas superfícies
-#: mostrando etapas diferentes para o mesmo item não dá erro em lugar nenhum.
-from dse_contracts.surface import STAGE_FOR_STATUS as _STAGE_FOR_STATUS  # noqa: F401
-from dse_contracts.surface import STAGES as _STAGES  # noqa: F401
-from dse_contracts.surface import progress_line as _progress_line
 
 
 def status_blocks(body: str, *, status: str = "", repo: str | None = None) -> list[dict]:

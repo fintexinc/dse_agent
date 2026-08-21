@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from . import events
 from .backend import TeamsCommentBackend, build_real_teams_client
+from .card import status_card
 from .comment_store import SURFACE, PgCommentStateStore
 from .config import (
     get_default_service_url,
@@ -98,7 +99,8 @@ def _resolve_tenant_for(activity: dict) -> str:
         conn.close()
 
 
-def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str) -> dict:
+def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
+                               extra_payload: dict | None = None) -> dict:
     conv_id = conv_event.source_ref["conversation_id"]
     sanitized = sanitize_content(conv_event.content_snapshot)
 
@@ -118,6 +120,7 @@ def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str) ->
                 work_item_id=result.work_item_id,
                 sanitized_content=sanitized,
                 conn=conn,
+                extra_payload=extra_payload,
             )
             return {"ok": True, "path": "signal", "work_item_id": result.work_item_id}
 
@@ -220,11 +223,33 @@ async def teams_messages(request: Request):
         return JSONResponse(status_code=501, content={"ok": False, "error": str(TeamsNotActivated())})
 
     # --- Post-activation path (exercised once the foundation exposes Platform.teams) ---
+    # Clique de card: vira `approval` com os marcadores DETERMINÍSTICOS que o
+    # dispatcher lê. Sem eles o padrão é `approved` — um "Reject" aprovaria o
+    # plano em silêncio, que é defeito de segurança do gate, não de UI.
+    veredito = events.card_verdict(activity)
+    extra_payload: dict | None = None
+    if veredito is not None:
+        if events.is_details_click(activity):
+            # Details existe em TODA mensagem, inclusive fora do gate: se caísse
+            # no fallthrough de veredito, um clique curioso aprovaria o plano.
+            audit_emit(
+                actor="system:adapter-teams",
+                action="teams_details_clicked",
+                tenant_id=get_tenant_id(),
+                details={"conversation_id": events.conversation_id(activity)},
+            )
+            return {"ok": True, "path": "details"}
+        verdict, route = veredito
+        extra_payload = {"approval_verdict": verdict}
+        if route:
+            extra_payload["approval_route"] = route
+
     user_id, display = events.actor_of(activity)
     principal = resolve_principal("teams", user_id, display)
     tenant_id = _resolve_tenant_for(activity)
     conv_event = events.build_conversation_event(activity, resolved_principal=principal)
-    return _handle_conversation_event(conv_event, principal=principal, tenant_id=tenant_id)
+    return _handle_conversation_event(conv_event, principal=principal, tenant_id=tenant_id,
+                                      extra_payload=extra_payload)
 
 
 class StatusCommentRequest(BaseModel):
@@ -233,6 +258,10 @@ class StatusCommentRequest(BaseModel):
     service_url: str
     body: str
     actor: str  # resolved principal of who/what triggered it (e.g. "system:orchestrator")
+    #: Decide a barra de etapas e a existência dos botões do gate. Opcional
+    #: porque chamador antigo (ou outro adapter reusando o modelo) continua
+    #: mandando só o corpo — e aí a mensagem é a de texto de sempre.
+    status: str | None = None
 
 
 @app.post("/internal/status-comment")
@@ -251,9 +280,26 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     store = PgCommentStateStore()
     writer = mutable_comment.MutableCommentWriter(backend, store, SURFACE)
 
+    # O repo vem do item, como no Slack: é o texto pequeno que faz dois irmãos
+    # de fan-out serem legíveis na MESMA conversa.
+    item_repo = None
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT repo FROM work_items WHERE id = %s", (req.work_item_id,))
+                row = cur.fetchone()
+            item_repo = row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — o card sem repo é pior que status nenhum
+        logger.warning("teams: the item's repo is unavailable; the card goes without it",
+                       exc_info=True)
+
     comment_ref = writer.upsert(
         req.work_item_id,
-        {"conversation_id": req.conversation_id, "service_url": service_url},
+        {"conversation_id": req.conversation_id, "service_url": service_url,
+         "card": status_card(req.body, status=req.status or "", repo=item_repo)},
         req.body,
     )
 

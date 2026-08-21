@@ -878,7 +878,12 @@ async def post_tracking_comment(payload: dict[str, Any]) -> dict[str, Any]:
     adapter_url, extra_fields = target
     # Slack uses `status` to build Block Kit on awaiting_plan_approval (Phase B);
     # github/jira do not have the field (do not send it — their models are strict).
-    if source == "slack":
+    # rc.111: o Teams entrou na mesma lista. O `status` decide a barra de etapas
+    # e a existência dos botões do gate no Adaptive Card — sem ele o Teams
+    # renderiza uma frase, que foi exatamente o beco em que uma tarefa de risco
+    # `high` ficava sem gesto de aprovação. github/jira seguem fora: os modelos
+    # deles são estritos e não têm o campo.
+    if source in ("slack", "teams"):
         extra_fields = {**extra_fields, "status": status}
         # A6: qual parque é — decide os vereditos renderizados (Reauthor só no
         # parque de spec própria do Tester). Slack-only, como o `status`.

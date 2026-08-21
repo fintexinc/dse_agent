@@ -25,15 +25,25 @@ from typing import Protocol
 
 
 class TeamsClientLike(Protocol):
-    def send_activity(self, *, service_url: str, conversation_id: str, text: str) -> str:
+    def send_activity(self, *, service_url: str, conversation_id: str, text: str,
+                      attachments: list[dict] | None = None) -> str:
         """Creates a message activity in the conversation. Returns the `activity id`."""
         ...
 
     def update_activity(
-        self, *, service_url: str, conversation_id: str, activity_id: str, text: str
+        self, *, service_url: str, conversation_id: str, activity_id: str, text: str,
+        attachments: list[dict] | None = None,
     ) -> None:
         """Edits the existing activity in-place."""
         ...
+
+
+def _attachments(surface_ref: dict) -> list[dict] | None:
+    """O Adaptive Card que o CHAMADOR renderizou, no mesmo desenho do Slack
+    (lá `surface_ref["blocks"]`, aqui `["card"]`): o backend entrega, não monta.
+    Ausente = mensagem de texto de sempre."""
+    card = surface_ref.get("card")
+    return [card] if card else None
 
 
 class TeamsCommentBackend:
@@ -51,7 +61,8 @@ class TeamsCommentBackend:
         service_url = surface_ref["service_url"]
         conversation_id = surface_ref["conversation_id"]
         activity_id = self._client.send_activity(
-            service_url=service_url, conversation_id=conversation_id, text=body
+            service_url=service_url, conversation_id=conversation_id, text=body,
+            attachments=_attachments(surface_ref),
         )
         return json.dumps(
             {
@@ -68,6 +79,10 @@ class TeamsCommentBackend:
             conversation_id=ref["conversation_id"],
             activity_id=ref["activity_id"],
             text=body,
+            # O card vem do `surface_ref` da CHAMADA, não do `comment_ref`
+            # gravado no post: o gate nasce num edit, e o card dele não existia
+            # quando a mensagem foi criada.
+            attachments=_attachments(surface_ref),
         )
 
 
@@ -82,23 +97,27 @@ class FakeTeamsClient:
     send_calls: list[dict] = field(default_factory=list)
     update_calls: list[dict] = field(default_factory=list)
 
-    def send_activity(self, *, service_url: str, conversation_id: str, text: str) -> str:
+    def send_activity(self, *, service_url: str, conversation_id: str, text: str,
+                      attachments: list[dict] | None = None) -> str:
         self._next_id += 1
         activity_id = f"1{self._next_id}"
         self.activities[activity_id] = text
         self.send_calls.append(
-            {"service_url": service_url, "conversation_id": conversation_id, "text": text, "activity_id": activity_id}
+            {"service_url": service_url, "conversation_id": conversation_id, "text": text,
+             "activity_id": activity_id, "attachments": attachments}
         )
         return activity_id
 
     def update_activity(
-        self, *, service_url: str, conversation_id: str, activity_id: str, text: str
+        self, *, service_url: str, conversation_id: str, activity_id: str, text: str,
+        attachments: list[dict] | None = None,
     ) -> None:
         if activity_id not in self.activities:
             raise KeyError(f"update_activity on a nonexistent activity: {activity_id}")
         self.activities[activity_id] = text
         self.update_calls.append(
-            {"service_url": service_url, "conversation_id": conversation_id, "activity_id": activity_id, "text": text}
+            {"service_url": service_url, "conversation_id": conversation_id,
+             "activity_id": activity_id, "text": text, "attachments": attachments}
         )
 
 
@@ -150,29 +169,41 @@ class RealTeamsClient:
         self._token_exp = now + int(payload.get("expires_in", 3600))
         return self._token
 
-    def send_activity(self, *, service_url: str, conversation_id: str, text: str) -> str:
+    def send_activity(self, *, service_url: str, conversation_id: str, text: str,
+                      attachments: list[dict] | None = None) -> str:
         import requests
 
         url = f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities"
+        # `text` viaja SEMPRE, mesmo com card: é ele que aparece na notificação
+        # do celular e nos clientes que não renderizam Adaptive Card.
+        corpo: dict = {"type": "message", "text": text}
+        if attachments:
+            corpo["attachments"] = attachments
         resp = requests.post(
             url,
             headers={"Authorization": f"Bearer {self._bearer()}"},
-            json={"type": "message", "text": text},
+            json=corpo,
             timeout=15,
         )
         resp.raise_for_status()
         return resp.json()["id"]
 
     def update_activity(
-        self, *, service_url: str, conversation_id: str, activity_id: str, text: str
+        self, *, service_url: str, conversation_id: str, activity_id: str, text: str,
+        attachments: list[dict] | None = None,
     ) -> None:
         import requests
 
         url = f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities/{activity_id}"
+        # `attachments` vai SEMPRE (lista vazia quando não há card): o PUT do
+        # connector substitui a activity, então omitir o campo deixaria os
+        # botões de um gate já decidido vivos e clicáveis para sempre — o
+        # mesmo defeito que o Slack corrigiu mandando `blocks` sempre.
+        corpo: dict = {"type": "message", "text": text, "attachments": attachments or []}
         resp = requests.put(
             url,
             headers={"Authorization": f"Bearer {self._bearer()}"},
-            json={"type": "message", "text": text},
+            json=corpo,
             timeout=15,
         )
         resp.raise_for_status()
