@@ -130,6 +130,59 @@ _OOM_MARKERS = (
 _LINT_CONCISE_RE = re.compile(r"^\S+:\d+:\d+:\s")
 _LINT_ARROW_RE = re.compile(r"^\s*-->\s+(?P<loc>\S+:\d+:\d+)\s*$")
 
+#: spotless-maven: a saída é uma LISTA DE ARQUIVOS violados, cada um seguido do
+#: diff que o consertaria. Nenhuma linha é `path:line:col` — o dialeto inteiro
+#: era invisível para este parser, e a primeira execução real do spotless num
+#: repo do cliente (wi_6d1e0f5fc7e, 16,46s depois de três releases consertando
+#: a rede) escalou como "não consegui ler" um veredito de formatação legítimo.
+#: A linha de arquivo é a única `[ERROR] <token-único>` cujo token é um caminho
+#: nu: tem `/`, termina em extensão, sem `·` (o marcador de espaço que o diff
+#: usa) — o corpo do diff começa em `@@`/`+`/`-`/`·` ou termina em `;`.
+_SPOTLESS_MARKERS = ("had format violations", "spotless:apply")
+_SPOTLESS_FILE_RE = re.compile(
+    r"^\[ERROR\]\s+(?P<path>[^\s@+\-·][^\s]*\.[A-Za-z0-9]{1,10})\s*$"
+)
+
+
+def _spotless_violations(text: str, changed_files: set[str] | None) -> list[str]:
+    """Linhas canônicas `path:1:1: ...` sintetizadas do relatório do spotless.
+
+    Duas decisões que não são detalhe:
+
+    - O caminho impresso é relativo ao MÓDULO Maven (`src/test/...`); o diff do
+      item é relativo ao repositório (`rest-adapter/src/test/...`). Sem
+      resolver por sufixo contra `changed_files`, o casamento exato do escopo
+      descartaria a violação NOSSA como "de outro arquivo" e o gate passaria
+      por cima do veredito que acabou de aprender a ler.
+    - A linha sintetizada carrega o caminho (do repositório, quando resolve):
+      os nomes vêm ANTES dos diffs na saída e o detail guarda o `_tail` — numa
+      saída longa o tail corta justamente os nomes."""
+    if not any(m in text for m in _SPOTLESS_MARKERS):
+        return []
+    out: list[str] = []
+    vistos: set[str] = set()
+    for ln in text.splitlines():
+        m = _SPOTLESS_FILE_RE.match(ln)
+        if not m:
+            continue
+        path = m.group("path")
+        if "/" not in path or "·" in path:
+            continue
+        resolvido = path
+        if changed_files is not None and path not in changed_files:
+            candidatos = sorted(f for f in changed_files if f.endswith("/" + path))
+            if candidatos:
+                resolvido = candidatos[0]
+        if resolvido in vistos:
+            continue
+        vistos.add(resolvido)
+        out.append(
+            f"{resolvido}:1:1: SPOTLESS format violation — the file does not "
+            "match the repository's declared format (run spotless:apply, or "
+            "apply the diff shown below)"
+        )
+    return out
+
 
 def _lint_diagnostics(text: str) -> list[str]:
     """Uma linha por diagnóstico, normalizada para começar em `path:line:col`.
@@ -319,6 +372,11 @@ def lint_check(
     # diagnóstico no stderr quando o stdout está tomado, e ler um stream só é
     # a mesma aposta que custou dois dias no #60.
     issue_lines = _lint_diagnostics(_output(result))
+    if not issue_lines:
+        # Dialeto do spotless: nenhuma linha `path:line:col`, então a sintaxe
+        # concisa nunca compete com ele — a síntese só roda quando o parser
+        # canônico não viu nada.
+        issue_lines = _spotless_violations(_output(result), changed_files)
     all_issues = len(issue_lines)
     issue_lines = _only_in_changed_files(issue_lines, changed_files)
     # `result.ok` is dropped from the verdict ON PURPOSE when the diff is known:
