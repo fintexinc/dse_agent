@@ -50,7 +50,7 @@ global:
 #     vault/otel) stay in the public repositories, with no prefix. ---
 # rc.53: adapters + gateway precisam do F1/F2 (thread do bot, bot_ts, recusa
 # non-task) — parados na rc.31 desde sempre; sobe tudo junto do mesmo main.
-_ghcrTag: &ghcrTag "v0.1.0-rc.116"
+_ghcrTag: &ghcrTag "v0.1.0-rc.117"
 
 # --- CPU requests right-sized against MEASURED usage (2026-07-25) ------------
 # The node sat at 97% CPU *reserved* while using 9%: 1843m of the 2000m was
@@ -77,7 +77,7 @@ orchestrator:
   defaultWorkItemMaxUsd: 50
   coderRetryCap: 8
   replicas: 1                  # POC: 1 replica (HA fora de escopo)
-  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.116", digest: "sha256:8c84d6628d396de8a36fa5c54d492dcf7169e2453b7ea1c153072b30b341bf68" }
+  image: { repository: ghcr.io/fintexinc/dse_agent/orchestrator, tag: "v0.1.0-rc.117", digest: "sha256:7455e0055770d95563b07091afe9434f2ec8fdd2c35a1e88c0ea37dc98b11cda" }
   resources:
     # Medido 3m/80Mi ocioso. Roda os gates do L1 IN-PROCESS, então estoura
     # muito acima do ocioso — por isso o request fica bem acima do medido.
@@ -236,7 +236,7 @@ replyReconciler:
 # empty next to 21 real work items.
 consoleProjector:
   enabled: true
-  image: { repository: ghcr.io/fintexinc/dse_agent/console-projector, tag: *ghcrTag, digest: "sha256:3fea4022d08998974c82a04df042c58ba543df41455e26bd90b8595076df5e54" }
+  image: { repository: ghcr.io/fintexinc/dse_agent/console-projector, tag: *ghcrTag, digest: "sha256:93418eefbfa5549811813e4a08c8241f73bce652e5798a99c347da9aa76d6305" }
   resources:
     requests: { cpu: "50m", memory: "128Mi" }
     limits: { cpu: "400m", memory: "384Mi" }
@@ -353,8 +353,8 @@ runtime:
     # LOCKSTEP OBRIGATORIO: PostTurnRequest/Result sao extra="forbid" e mudaram
     # nesta rc. Esta tag e a do orchestrator TEM de subir juntas -- fixar so
     # uma das duas quebra o post_turn dentro do Pod.
-    tag: "v0.1.0-rc.116"
-    digest: "sha256:31d5556f9d36a7bda7a6c11a9380027520c021fa06285295aa9d5244cde4fa3c"
+    tag: "v0.1.0-rc.117"
+    digest: "sha256:6f81a4bb5c3254f873e06edbdde4271a63d62fa6d054d997bf2dfb70b17dbf6a"
   # Ceiling per sandbox, not a concurrency cap: each turn may burst to a full
   # core, and how many run at once follows from what the node has left. On 4
   # vCPU with ~1.2 of them reserved, several fit — the 2-core node was what made
