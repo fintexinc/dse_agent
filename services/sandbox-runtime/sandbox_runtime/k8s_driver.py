@@ -147,6 +147,42 @@ class K8sSandboxConfig:
 _NODE_HEAP_FRACTION = 0.75
 
 
+#: NO_PROXY é vírgula; a JVM é `|` com `*`. Duas gramáticas para a mesma lista,
+#: e escrever a errada não dá erro — só manda o tráfego do cluster para o proxy.
+_JVM_NON_PROXY = "localhost|127.0.0.1|*.svc|*.cluster.local"
+
+
+def jvm_proxy_opts(egress_proxy_url: str | None) -> str:
+    """As propriedades que dizem à JVM onde fica a saída.
+
+    `http(s)_proxy` no ambiente resolve libcurl (git, npm, pip) e o
+    `<proxies>` do settings.xml resolve o RESOLVEDOR do Maven — mas nenhum dos
+    dois alcança um plugin que abre a própria conexão. `URLConnection` lê
+    system properties e nada mais, e é assim que o spotless busca o formatter
+    do Eclipse. Sem estas propriedades a conexão sai direta contra uma
+    NetworkPolicy default-deny e morre em ConnectException, longe de qualquer
+    mensagem que fale de proxy.
+
+    Porta ausente não é inventada: a JVM sem `proxyPort` assume 80, que é
+    errado mas é o padrão DELA — chutar 8806 aqui seria a plataforma decidindo
+    por uma configuração que ela não leu."""
+    if not egress_proxy_url:
+        return ""
+    resto = egress_proxy_url.split("://", 1)[-1].split("/", 1)[0]
+    host, _, porta = resto.partition(":")
+    if not host:
+        return ""
+    props = []
+    for esquema in ("http", "https"):
+        props.append(f"-D{esquema}.proxyHost={host}")
+        if porta.isdigit():
+            props.append(f"-D{esquema}.proxyPort={porta}")
+    # `http.nonProxyHosts` vale para os dois esquemas na JVM; `https.nonProxyHosts`
+    # nunca foi lido por ela.
+    props.append(f"-Dhttp.nonProxyHosts={_JVM_NON_PROXY}")
+    return " ".join(props)
+
+
 def node_heap_mib(mem_limit: str) -> int | None:
     """Teto de `--max-old-space-size` (MiB) derivado do LIMITE DO CONTAINER.
 
@@ -273,7 +309,14 @@ def build_pod_manifest(request: SandboxProvisionRequest, cfg: K8sSandboxConfig |
                     # Maven dies creating /home/dse/.m2. /tmp is the writable
                     # emptyDir; this also makes Maven read the proxies file
                     # provision() writes to /tmp/.m2/settings.xml.
-                    {"name": "MAVEN_OPTS", "value": "-Duser.home=/tmp"},
+                    # `-Duser.home=/tmp` e as propriedades de proxy pelo MESMO
+                    # canal: um plugin que abre a própria conexão (spotless
+                    # buscando o formatter do Eclipse, checkstyle buscando a
+                    # config) não passa pelo `<proxies>` do settings.xml nem
+                    # pelo `https_proxy` do ambiente — só por system property.
+                    {"name": "MAVEN_OPTS",
+                     "value": " ".join(filter(None, [
+                         "-Duser.home=/tmp", jvm_proxy_opts(cfg.egress_proxy_url)]))},
                     # O mesmo problema do MAVEN_OPTS acima, para o Node: o V8
                     # mira a memória do NÓ e é morto pelo cgroup (exit 134).
                     # Derivado do limite, não do nó — ver node_heap_mib.
