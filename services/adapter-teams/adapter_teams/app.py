@@ -34,6 +34,7 @@ from ingest_gateway import (
     admit_work_item,
     correlate,
     get_connection,
+    is_authorized_to_steer,
     record_signal_event,
     resolve_repo,
     resolve_tenant,
@@ -44,7 +45,7 @@ from pydantic import BaseModel
 
 from . import events
 from .backend import TeamsCommentBackend, build_real_teams_client
-from .card import status_card
+from .card import plan_details_dialog, refusal_dialog, status_card
 from .comment_store import SURFACE, PgCommentStateStore
 from .config import (
     get_default_service_url,
@@ -97,6 +98,54 @@ def _resolve_tenant_for(activity: dict) -> str:
         return rt.tenant_id
     finally:
         conn.close()
+
+
+def _plan_dialog_for(activity: dict) -> dict:
+    """O diálogo do plano — leitura pura, gateada.
+
+    O MESMO gate dos botões (`is_authorized_to_steer`): não é integridade, é
+    confidencialidade. O diálogo mostra caminhos reais do repositório do
+    cliente e o risco efetivo; entregar isso a um convidado da conversa é
+    reconhecimento por um clique."""
+    work_item_id = events.task_fetch_work_item(activity)
+    if not work_item_id:
+        return refusal_dialog("I could not find the task for this message.")
+
+    _user_id, _display = events.actor_of(activity)
+    try:
+        principal = resolve_principal(platform="teams", platform_user_id=_user_id)
+    except Exception:  # noqa: BLE001 — sem identidade não há leitura
+        logger.warning("teams: principal unresolved for a plan dialog", exc_info=True)
+        return refusal_dialog("I could not identify you for this request.")
+
+    conn = get_connection()
+    try:
+        tenant_id = resolve_tenant(
+            conn, platform="teams", binding_key=events.aad_tenant_id(activity)).tenant_id
+        if not is_authorized_to_steer(tenant_id, principal):
+            audit_emit(actor=principal, action="plan_details_refused_unauthorized",
+                       tenant_id=tenant_id, work_item_id=work_item_id,
+                       details={"surface": "teams"})
+            conn.commit()
+            return refusal_dialog("You are not allowed to read this task's plan.")
+        with conn.cursor() as cur:
+            # Escopado por tenant E por source, como TODA leitura de
+            # `work_items` neste repositório.
+            cur.execute(
+                "SELECT plan, risk_class, repo FROM work_items "
+                "WHERE id = %s AND tenant_id = %s AND source = %s",
+                (work_item_id, tenant_id, "teams"),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+
+    if not row:
+        return refusal_dialog("I could not find the task for this message.")
+    plan, risk, repo = row
+    return plan_details_dialog(work_item_id, plan if isinstance(plan, dict) else None,
+                               risk=risk, repo=repo)
 
 
 def _handle_conversation_event(conv_event, *, principal: str, tenant_id: str,
@@ -208,6 +257,14 @@ async def teams_messages(request: Request):
         if not check.verified:
             _reject(check.reason)
         activity = json.loads(body)
+    # --- Diálogo (task module) -------------------------------------------
+    # Vem DEPOIS da porta de assinatura e ANTES da recusa de não-mensagem: um
+    # `task/fetch` é `invoke`, e a recusa abaixo o matava. A resposta é
+    # SÍNCRONA — o Teams lê o corpo desta resposta HTTP, e um 200 vazio abre o
+    # diálogo em branco.
+    if events.is_task_fetch(activity):
+        return JSONResponse(status_code=200, content=_plan_dialog_for(activity))
+
     if activity.get("type") != "message":
         return {"ok": True, "path": "ignored_non_message"}
 
@@ -299,7 +356,8 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     comment_ref = writer.upsert(
         req.work_item_id,
         {"conversation_id": req.conversation_id, "service_url": service_url,
-         "card": status_card(req.body, status=req.status or "", repo=item_repo)},
+         "card": status_card(req.body, status=req.status or "", repo=item_repo,
+                             work_item_id=req.work_item_id)},
         req.body,
     )
 

@@ -187,3 +187,25 @@ def build_conversation_event(
         content_snapshot=clean_text(activity),
         signature_verified=True,
     )
+
+
+def is_task_fetch(activity: dict[str, Any]) -> bool:
+    """A activity é o pedido de diálogo do Teams?
+
+    `task/fetch` chega como `invoke`, não como `message` — por isso a checagem
+    existe: o endpoint recusava tudo que não fosse mensagem, e o clique de
+    Details morria ali."""
+    return activity.get("type") == "invoke" and activity.get("name") == "task/fetch"
+
+
+def task_fetch_work_item(activity: dict[str, Any]) -> str | None:
+    """O work item que o CARD carregava. O Teams aninha o `data` da ação em
+    `value.data`; um invoke sem ele não tem item a mostrar."""
+    value = activity.get("value")
+    if not isinstance(value, dict):
+        return None
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return None
+    item = data.get("work_item_id")
+    return str(item) if item else None
