@@ -14,6 +14,15 @@ spec:
       {{- include "dse.selectorLabels" (dict "component" "egress-proxy" "Release" .Release) | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # A allowlist chega como `DSE_EGRESS_ALLOW_HOSTS` neste ConfigMap, via
+        # `envFrom`, e o servidor lê o ambiente UMA vez no start. Kubernetes não
+        # reinicia Pod por mudança de ConfigMap, então sem esta anotação o
+        # `helm upgrade` que só mexe na lista diz "deployed" e não muda nada —
+        # o proxy segue com a lista velha até alguém tocar na imagem por outro
+        # motivo. Com o hash aqui, qualquer mudança no ConfigMap muda o pod
+        # template e o Deployment rola sozinho.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "dse.labels" . | nindent 8 }}
         {{- include "dse.selectorLabels" (dict "component" "egress-proxy" "Release" .Release) | nindent 8 }}

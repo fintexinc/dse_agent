@@ -39,7 +39,7 @@ def _render(allow_hosts: str) -> dict:
     out = subprocess.run(
         ["helm", "template", "dse", str(_CHART),
          "--set", "egressProxy.enabled=true",
-         "--set-json", f'egressProxy.allowHosts={allow_hosts}'],
+         "--set-json", f'egressProxy.allowlist={allow_hosts}'],
         capture_output=True, text=True, check=True,
     ).stdout
     for doc in yaml.safe_load_all(out):
