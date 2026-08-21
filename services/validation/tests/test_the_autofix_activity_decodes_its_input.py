@@ -44,8 +44,8 @@ def test_a_raw_handle_dict_is_decoded_before_it_reaches_the_executor(monkeypatch
     )
 
     r = _lint_autofix({
-        "sandbox": {"container_id": "dse-sbx-wi-x", "work_item_id": "wi_x",
-                    "tenant_id": "t", "branch": "b"},
+        "sandbox": {"sandbox_id": "dse-sbx-wi-x", "container_id": "dse-sbx-wi-x",
+                    "work_item_id": "wi_x", "tenant_id": "t", "branch": "b"},
         "base_sha": "a" * 40,
         "failed_checks": ["lint"],
     })
@@ -70,9 +70,11 @@ def test_an_errored_autofix_is_never_invisible(monkeypatch):
     monkeypatch.setattr("dse_validation.activities.audit_emit",
                         lambda **kw: auditado.append(kw))
 
-    r = _lint_autofix({"sandbox": {"container_id": "c"}, "base_sha": "a" * 40,
-                       "failed_checks": ["lint"], "work_item_id": "wi_x",
-                       "tenant_id": "t"})
+    r = _lint_autofix({
+        "sandbox": {"sandbox_id": "c", "container_id": "c", "work_item_id": "wi_x",
+                    "tenant_id": "t", "branch": "b"},
+        "base_sha": "a" * 40, "failed_checks": ["lint"],
+        "work_item_id": "wi_x", "tenant_id": "t"})
 
     assert r["ran"] is False and r["changed"] is False
     assert auditado, "um autofix que estourou tem de deixar linha no ledger"

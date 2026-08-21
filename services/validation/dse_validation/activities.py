@@ -21,6 +21,7 @@ import logging
 import time
 from collections.abc import Callable
 
+from dse_audit import emit as audit_emit
 from dse_contracts import (
     ACTIVITY_CONSUME_CI_STATUS,
     ACTIVITY_LINT_AUTOFIX,
@@ -29,6 +30,7 @@ from dse_contracts import (
     ACTIVITY_VERIFY_MERGE_STATE,
     CiStatusResult,
     L1Result,
+    SandboxHandle,
     L2Verdict,
     MergeVerification,
     PlanArtifact,
@@ -926,13 +928,33 @@ def _lint_autofix(payload: dict) -> dict:
     from dse_validation.l1.autofix import lint_autofix
 
     try:
-        executor = executor_for_handle(payload.get("sandbox") or {})
+        # DECODIFICADO, não o dict cru: `executor_for_handle` lê
+        # `container_id` do MODELO, e um dict entrega None — foi assim que a
+        # primeira execução em produção morreu em "SandboxHandle without
+        # container_id". O `run_l1_pipeline` nunca teve o problema porque o
+        # payload dele passa por `RunL1PipelineInput` antes.
+        handle = SandboxHandle(**(payload.get("sandbox") or {}))
+        executor = executor_for_handle(handle)
         cfg = L1Config.from_trusted_manifest(executor, payload.get("base_sha") or "")
         result = lint_autofix(
             executor, cfg, failed_checks=list(payload.get("failed_checks") or [])
         )
         return {"ran": result.ran, "changed": result.changed, "detail": result.detail}
     except Exception as exc:  # noqa: BLE001 — ver o docstring
+        # Silencioso para o LAÇO (o turno de modelo é o caminho de sempre),
+        # nunca para o OPERADOR: sem esta linha, "o autofix não rodou" fica
+        # indistinguível de "o repo não declarou o comando", e o motivo real
+        # existe só na história do Temporal.
         logger.warning("lint autofix failed; the loop pays the model as usual", exc_info=True)
+        try:
+            audit_emit(
+                actor="system:validation",
+                action="lint_autofix_failed",
+                tenant_id=payload.get("tenant_id") or "",
+                work_item_id=payload.get("work_item_id") or "",
+                details={"error": str(exc)[:300]},
+            )
+        except Exception:  # noqa: BLE001 — auditoria nunca derruba o passo
+            logger.warning("could not audit the autofix failure", exc_info=True)
         return {"ran": False, "changed": False, "detail": f"autofix errored: {str(exc)[:200]}"}
 
