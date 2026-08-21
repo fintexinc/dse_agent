@@ -66,6 +66,21 @@ def _audit_safe_summary(summary: str | None) -> str:
     return first[0][:600] if first else ""
 
 
+
+def _pulado(check: str, findings: list) -> "L1Finding":
+    """Um gate que não rodou porque outro já reprovou a rodada.
+
+    `passed=True` com `status=SKIPPED`: o par mantém o gate fora do
+    `failed_checks` do workflow (nenhum turno de Coder é gasto num gate que não
+    executou) enquanto o status diz, no ledger, que ele não produziu veredito.
+    A rodada já está reprovada pelo gate nomeado no summary, então isto nunca
+    afrouxa nada."""
+    culpados = ", ".join(sorted({f.check for f in findings if not f.passed})) or "an earlier gate"
+    motivo = f"not run: {culpados} already failed this round"
+    return L1Finding(check=check, passed=True, status=GateStatus.SKIPPED,
+                     detail=motivo, summary=motivo)
+
+
 def run_l1_pipeline_core(
     executor: SandboxExecutor,
     work_item_id: str,
@@ -128,9 +143,12 @@ def run_l1_pipeline_core(
         egress_denials=lambda: db.egress_denials_since(_lint_inicio),
     )))
     findings.append(_timed(step, "typecheck", lambda: quality_checks.typecheck_check(executor, cfg, changed_files)))
-    findings.append(_timed(step, "test", lambda: quality_checks.test_check(
-        executor, cfg, changed_files, base_sha=base_sha)))
-    findings.append(_timed(step, "build", lambda: quality_checks.build_check(executor, cfg, changed_files)))
+
+    # Os gates BARATOS e os de SEGURANÇA vêm antes dos caros, e rodam SEMPRE.
+    # `sast`, `secret_scan` e as regras de forma do diff (forbidden_paths,
+    # orçamento) medem fatos sobre o que JÁ ESTÁ no branch remoto: um segredo
+    # não deixa de estar exposto porque o lint reprovou, e deixar de olhar para
+    # economizar segundos trocaria segurança por tempo.
     findings.append(_timed(step, "sast", lambda: sast.sast_check(
         executor, target_dir, cfg.sast_severity_gate, cfg.timeout_for("sast")
     )))
@@ -140,6 +158,35 @@ def run_l1_pipeline_core(
     findings.extend(_timed(step, "plan_compliance", lambda: plan_compliance.plan_compliance_findings(
         executor, plan, base_sha, head_sha, diff=diff
     )))
+
+    # ---- E só agora os caros ------------------------------------------------
+    # `test` e `build` são os únicos gates sem teto natural de custo: medidos
+    # em 252s e 438s no calculation-engine, contra 7-19s do lint. Rodá-los
+    # depois de um veredito já dado é comprar informação que esta rodada não
+    # vai usar — e o laço de fix paga isso a cada volta.
+    #
+    # Por que é seguro: pular só acontece em rodada que JÁ está reprovada.
+    # Rodada verde executa exatamente os mesmos oito gates, pelo mesmo custo,
+    # porque não há o que curto-circuitar. Não existe caminho em que um `test`
+    # pulado vire autorização para seguir.
+    #
+    # `passed=True` no finding pulado é deliberado e não é maquiagem: o
+    # `failed_checks` do workflow é `[f for f in findings if not f.passed]`, e
+    # com `passed=False` o laço mandaria um turno de Coder consertar um `test`
+    # que nunca rodou — o mesmo defeito que `_l1_infra_gates` existe para
+    # impedir, entrando por outra porta. O STATUS é quem conta a verdade.
+    ja_reprovou = any(not f.passed for f in findings)
+    for nome, gate in (
+        ("test", lambda: quality_checks.test_check(
+            executor, cfg, changed_files, base_sha=base_sha)),
+        ("build", lambda: quality_checks.build_check(executor, cfg, changed_files)),
+    ):
+        if ja_reprovou:
+            findings.append(_pulado(nome, findings))
+            continue
+        finding = _timed(step, nome, gate)
+        findings.append(finding)
+        ja_reprovou = not finding.passed
 
     passed = all(f.passed for f in findings)
     result = L1Result(

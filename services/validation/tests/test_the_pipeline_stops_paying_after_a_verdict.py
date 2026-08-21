@@ -59,15 +59,18 @@ def _corre(monkeypatch, *, lint_ok: bool, registro: list):
         return [_finding("forbidden_paths", passed=True)]
 
     monkeypatch.setattr(plan_compliance, "plan_compliance_findings", _plan_findings)
+    # `manifest_status` explícito: o default do construtor é NOT_CONFIGURED, que
+    # sozinho já reprovaria a rodada e mascararia o que estes testes medem.
     monkeypatch.setattr(L1Config, "from_trusted_manifest",
-                        classmethod(lambda cls, *a, **kw: cls(test_cmd=["x"])))
+                        classmethod(lambda cls, *a, **kw: cls(
+                            test_cmd=["x"], manifest_status=GateStatus.PASS)))
     monkeypatch.setattr(pipeline.db, "record_validation_run", lambda *a, **kw: None)
 
     from dse_contracts import PlanArtifact
 
     return pipeline.run_l1_pipeline_core(
         executor=object(), work_item_id="wi_x", tenant_id="t",
-        plan=PlanArtifact(steps=[], expected_files=[]),
+        plan=PlanArtifact(work_item_id="wi_x", steps=[], expected_files=[]),
         base_sha="a" * 40, head_sha="b" * 40, persist=False,
     )
 

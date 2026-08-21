@@ -158,13 +158,17 @@ def test_core_reports_every_stage_in_order(sandbox, work_item_id, tenant_id, git
         # other one does: an operator watching the heartbeat has to see where
         # the time is going.
         "diff",
+        # A ordem é por CUSTO, e ela é o contrato: baratos e de segurança
+        # primeiro, `test` e `build` por último. Um gate caro que rode antes de
+        # um barato volta a comprar 7 minutos de suíte para reprovar por uma
+        # formatação já encontrada em 7 segundos (medido em wi_2325adc).
         "lint",
         "typecheck",
-        "test",
-        "build",
         "sast",
         "secret_scan",
         "plan_compliance",
+        "test",
+        "build",
         "persist",
     ]
 
