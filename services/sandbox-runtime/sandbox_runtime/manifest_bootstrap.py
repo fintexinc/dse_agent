@@ -63,6 +63,17 @@ _SPEC = """The manifest is a JSON object. Rules, all binding:
   ARRAY: ["npm","install","--no-audit","--no-fund"], ["go","mod","download"],
   ["pip","install","-r","requirements.txt"]. Both the test sandbox and the
   preview Pod run it. Omit it when the tree needs no install step.
+- "commands.lint_fix" is the command that FIXES what "lint" refuses — the
+  formatter's write mode, not its check mode: ["./mvnw","-B","-q",
+  "spotless:apply"], ["ruff","format","."], ["npx","prettier","--write","."],
+  ["gofmt","-w","."], ["dotnet","format"], ["bundle","exec","rubocop","-a"],
+  ["cargo","fmt"]. Declare it whenever "lint" is a formatter that has one.
+  Why it matters: when the lint gate refuses, the DSE runs THIS command before
+  spending a model turn. Without it, a model rewrites the file by hand to match
+  a formatter — measured at four paid turns without converging on what the
+  formatter fixes in seconds. Omit it when "lint" is a pure analyser with no
+  write mode (a type checker, a security linter): a command that cannot fix
+  anything only costs time.
 - "reports": {"junit": "<relative glob>"} — where the test run leaves its JUnit
   XML. Declare it whenever the repository's test command ALREADY writes JUnit
   (maven/surefire and gradle always do: "target/surefire-reports/*.xml",

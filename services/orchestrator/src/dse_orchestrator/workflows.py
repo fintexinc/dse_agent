@@ -48,6 +48,7 @@ with workflow.unsafe.imports_passed_through():
         ACTIVITY_REBUILD_SANDBOX,
         ACTIVITY_RUN_CODER_TURN,
         ACTIVITY_RUN_DEMO_EVIDENCE,
+        ACTIVITY_LINT_AUTOFIX,
         ACTIVITY_RUN_L1_PIPELINE,
         ACTIVITY_RUN_L2_REVIEW,
         ACTIVITY_RUN_PLANNER_TURN,
@@ -2667,6 +2668,74 @@ class WorkItemLifecycleWorkflow:
                 "l1_completed",
                 {"passed": l1_result.passed, "findings": [f.check for f in l1_result.findings]},
             )
+
+            # ---- O conserto que o REPOSITÓRIO declara, antes de pagar o modelo
+            # Formatação é a classe de falha em que a ferramenta que ACUSA
+            # também sabe CONSERTAR, com 100% de acerto. Medido no
+            # calculation-engine: quatro turnos de Coder (~US$ 4, ~14 min) sem
+            # convergir numa ordem de imports que `spotless:apply` arruma em 7
+            # segundos.
+            #
+            # A plataforma não conhece formatador nenhum — ela conhece o
+            # conceito, e o repo preenche `commands.lint_fix`. Mesmo desenho de
+            # `preview.start`, `install`, `commands.test_subset` e
+            # `reports.junit`: toda linguagem tem um formatador com modo de
+            # escrita, então a chave é a mesma para todas.
+            #
+            # Fica AQUI, entre a chamada do L1 e a leitura do veredito, de
+            # propósito: o conserto e a revalidação ficam contidos, sem tocar na
+            # forma do laço. O gate continua sendo quem diz se acabou — jamais o
+            # comando que acabou de editar os arquivos.
+            if workflow.patched("lint-autofix-before-coder-v1"):
+                reprovados = [
+                    f.check for f in l1_result.findings
+                    if not f.passed and f.status is not GateStatus.SKIPPED
+                ]
+                if "lint" in reprovados:
+                    try:
+                        fix = await workflow.execute_activity(
+                            ACTIVITY_LINT_AUTOFIX,
+                            {"sandbox": input.sandbox_handle,
+                             "base_sha": input.base_sha or "",
+                             "failed_checks": reprovados},
+                            start_to_close_timeout=timedelta(seconds=300),
+                            retry_policy=RetryPolicy(maximum_attempts=1),
+                        )
+                    except ActivityError:
+                        # Oportunista: o turno de modelo é o caminho de sempre.
+                        fix = {"ran": False, "changed": False}
+                    if fix.get("changed"):
+                        ref: CheckpointRef = await workflow.execute_activity(
+                            ACTIVITY_CHECKPOINT_SANDBOX,
+                            {"sandbox_id": input.sandbox_id,
+                             "work_item_id": input.work_item_id,
+                             "tenant_id": input.tenant_id,
+                             "branch": input.branch,
+                             "phase": "lint_autofix"},
+                            result_type=CheckpointRef,
+                            start_to_close_timeout=timedelta(seconds=120),
+                            retry_policy=RetryPolicy(maximum_attempts=2),
+                        )
+                        input.head_sha = ref.git_ref
+                        l1_payload["head_sha"] = input.head_sha
+                        await self._audit(
+                            "lint_autofixed",
+                            {"detail": str(fix.get("detail") or "")[:200],
+                             "head_sha": input.head_sha},
+                        )
+                        # O gate decide de novo sobre o que o formatador
+                        # escreveu. Uma revalidação, não um laço: se o lint
+                        # continuar vermelho, o turno de Coder acontece como
+                        # sempre.
+                        l1_result = await self._run_model_activity(
+                            ACTIVITY_RUN_L1_PIPELINE, l1_payload, L1Result,
+                        )
+                        await self._audit(
+                            "l1_completed",
+                            {"passed": l1_result.passed,
+                             "findings": [f.check for f in l1_result.findings],
+                             "after": "lint_autofix"},
+                        )
 
             l1_passed = (
                 l1_result.status == GateStatus.PASS

@@ -19,7 +19,6 @@ Três propriedades que os testes abaixo pinam, todas aprendidas em produção:
 """
 from __future__ import annotations
 
-from dse_contracts import GateStatus
 from dse_validation.config import L1Config
 from dse_validation.l1.autofix import lint_autofix
 
@@ -92,4 +91,4 @@ def test_a_failing_formatter_never_blocks_the_loop():
     r = lint_autofix(sandbox, _cfg(), failed_checks=["lint"])
 
     assert r.ran is True and r.changed is False
-    assert r.status is GateStatus.SKIPPED or r.changed is False
+    assert "exited 2" in r.detail, "o que aconteceu tem de ficar legível no ledger"

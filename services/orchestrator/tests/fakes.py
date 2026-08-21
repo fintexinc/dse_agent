@@ -123,6 +123,9 @@ class FakeControlPlane:
     times before working, etc.)."""
 
     l1_fail_times: int = 0
+    #: rc.117 — o que o `commands.lint_fix` do repo faz quando o laço o chama.
+    #: `None` = o repo não declara nenhum (o caso de todo teste anterior).
+    lint_autofix_changes: bool | None = None
     #: detail of the failing `test` finding (spec-conflict tests put real
     #: "FAIL <path>" lines here, the shape quality_checks emits)
     l1_fail_detail: str = "simulated failure"
@@ -300,6 +303,13 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     async def amend_repo_manifest(payload: dict) -> dict:
         state.calls_log.append("amend_repo_manifest")
         return dict(state.amend_result)
+
+    async def lint_autofix(payload: dict) -> dict:
+        state.calls_log.append("lint_autofix")
+        if state.lint_autofix_changes is None:
+            return {"ran": False, "changed": False, "detail": "no commands.lint_fix"}
+        return {"ran": True, "changed": bool(state.lint_autofix_changes),
+                "detail": "fake formatter"}
 
     async def resolve_preview_deep_link(payload: dict) -> dict:
         state.calls_log.append("resolve_preview_deep_link")
@@ -663,6 +673,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         activity.defn(name="probe_repo_manifest")(probe_repo_manifest),
         activity.defn(name="bootstrap_repo_manifest")(bootstrap_repo_manifest),
         activity.defn(name="amend_repo_manifest")(amend_repo_manifest),
+        activity.defn(name="lint_autofix")(lint_autofix),
         activity.defn(name="resolve_preview_deep_link")(resolve_preview_deep_link),
         activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)(triage_preview_failure),
         activity.defn(name=ACTIVITY_UPDATE_BASE_BRANCH)(update_base_branch),

@@ -146,6 +146,42 @@ If your repository already has a manifest without it, you do not have to write
 the amendment yourself: the DSE opens a PR proposing it the next time it works
 on the repository, and the task it was running carries on meanwhile.
 
+## `commands.lint_fix` — o comando que conserta o que o `lint` reprova
+
+```json
+{ "commands": {
+    "lint":     ["./mvnw","-B","-q","spotless:check"],
+    "lint_fix": ["./mvnw","-B","-q","spotless:apply"] } }
+```
+
+Quando o gate `lint` reprova, o DSE roda **este comando** antes de gastar um
+turno de modelo. Se ele alterar arquivos, o resultado é commitado e o gate
+decide de novo; se não alterar nada, o turno de Coder acontece como sempre.
+
+Por que existe: formatação é a classe de falha em que a ferramenta que **acusa**
+também sabe **consertar**, com 100% de acerto. Pedir a um modelo que reescreva
+imports até casar com um formatador custou, medido, quatro turnos pagos sem
+convergir — trabalho que o `spotless:apply` faz em 7 segundos.
+
+| ecossistema | `lint_fix` |
+|---|---|
+| Maven + spotless | `["./mvnw","-B","-q","spotless:apply"]` |
+| Python + ruff | `["ruff","format","."]` |
+| Node + prettier | `["npx","prettier","--write","."]` |
+| Go | `["gofmt","-w","."]` |
+| .NET | `["dotnet","format"]` |
+| Ruby + rubocop | `["bundle","exec","rubocop","-a"]` |
+| Rust | `["cargo","fmt"]` |
+
+**Omita** quando o seu `lint` for um analisador puro, sem modo de escrita (um
+verificador de tipos, um linter de segurança): um comando que não conserta nada
+só custa tempo.
+
+É comando, não estágio: não tem `timeouts.lint_fix`, não entra em
+`disabled_stages` e nunca produz veredito próprio. E não é a plataforma editando
+o seu código por conta própria — é o **seu** formatador, declarado por você,
+rodando sobre o diff que o DSE acabou de escrever, e tudo aparece no diff da PR.
+
 ## `reports.junit` — where the test run leaves its evidence
 
 ```json

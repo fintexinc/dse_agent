@@ -23,6 +23,7 @@ from collections.abc import Callable
 
 from dse_contracts import (
     ACTIVITY_CONSUME_CI_STATUS,
+    ACTIVITY_LINT_AUTOFIX,
     ACTIVITY_FINALIZE_PR,
     ACTIVITY_RUN_L1_PIPELINE,
     ACTIVITY_VERIFY_MERGE_STATE,
@@ -753,6 +754,15 @@ if _HAS_TEMPORAL:
     async def run_l1_pipeline(inp: RunL1PipelineInput) -> L1Result:
         return await _run_l1_pipeline_with_heartbeat(inp)
 
+    @activity.defn(name=ACTIVITY_LINT_AUTOFIX)
+    async def lint_autofix_activity(payload: dict) -> dict:
+        """Roda o `commands.lint_fix` do repositório no sandbox.
+
+        O manifesto é lido do BASE SHA, como todo o resto do L1: o comando que
+        conserta é política do repositório na versão que está sendo validada,
+        não algo que o diff em julgamento possa introduzir."""
+        return await asyncio.to_thread(_lint_autofix, payload)
+
     @activity.defn(name=ACTIVITY_FINALIZE_PR)
     async def finalize_pr(inp: FinalizePrInput) -> PrRef:
         return await asyncio.to_thread(_finalize_pr, inp)
@@ -872,6 +882,7 @@ if _HAS_TEMPORAL:
 
     ALL_ACTIVITIES = [
         run_l1_pipeline,
+        lint_autofix_activity,
         finalize_pr,
         verify_merge_state,
         consume_ci_status,
@@ -903,3 +914,25 @@ else:  # pragma: no cover
 # src/dse_orchestrator/worker.py:_load_cross_workstream_activities), which looks
 # for `ACTIVITIES` (not `ALL_ACTIVITIES`) in this module.
 ACTIVITIES = ALL_ACTIVITIES
+
+
+def _lint_autofix(payload: dict) -> dict:
+    """Executa o conserto declarado pelo repo e diz se o diff mudou.
+
+    Oportunista de ponta a ponta: qualquer falha aqui devolve `ran/changed`
+    falso e o laço segue pelo caminho de sempre — o turno de modelo. Este passo
+    só pode tornar um item mais barato, nunca pode ser a razão de ele parar."""
+    from dse_validation.config import L1Config
+    from dse_validation.l1.autofix import lint_autofix
+
+    try:
+        executor = executor_for_handle(payload.get("sandbox") or {})
+        cfg = L1Config.from_trusted_manifest(executor, payload.get("base_sha") or "")
+        result = lint_autofix(
+            executor, cfg, failed_checks=list(payload.get("failed_checks") or [])
+        )
+        return {"ran": result.ran, "changed": result.changed, "detail": result.detail}
+    except Exception as exc:  # noqa: BLE001 — ver o docstring
+        logger.warning("lint autofix failed; the loop pays the model as usual", exc_info=True)
+        return {"ran": False, "changed": False, "detail": f"autofix errored: {str(exc)[:200]}"}
+

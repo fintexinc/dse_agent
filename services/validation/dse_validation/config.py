@@ -33,7 +33,13 @@ _COMMAND_NAMES = ("lint", "typecheck", "test", "build")
 #: `disabled_stages`. Só o turno do Tester o lê, com o clock dele. Manter as
 #: duas listas separadas é o que impede uma chave de conveniência de virar um
 #: veredito do L1 por descuido.
-_EXTRA_COMMAND_NAMES = ("test_subset",)
+#: `lint_fix` é o comando que CONSERTA o que o `lint` reprova — o
+#: `spotless:apply` do repo, o `ruff format`, o `prettier --write`. Como
+#: `test_subset`, ele é comando e não estágio: sem gate, sem timeout próprio,
+#: fora de `disabled_stages`. Desligar o conserto sem desligar a acusação não é
+#: um estado que faça sentido, e um quinto veredito é a última coisa de que o
+#: L1 precisa.
+_EXTRA_COMMAND_NAMES = ("test_subset", "lint_fix")
 _ALLOWED_COMMAND_NAMES = _COMMAND_NAMES + _EXTRA_COMMAND_NAMES
 # The two scans belong to the platform, not to the repository, but they run in
 # the same activity and therefore spend the same budget. Their timeouts used to
@@ -775,6 +781,7 @@ class L1Config:
         build_cmd: list[str] | None = None,
         test_subset_cmd: list[str] | None = None,
         install_cmd: list[str] | None = None,
+        lint_fix_cmd: list[str] | None = None,
         junit_reports: str | None = None,
         timeout_seconds: int | None = None,
         timeouts: dict[str, int] | None = None,
@@ -791,6 +798,8 @@ class L1Config:
         self.build_cmd = list(build_cmd or [])
         #: Lidos pelo turno do Tester (sandbox), não pelos gates do L1.
         self.test_subset_cmd = list(test_subset_cmd or [])
+        #: Lido pelo LAÇO quando o gate `lint` reprova — nunca por um gate.
+        self.lint_fix_cmd = list(lint_fix_cmd or [])
         self.install_cmd = list(install_cmd or [])
         #: Glob do relatório JUnit, quando o repo declara onde ele cai. É o que
         #: deixa o gate de teste contar sem adivinhar o dialeto do runner.
@@ -1025,6 +1034,7 @@ class L1Config:
             install_cmd=install,
             junit_reports=junit_reports,
             test_subset_cmd=parsed["test_subset"],
+            lint_fix_cmd=parsed["lint_fix"],
             lint_cmd=parsed["lint"],
             typecheck_cmd=parsed["typecheck"],
             test_cmd=parsed["test"],

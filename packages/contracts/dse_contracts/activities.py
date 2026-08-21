@@ -31,6 +31,9 @@ ACTIVITY_CHECKPOINT_SANDBOX = "checkpoint_sandbox"
 ACTIVITY_REBUILD_SANDBOX = "rebuild_sandbox"
 ACTIVITY_TEARDOWN_SANDBOX = "teardown_sandbox"
 ACTIVITY_RUN_L1_PIPELINE = "run_l1_pipeline"
+#: O conserto determinístico que o REPOSITÓRIO declara (`commands.lint_fix`),
+#: rodado quando o gate `lint` reprova e antes de gastar um turno de modelo.
+ACTIVITY_LINT_AUTOFIX = "lint_autofix"
 ACTIVITY_FINALIZE_PR = "finalize_pr"
 ACTIVITY_VERIFY_MERGE_STATE = "verify_merge_state"  # plan 08 §F (F1)
 ACTIVITY_POST_TRACKING_COMMENT = "post_tracking_comment"
