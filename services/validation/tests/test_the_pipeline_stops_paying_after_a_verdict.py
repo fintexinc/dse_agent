@@ -107,17 +107,19 @@ def test_the_security_gates_run_even_on_a_failing_round(monkeypatch):
 
 
 def test_a_skipped_gate_never_reads_as_a_verdict_on_the_diff(monkeypatch):
-    """O gate pulado entra no ledger com SKIPPED e `passed=True`. O par é
-    deliberado: `failed_checks` do workflow é `[f for f in findings if not
-    f.passed]` — com `passed=False` o laço mandaria o Coder consertar um
-    `test` que NUNCA RODOU. E `passed=True` não afrouxa nada, porque a rodada
-    inteira já está reprovada pelo gate que decidiu."""
+    """O gate pulado entra no ledger com SKIPPED e `passed=False`: ele não
+    rodou, então não passou, e o contrato não abre exceção para isso.
+
+    Quem impede o laço de mandar um turno de Coder consertar um `test` que
+    NUNCA RODOU é o consumidor: `failed_checks` no workflow exclui SKIPPED,
+    classificando por status como `_l1_infra_gates` já fazia. A separação vive
+    lá porque é lá que a pergunta "o que falhou?" é feita."""
     registro: list = []
     resultado = _corre(monkeypatch, lint_ok=False, registro=registro)
 
     pulados = [f for f in resultado.findings if f.status is GateStatus.SKIPPED]
     assert {f.check for f in pulados} == {"test", "build"}
-    assert all(f.passed for f in pulados), "pulado não pode entrar em failed_checks"
+    assert all(not f.passed for f in pulados), "não rodou não é o mesmo que passou"
     assert all("already failed" in f.summary for f in pulados)
 
 
@@ -130,3 +132,28 @@ def test_skipping_can_only_happen_on_a_round_that_is_already_lost(monkeypatch):
         resultado = _corre(monkeypatch, lint_ok=lint_ok, registro=registro)
         houve_pulo = any(f.status is GateStatus.SKIPPED for f in resultado.findings)
         assert not (houve_pulo and resultado.passed)
+
+
+def test_the_loop_is_never_sent_to_fix_a_gate_that_did_not_run(monkeypatch):
+    """A invariante que sobrou do desenho errado da rc.115, agora no lugar
+    certo: o workflow monta `failed_checks` excluindo SKIPPED.
+
+    Sem isso o laço leria o `test` pulado como reprovado e compraria um turno
+    de Coder para consertar uma suíte que nunca executou — o mesmo defeito que
+    `_l1_infra_gates` existe para impedir, entrando por outra porta. Este teste
+    fica AQUI, ao lado de quem produz o SKIPPED, porque é a produção e o
+    consumo juntos que formam o contrato."""
+    from dse_contracts import GateStatus
+
+    registro: list = []
+    resultado = _corre(monkeypatch, lint_ok=False, registro=registro)
+
+    # o que o workflow faria (workflows.py: montagem de failed_checks)
+    failed = [f for f in resultado.findings
+              if not f.passed and f.status is not GateStatus.SKIPPED]
+
+    nomes = {f.check for f in failed}
+    assert "lint" in nomes, "o gate que decidiu tem de estar lá"
+    assert "test" not in nomes and "build" not in nomes, (
+        "gate pulado não compra turno de Coder"
+    )

@@ -2857,7 +2857,14 @@ class WorkItemLifecycleWorkflow:
                         + (f" runtime said: {detail[:400]}" if detail else "")
                     )
 
-                failed_checks = [f for f in l1_result.findings if not f.passed]
+                # SKIPPED fica FORA: é o gate que não rodou porque outro já
+                # reprovou a rodada (rc.115). Ele não passou — e por isso
+                # `passed=False`, respeitando o contrato —, mas mandar o Coder
+                # consertar um `test` que nunca executou é o mesmo defeito que
+                # `_l1_infra_gates` existe para impedir, entrando por outra
+                # porta. Quem separa "não rodou" de "reprovou" é o STATUS.
+                failed_checks = [f for f in l1_result.findings
+                                 if not f.passed and f.status is not GateStatus.SKIPPED]
                 # Aqui vivia o PARQUE DE EXAUSTÃO DE SPEC PRÓPRIA, com a
                 # memória por spec que o armava (`tester-spec-memory-parks-v1`)
                 # e o gatilho v1 preservado para replay. Saiu inteiro em

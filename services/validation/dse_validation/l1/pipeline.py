@@ -70,14 +70,18 @@ def _audit_safe_summary(summary: str | None) -> str:
 def _pulado(check: str, findings: list) -> "L1Finding":
     """Um gate que não rodou porque outro já reprovou a rodada.
 
-    `passed=True` com `status=SKIPPED`: o par mantém o gate fora do
-    `failed_checks` do workflow (nenhum turno de Coder é gasto num gate que não
-    executou) enquanto o status diz, no ledger, que ele não produziu veredito.
-    A rodada já está reprovada pelo gate nomeado no summary, então isto nunca
-    afrouxa nada."""
+    `passed=False` com `status=SKIPPED`, e o invariante do contrato fica de pé:
+    `passed` é verdadeiro só em PASS. O gate não rodou, então ele não passou —
+    dizer o contrário escreveria no ledger que uma suíte não executada foi
+    aprovada, o falso verde de sempre.
+
+    Quem separa "não rodou" de "reprovou" é o STATUS, e é o consumidor que
+    pergunta pelo status: `_l1_failure_context` monta os `failed_checks` que
+    compram turno de Coder e exclui SKIPPED — o mesmo desenho de
+    `_l1_infra_gates`, que já classifica por status e não pelo booleano."""
     culpados = ", ".join(sorted({f.check for f in findings if not f.passed})) or "an earlier gate"
     motivo = f"not run: {culpados} already failed this round"
-    return L1Finding(check=check, passed=True, status=GateStatus.SKIPPED,
+    return L1Finding(check=check, passed=False, status=GateStatus.SKIPPED,
                      detail=motivo, summary=motivo)
 
 

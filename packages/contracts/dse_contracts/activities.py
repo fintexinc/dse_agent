@@ -343,16 +343,6 @@ class L1Finding(BaseModel):
     def _normalize_status(self) -> "L1Finding":
         if self.status is None:
             self.status = GateStatus.PASS if self.passed else GateStatus.FAIL
-        elif self.status is GateStatus.SKIPPED:
-            # O único par fora de PASS que passa: o gate que NÃO RODOU porque
-            # outro já reprovou a rodada. Os dois lados são obrigatórios —
-            # `passed=False` o colocaria em `failed_checks` e gastaria um turno
-            # de Coder consertando algo que não executou; carimbar PASS
-            # escreveria "test: PASS" no ledger sobre uma suíte que não rodou,
-            # que é o falso verde de sempre. A rodada já está reprovada pelo
-            # gate que decidiu, então isto não autoriza nada.
-            if not self.passed:
-                raise ValueError("a SKIPPED gate must not be reported as failed")
         elif self.passed != (self.status == GateStatus.PASS):
             raise ValueError("passed must be true only when status=PASS")
         return self
