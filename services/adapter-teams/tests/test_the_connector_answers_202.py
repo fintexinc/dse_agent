@@ -1,9 +1,15 @@
-"""O connector aceita um card com 202 e corpo VAZIO — e não devolve id.
+"""Texto E card na mesma activity: o connector aceita assíncrono e não dá id.
 
-Medido ao vivo (2026-08-21, rc.111/112): `POST /v3/conversations/{id}/activities`
-com `attachments` responde **202 Accepted, corpo vazio**; só a mensagem de texto
-puro responde 200 com `{"id": ...}`. O código fazia `resp.json()["id"]` e
-estourava — DEPOIS de o card já ter saído.
+Medido ao vivo (2026-08-21), três chamadas na mesma conversa:
+
+    {"text": "..."}                      -> 201 {"id": "..."}
+    {"attachments": [card]}              -> 201 {"id": "..."}
+    {"text": "...", "attachments": [c]}  -> 202 CORPO VAZIO
+
+Mandar os dois juntos faz o connector entregar de forma assíncrona e devolver
+nada. O código fazia `resp.json()["id"]` e estourava — DEPOIS de o card já ter
+saído. E o mesmo par duplicava o corpo na tela: a frase solta em cima e de novo
+dentro do card.
 
 O efeito era pior que um erro: o card aparecia, a exceção derrubava o endpoint
 com 500, e a referência nunca era gravada. Como o `MutableCommentWriter` decide
@@ -56,6 +62,28 @@ def _com_resposta(monkeypatch, resposta):
 
     monkeypatch.setattr(requests, "post", fake_post)
     return enviados
+
+
+def test_a_card_travels_alone_so_the_connector_returns_an_id(monkeypatch, cliente):
+    """A correção de verdade: com card, o texto vira `summary` (que é o que a
+    notificação do celular lê) em vez de virar uma segunda bolha na conversa."""
+    enviados = _com_resposta(monkeypatch, _Resposta(201, '{"id": "1755"}'))
+
+    ref = cliente.send_activity(service_url="https://smba/br/", conversation_id="19:c",
+                                text="⚙️ implementando", attachments=[{"contentType": "x"}])
+    corpo = enviados[0]["json"]
+    assert corpo.get("text") in (None, ""), "texto junto com card = 202 sem id"
+    assert corpo["summary"] == "⚙️ implementando", (
+        "sem summary a notificação do celular chega vazia"
+    )
+    assert ref == "1755"
+
+
+def test_without_a_card_the_text_is_the_message(monkeypatch, cliente):
+    enviados = _com_resposta(monkeypatch, _Resposta(201, '{"id": "1755"}'))
+
+    cliente.send_activity(service_url="https://smba/br/", conversation_id="19:c", text="oi")
+    assert enviados[0]["json"]["text"] == "oi"
 
 
 def test_a_202_without_a_body_does_not_explode(monkeypatch, cliente):

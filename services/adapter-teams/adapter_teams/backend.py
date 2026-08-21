@@ -38,6 +38,36 @@ class TeamsClientLike(Protocol):
         ...
 
 
+def _activity_body(text: str, attachments: list[dict] | None) -> dict:
+    """O corpo da activity — e a regra que custou três cards para descobrir.
+
+    Medido no connector, mesma conversa: `{"text": ...}` responde 201 com id,
+    `{"attachments": [...]}` responde 201 com id, e os DOIS JUNTOS respondem
+    202 com corpo vazio. Sem id não há edição, e sem edição a mensagem mutável
+    vira uma mensagem nova por transição.
+
+    Com card, o texto vai em `summary`: é o que a notificação do celular lê, e
+    não vira uma segunda bolha repetindo o que o card já diz."""
+    if attachments:
+        return {"type": "message", "summary": text, "attachments": attachments}
+    return {"type": "message", "text": text}
+
+
+def is_editable_ref(comment_ref: str) -> bool:
+    """A referência aponta uma activity que dá para EDITAR?
+
+    Referência sem `activity_id` (o 202 do connector não devolve id) não vai
+    para o store: guardá-la faria a próxima transição tentar editar uma
+    activity que não existe, e o PUT responde 404 — a mensagem pararia de
+    atualizar, que é o oposto do que o writer existe para garantir."""
+    if not comment_ref:
+        return False
+    try:
+        return bool(json.loads(comment_ref).get("activity_id"))
+    except (ValueError, AttributeError):
+        return False
+
+
 def _attachments(surface_ref: dict) -> list[dict] | None:
     """O Adaptive Card que o CHAMADOR renderizou, no mesmo desenho do Slack
     (lá `surface_ref["blocks"]`, aqui `["card"]`): o backend entrega, não monta.
@@ -174,11 +204,7 @@ class RealTeamsClient:
         import requests
 
         url = f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities"
-        # `text` viaja SEMPRE, mesmo com card: é ele que aparece na notificação
-        # do celular e nos clientes que não renderizam Adaptive Card.
-        corpo: dict = {"type": "message", "text": text}
-        if attachments:
-            corpo["attachments"] = attachments
+        corpo = _activity_body(text, attachments)
         resp = requests.post(
             url,
             headers={"Authorization": f"Bearer {self._bearer()}"},
@@ -186,7 +212,19 @@ class RealTeamsClient:
             timeout=15,
         )
         resp.raise_for_status()
-        return resp.json()["id"]
+        # 202 SEM corpo é a resposta normal quando a activity leva
+        # `attachments`: o connector aceita e entrega de forma assíncrona, sem
+        # devolver id. Só a mensagem de texto puro responde 200 com {"id":...}.
+        # Pedir o id direto estourava DEPOIS de o card já ter saído — e como a
+        # referência nunca era gravada, toda transição postava um card novo.
+        # Sem id não há edição possível, e mentir um aqui seria pior: o PUT de
+        # uma activity inexistente é 404, e a mensagem pararia de atualizar.
+        if resp.status_code == 202 or not (resp.text or "").strip():
+            return ""
+        try:
+            return str(resp.json().get("id") or "")
+        except ValueError:
+            return ""
 
     def update_activity(
         self, *, service_url: str, conversation_id: str, activity_id: str, text: str,
@@ -199,7 +237,10 @@ class RealTeamsClient:
         # connector substitui a activity, então omitir o campo deixaria os
         # botões de um gate já decidido vivos e clicáveis para sempre — o
         # mesmo defeito que o Slack corrigiu mandando `blocks` sempre.
-        corpo: dict = {"type": "message", "text": text, "attachments": attachments or []}
+        # `attachments` vai SEMPRE (lista vazia quando não há card) — ver a nota
+        # acima; o resto do corpo segue a mesma regra do POST.
+        corpo = _activity_body(text, attachments)
+        corpo["attachments"] = attachments or []
         resp = requests.put(
             url,
             headers={"Authorization": f"Bearer {self._bearer()}"},
