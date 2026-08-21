@@ -28,39 +28,13 @@ class _SlackClientLike(Protocol):
     def views_open(self, *, trigger_id: str, view: dict) -> dict: ...
 
 
-#: rc.90 — as etapas fixas da barra de progresso e o mapa status→etapa.
-#: Determinístico e DELIBERADAMENTE incompleto: status terminal (done/failed/
-#: escalated/blocked/spec_conflict) e status desconhecido não têm etapa — uma
-#: barra "em andamento" num item morto mentiria, e etapa chutada é o mesmo
-#: defeito do 400. O corpo humanizado é quem conta o desfecho.
-_STAGES = ("Plan", "Build", "Validate", "PR", "Review")
-_STAGE_FOR_STATUS = {
-    "needs_clarification": "Plan",
-    "awaiting_plan_approval": "Plan",
-    "awaiting_repo_selection": "Plan",
-    # rc.93: o membro parado na barreira de grupo espera em `queued` — a
-    # barra existe e aponta Plan (`ready` idem, pelo mesmo trecho do fluxo).
-    "ready": "Plan",
-    "queued": "Plan",
-    "implementing": "Build",
-    "validating": "Validate",
-    "pr_open": "PR",
-    "pr_updated": "PR",
-    "pr_ready": "Review",
-    "review_feedback": "Review",
-}
-
-
-def _progress_line(status: str) -> str | None:
-    stage = _STAGE_FOR_STATUS.get(status)
-    if stage is None:
-        return None
-    idx = _STAGES.index(stage)
-    partes = []
-    for i, nome in enumerate(_STAGES):
-        marcador = "✅" if i < idx else ("⏳" if i == idx else "▫️")
-        partes.append(f"{marcador} {nome}")
-    return "   ".join(partes)
+#: rc.90 — a barra de etapas; rc.111 — ela mora em `dse_contracts.surface`,
+#: com o Teams lendo a MESMA fonte. Cópia por adapter é o defeito que a regra do
+#: `core.hooksPath` pagou três vezes; aqui seria pior, porque duas superfícies
+#: mostrando etapas diferentes para o mesmo item não dá erro em lugar nenhum.
+from dse_contracts.surface import STAGE_FOR_STATUS as _STAGE_FOR_STATUS  # noqa: F401
+from dse_contracts.surface import STAGES as _STAGES  # noqa: F401
+from dse_contracts.surface import progress_line as _progress_line
 
 
 def status_blocks(body: str, *, status: str = "", repo: str | None = None) -> list[dict]:

@@ -31,6 +31,16 @@ from .failure import (
     parse_failure_type,
 )
 from .mutable_comment import CommentBackend, MutableCommentWriter
+from .surface import (
+    ACTION_APPROVE,
+    ACTION_DETAILS,
+    ACTION_REJECT,
+    STAGES,
+    STAGE_FOR_STATUS,
+    parse_approval_click,
+    progress_line,
+    progress_stages,
+)
 from .constants import (
     OTEL_ATTR_TASK_CLASS,
     SIGNAL_CLARIFICATION_ANSWER,
@@ -106,6 +116,14 @@ from .activities import (
 )
 
 __all__ = [
+    "ACTION_APPROVE",
+    "ACTION_DETAILS",
+    "ACTION_REJECT",
+    "STAGES",
+    "STAGE_FOR_STATUS",
+    "parse_approval_click",
+    "progress_line",
+    "progress_stages",
     "AGENT_TURN_SCHEMA_VERSION",
     "AgentTurnGateway",
     "AgentTurnRequest",

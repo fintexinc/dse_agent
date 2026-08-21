@@ -57,33 +57,16 @@ def build_event_from_thread_message(event: dict[str, Any], *, resolved_principal
     )
 
 
-_REJECT_TOKENS = ("reject", "rejected", "deny", "denied", "changes", "re_plan", "replan")
+from dse_contracts.surface import REJECT_TOKENS as _REJECT_TOKENS  # noqa: F401
+from dse_contracts.surface import parse_approval_click
 
 
 def parse_slack_approval(action_id: str, value: str) -> tuple[str, str | None]:
-    """C1 (report 07): derives a DETERMINISTIC verdict/route from the button
-    click. The verdict must NOT live in the text alone — it has to become a
-    marker (`approval_verdict`/`approval_route`) that the dispatcher reads,
-    otherwise the default is `approved` and a "reject" would silently approve
-    (gate security bug). Mirrors the Jira path (`ingest_status_approval`).
-
-    Button convention (as posted in the approval Block Kit): `action_id` or
-    `value` containing 'reject'/'deny'/'re_plan' => rejected; the `value` may
-    carry the route after ':' (e.g. 'reject:re_plan'). Anything else =>
-    approved (fail-safe: a rejection is never read as an approval, and an
-    ambiguous click does NOT auto-approve something destructive — it just
-    follows the normal approval flow, which still requires the gate)."""
-    haystack = f"{action_id}|{value}".lower()
-    is_reject = any(tok in haystack for tok in _REJECT_TOKENS)
-    if not is_reject:
-        return "approved", None
-    # rejection route: the part after ':' in the value, else default re_plan.
-    route = "re_plan"
-    if ":" in value:
-        candidate = value.split(":", 1)[1].strip()
-        if candidate:
-            route = candidate
-    return "rejected", route
+    """O veredito do clique — hoje uma fina camada sobre
+    `dse_contracts.surface.parse_approval_click`, que é a MESMA função que o
+    Teams usa. A regra continua: recusa jamais é lida como aprovação (o padrão
+    do dispatcher é `approved`, então um `reject` mal lido aprovaria o plano)."""
+    return parse_approval_click(action_id, value)
 
 
 def build_event_from_block_action(payload: dict[str, Any], *, resolved_principal: str) -> ConversationEvent:

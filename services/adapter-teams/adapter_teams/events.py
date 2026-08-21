@@ -35,6 +35,10 @@ import re
 from typing import Any
 
 from dse_contracts import Actor, ConversationEvent, EventKind
+from dse_contracts.surface import ACTION_DETAILS, parse_approval_click
+
+#: O marcador que este bot põe em todo `Action.Submit` que desenha.
+CARD_MARKER = "dse"
 
 from .platform_compat import teams_platform
 
@@ -100,10 +104,45 @@ def thread_key(activity: dict[str, Any]) -> str:
     return conversation_id(activity)
 
 
+def card_data(activity: dict[str, Any]) -> dict[str, Any] | None:
+    """O `data` do `Action.Submit` que ESTE bot desenhou, ou None.
+
+    O Teams entrega o clique como activity `message` com `value` preenchido e
+    sem texto — mesma porta assinada das mensagens. O marcador é o que separa
+    clique de conversa: sem ele, o `value` de qualquer outra extensão instalada
+    no tenant entraria aqui como veredito."""
+    value = activity.get("value")
+    if isinstance(value, dict) and value.get(CARD_MARKER) is True:
+        return value
+    return None
+
+
+def card_verdict(activity: dict[str, Any]) -> tuple[str, str | None] | None:
+    """(veredito, rota) de um clique de card, ou None se não for clique.
+
+    Deriva pela MESMA função que o Slack usa (`dse_contracts.surface`): recusa
+    jamais lida como aprovação."""
+    data = card_data(activity)
+    if data is None:
+        return None
+    return parse_approval_click(str(data.get("action_id") or ""), str(data.get("value") or ""))
+
+
+def is_details_click(activity: dict[str, Any]) -> bool:
+    """Details vive em TODA mensagem, inclusive fora do gate. Se ele caísse no
+    fallthrough de veredito, um clique curioso aprovaria o plano — o Slack o
+    desvia antes, e aqui é igual."""
+    data = card_data(activity)
+    return bool(data) and data.get("action_id") == ACTION_DETAILS
+
+
 def event_kind(activity: dict[str, Any]) -> EventKind:
-    """Mention of the bot -> task_request; a plain message in an existing
-    conversation -> clarification_answer (same convention as Slack for messages in
-    a thread; the steering gate in `correlate` handles review/steering)."""
+    """Clique num card -> approval; menção ao bot -> task_request; mensagem
+    simples numa conversa existente -> clarification_answer (mesma convenção do
+    Slack para mensagens numa thread; o gate de direção em `correlate` cuida de
+    review/steering)."""
+    if card_data(activity) is not None:
+        return EventKind.approval
     return EventKind.task_request if is_mention(activity) else EventKind.clarification_answer
 
 
