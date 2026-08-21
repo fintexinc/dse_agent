@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from dse_contracts import GateStatus, L1Finding
@@ -258,8 +259,49 @@ def _disabled(check: str, cfg: L1Config) -> "L1Finding | None":
     return _not_applicable(check, "disabled by the repository manifest (disabled_stages)")
 
 
+def egress_denial_note(
+    denials: "Callable[[], Iterable[tuple[str, int]]] | Iterable[tuple[str, int]] | None",
+) -> str:
+    """A linha que diz QUE rede o gate não alcançou.
+
+    Um gate que morre por egress dizia só "não consegui ler a saída", e a causa
+    ficava numa tabela que ninguém correlacionava: o proxy audita cada recusa
+    como `egress_denied`, mas SEM work_item_id — ele vê uma conexão, não um
+    item. Por isso a correlação é por janela de tempo, e o texto diz "during
+    this run" e nunca "deste item": dois itens em paralelo dividem a janela, e
+    afirmar posse seria a plataforma alegando o que não mediu.
+
+    Custou três releases descobrir isto com o spotless: o P2 do Eclipse consulta
+    `download.eclipse.org` E `archive.eclipse.org`, e abrir só o primeiro deixa
+    o erro byte-idêntico."""
+    # Callable, e não lista: a consulta tem de acontecer DEPOIS de o comando
+    # rodar (é ele que produz as recusas) e SÓ quando o veredito é ilegível.
+    # Recebido como valor pronto, o argumento seria avaliado antes do exec e
+    # traria a janela errada — vazia, sempre.
+    if callable(denials):
+        try:
+            denials = denials()
+        except Exception:  # noqa: BLE001 — enriquecer mensagem nunca derruba gate
+            return ""
+    if not denials:
+        return ""
+    vistos: list[str] = []
+    for host, port in denials:
+        alvo = f"{host}:{port}"
+        if alvo not in vistos:
+            vistos.append(alvo)
+    return (
+        "\nthe egress proxy refused these hosts during this run (they may or "
+        "may not belong to this gate — the proxy logs connections, not work "
+        f"items): {', '.join(vistos)}\n"
+        "add the host to the egress allowlist if the repository's toolchain "
+        "legitimately needs it."
+    )
+
+
 def lint_check(
-    executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None
+    executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None,
+    egress_denials: "Callable[[], Iterable[tuple[str, int]]] | Iterable[tuple[str, int]] | None" = None,
 ) -> L1Finding:
     if (skip := _disabled("lint", cfg)) is not None:
         return skip
@@ -319,6 +361,7 @@ def lint_check(
             f"lint exited {result.returncode} and printed no diagnostic in the "
             f"'path:line:col: CODE msg' format this gate parses — no verdict on "
             f"the change was possible\n" + _tail(_output(result))
+            + egress_denial_note(egress_denials)
         )
         summary = (
             f"lint could not be read (exit={result.returncode}): no diagnostic "

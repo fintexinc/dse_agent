@@ -7,6 +7,7 @@ reports pass/fail with evidence, it never decides what to do next (P1)."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime as _datetime, timezone as _timezone
 
 from dse_contracts import GateStatus, L1Finding, L1Result, PlanArtifact
 
@@ -117,7 +118,15 @@ def run_l1_pipeline_core(
     diff = plan_compliance.compute_diff_or_none(executor, base_sha, head_sha)
     changed_files = None if diff is None else {f.lstrip("./") for f in diff.files_changed}
 
-    findings.append(_timed(step, "lint", lambda: quality_checks.lint_check(executor, cfg, changed_files)))
+    # A janela começa AQUI: se o lint morrer sem diagnóstico legível, o que o
+    # egress recusou desde este instante é a única pista que a plataforma tem
+    # sobre a causa — e ela custou três releases para chegar ao operador uma
+    # vez (o P2 do Eclipse consulta dois hosts; abrir um deixa o erro idêntico).
+    _lint_inicio = _datetime.now(_timezone.utc)
+    findings.append(_timed(step, "lint", lambda: quality_checks.lint_check(
+        executor, cfg, changed_files,
+        egress_denials=lambda: db.egress_denials_since(_lint_inicio),
+    )))
     findings.append(_timed(step, "typecheck", lambda: quality_checks.typecheck_check(executor, cfg, changed_files)))
     findings.append(_timed(step, "test", lambda: quality_checks.test_check(
         executor, cfg, changed_files, base_sha=base_sha)))

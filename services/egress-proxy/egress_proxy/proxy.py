@@ -129,6 +129,12 @@ class EgressProxy:
 
     def _deny(self, host: str, port: int) -> bytes:
         self.denials.append(DenialLog(host=host, port=port))
+        # No stdout TAMBÉM, e não só no audit_log: `kubectl logs` é onde se
+        # olha primeiro quando um build morre por rede, e o audit precisa de
+        # uma consulta que ninguém faz na hora. Em 2026-08-21 a recusa de
+        # `archive.eclipse.org` estava gravada desde a primeira rodada e três
+        # releases se passaram até alguém correlacionar.
+        logger.warning("egress DENIED %s:%s (not in the allowlist)", host, port)
         _emit_audit(
             actor="system:egress-proxy",
             action="egress_denied",

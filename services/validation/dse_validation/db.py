@@ -1022,3 +1022,50 @@ def count_skill_registry(tenant_id: str) -> int:
             return cur.fetchone()[0]
     finally:
         conn.close()
+
+
+def egress_denials_since(started_at, *, tenant_id: str | None = None,
+                         limit: int = 20) -> list[tuple[str, int]]:
+    """Os hosts que o proxy de egress recusou desde `started_at`.
+
+    Best-effort por construção: isto enriquece uma mensagem de erro e nunca
+    decide veredito, então banco indisponível devolve lista vazia em vez de
+    trocar um diagnóstico ruim por um crash.
+
+    Sem `work_item_id` na consulta porque o proxy não o tem — ele vê uma
+    conexão TCP, não um item de trabalho. A janela de tempo é a correlação
+    possível, e quem escreve a mensagem é responsável por dizer isso ao leitor
+    (ver `egress_denial_note`)."""
+    if started_at is None:
+        return []
+    sql = ("SELECT details->>'host', details->>'port' FROM audit_log "
+           "WHERE action = 'egress_denied' AND ts >= %s")
+    args: list = [started_at]
+    if tenant_id:
+        sql += " AND tenant_id = %s"
+        args.append(tenant_id)
+    sql += " ORDER BY ts DESC LIMIT %s"
+    args.append(limit)
+    try:
+        conn = get_connection()
+    except Exception:  # noqa: BLE001 — ver docstring
+        return []
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(sql, args)
+            saida: list[tuple[str, int]] = []
+            for host, porta in cur.fetchall():
+                if not host:
+                    continue
+                try:
+                    saida.append((str(host), int(porta or 443)))
+                except (TypeError, ValueError):
+                    saida.append((str(host), 443))
+            return saida
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass

@@ -133,6 +133,11 @@ egressProxy:
     # que escalou como l1_infra_error (o guarda da rc.104 pegou; antes dele isso
     # teria virado FAIL e turnos de Coder atras de um lint que nunca rodou).
     - { host: "download.eclipse.org", port: 443, purpose: "Eclipse JDT formatter baixado em runtime pelo spotless (gate lint do calculation-engine-service)" }
+    # SEGUNDO host do mesmo fetch, medido com um relay que anotou os CONNECT:
+    # o P2 consulta `download.eclipse.org` (200) e em seguida
+    # `archive.eclipse.org` (403). Abrir só o primeiro deixa o erro
+    # byte-idêntico — foi o que custou a rc.107 e a rc.108.
+    - { host: "archive.eclipse.org", port: 443, purpose: "P2 do Eclipse: segundo host do mesmo fetch do formatter (spotless)" }
 modelGateway:
   image: { repository: ghcr.io/fintexinc/dse_agent/model-gateway, tag: *ghcrTag, digest: "" }
   allowFixture: true           # POC: no real provider required

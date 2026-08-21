@@ -21,8 +21,6 @@ nunca "deste item".
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 from dse_contracts import GateStatus
 from dse_validation.config import L1Config
 from dse_validation.l1.quality_checks import lint_check
@@ -50,13 +48,13 @@ def _cfg() -> L1Config:
         source="test")
 
 
-def _run(denials, started_at=None):
+def _run(denials):
+    """`egress_denials` é CALLABLE de propósito: a consulta tem de rodar depois
+    do comando (é ele que produz as recusas) e só quando o veredito é
+    ilegível."""
     sandbox = _Sandbox(ExecResult(argv=["x"], returncode=1, stdout=_SPOTLESS, stderr=""))
-    return lint_check(
-        sandbox, _cfg(), changed_files={"a.java"},
-        egress_denials=denials,
-        started_at=started_at or datetime.now(timezone.utc) - timedelta(seconds=30),
-    )
+    return lint_check(sandbox, _cfg(), changed_files={"a.java"},
+                      egress_denials=lambda: denials)
 
 
 def test_an_unreadable_gate_names_the_host_the_egress_refused():
@@ -101,8 +99,7 @@ def test_a_readable_gate_does_not_get_the_note_even_with_denials():
         argv=["x"], returncode=1,
         stdout="src/A.java:3:1: E501 line too long\n", stderr=""))
     finding = lint_check(sandbox, _cfg(), changed_files={"src/A.java"},
-                         egress_denials=[("archive.eclipse.org", 443)],
-                         started_at=datetime.now(timezone.utc))
+                         egress_denials=lambda: [("archive.eclipse.org", 443)])
 
     assert finding.status is GateStatus.FAIL
     assert "egress" not in finding.detail.lower()
