@@ -98,6 +98,33 @@ _SPEC = """The manifest is a JSON object. Rules, all binding:
   "--host","0.0.0.0"]) and "image" when the default toolchain would be wrong.
   Omit the whole "preview" object for a library with nothing to serve — do NOT
   invent a start command.
+- "services" (TOP LEVEL): the backing services the test suite or the app needs
+  running — an object of name -> {"image","port","env","ready","user",
+  "writable"}. Declare it ONLY when the tree shows the dependency: a
+  docker-compose with a database, testcontainers in the tests, a supabase/
+  directory, a CI job that boots postgres/redis, a DATABASE_URL in .env files.
+  Do NOT declare one for a unit suite that mocks its storage. The platform
+  runs each service as a sidecar reachable on localhost:<port>; there is no
+  docker daemon, so compose/testcontainers themselves never run here. Fields:
+  "image" a public reference with tag ("postgres:16-alpine"); "port" the
+  service's own, 1024-65535; "env" plain strings — write the literal
+  $DSE_SERVICE_PASSWORD wherever a password belongs (the platform generates
+  one per run and injects it, and the app's own env may embed it too:
+  "postgresql://postgres:$DSE_SERVICE_PASSWORD@localhost:5432/app"); "ready"
+  the image's OWN health argv (["pg_isready","-U","postgres"],
+  ["redis-cli","ping"]) — never a tool the image does not ship; "user" the
+  image's non-root uid when it needs one (70 = postgres-alpine, 999 =
+  redis-alpine); "writable" the paths the image writes to (postgres:
+  ["/var/lib/postgresql/data","/var/run/postgresql"]) — and for postgres set
+  env PGDATA to a SUBDIRECTORY of the data mount
+  ("/var/lib/postgresql/data/pgdata"), or initdb refuses the mount point.
+- "prepare" (TOP LEVEL): the ARGV that creates schema and base data against
+  the running services BEFORE anything is tested or served — the repository's
+  own migrate+seed recipe, e.g. ["sh","-c","npx prisma migrate deploy && npx
+  prisma db seed"]. It must be idempotent (safe on an empty database, safe
+  twice) and self-sufficient (no docker, nothing beyond the declared services
+  on localhost). Omit it when there is no schema to create. Only meaningful
+  next to "services".
 Return ONLY the JSON object. No markdown fences, no prose."""
 
 _PROMPT = """You are drafting `.dse/validation.json` for a repository the DSE

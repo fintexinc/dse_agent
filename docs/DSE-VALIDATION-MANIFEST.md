@@ -334,6 +334,71 @@ not do the work. Roughly US$ 4 and 40 minutes burned before the item died on
 `coder_not_converging`. Protect what actually matters in *your* repository, and
 nothing more.
 
+## `services` *(optional)* — the backing services the code needs running
+
+The sandbox has **no docker daemon** (testcontainers and compose never run
+there) and its egress is an HTTP proxy (the Postgres/Redis wire protocol does
+not traverse it). A suite that needs a database dies in `ECONNREFUSED` — and
+that is a verdict about the *environment*, not your code. This field fixes it:
+each entry runs as a **sidecar in the same pod**, reachable on
+`localhost:<port>`, alive exactly as long as the sandbox (and the preview pod
+gets the same sidecars, where each name also resolves as a DNS alias —
+`postgres:5432` keeps working).
+
+```json
+"services": {
+  "postgres": {
+    "image": "postgres:16-alpine",
+    "port": 5432,
+    "env": {
+      "POSTGRES_PASSWORD": "$DSE_SERVICE_PASSWORD",
+      "POSTGRES_DB": "app",
+      "PGDATA": "/var/lib/postgresql/data/pgdata"
+    },
+    "ready": ["pg_isready", "-U", "postgres"],
+    "user": 70,
+    "writable": ["/var/lib/postgresql/data", "/var/run/postgresql"]
+  }
+}
+```
+
+- **name** — DNS label, at most 24 chars, at most 4 services; `preview` is
+  reserved. The platform does not know what a "postgres" is — it knows
+  `image + port + env + ready`.
+- **`image`** — public registry reference with a tag (digest pin welcome).
+- **`port`** — the service's own port, 1024–65535 (the sandbox runs
+  everything non-root; nothing can bind below 1024), unique across services
+  and distinct from `preview.port`.
+- **`env`** — plain strings. Write the literal `$DSE_SERVICE_PASSWORD`
+  wherever a password belongs: the platform **generates one per run** and
+  injects it — never a password in the manifest. Your app-side env (in
+  `preview.env`, or read by `prepare`) may embed it inside a larger value:
+  `"postgresql://postgres:$DSE_SERVICE_PASSWORD@localhost:5432/app"`.
+- **`ready`** — the image's **own** health argv (`pg_isready`,
+  `redis-cli ping`). Omit it and the platform probes the TCP port. Never a
+  tool the image does not ship.
+- **`user`** — the image's non-root uid when it needs one (70 =
+  postgres-alpine, 999 = redis-alpine). The hardened sandbox refuses root.
+- **`writable`** — the paths the image writes to; each becomes a writable
+  mount (the sandbox root filesystem is read-only). `/tmp` is always there.
+  **Postgres trap:** set `PGDATA` to a *subdirectory* of the data mount, as in
+  the example — `initdb` refuses to initialise a mount point directly.
+
+## `prepare` *(optional, top level)* — schema and base data
+
+The repository's own migrate+seed recipe, run **against the declared services,
+before anything is tested or served** — the sandbox runs it once at provision,
+and the preview pod runs it before `install`:
+
+```json
+"prepare": ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed"]
+```
+
+It must be **idempotent** (safe on an empty database, safe twice) and
+**self-sufficient** (no docker, nothing beyond the declared services on
+`localhost`). Data a *specific test* needs stays where it always was — in that
+test's own fixtures, reviewed in the PR. Only meaningful next to `services`.
+
 ---
 
 ## A complete, real example
