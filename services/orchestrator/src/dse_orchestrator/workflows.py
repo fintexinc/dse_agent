@@ -4718,17 +4718,28 @@ class WorkItemLifecycleWorkflow:
         # cada rodada de evidência (diff novo → rota recalculada).
         deep_path: str | None = None
         deep_note: str | None = None
+        test_guide: dict = {}
         if workflow.patched("preview-deep-link-v1") and preview_enabled and input.pr_number:
+            deep_link_payload = {
+                "work_item_id": input.work_item_id,
+                "tenant_id": input.tenant_id,
+                "repo": input.repo,
+                "pr_number": input.pr_number,
+                "instruction": self._agent_instruction()[:3000],
+                "files_changed": list(files_changed)[:40],
+                "kind": "unknown",
+            }
+            # "How to test" (mesmo turno): o grounding novo entra SÓ sob o
+            # marker — história antiga reproduz o payload byte a byte.
+            if workflow.patched("preview-test-guide-v1"):
+                deep_link_payload["test_plan"] = str(
+                    (input.plan_json or {}).get("test_plan") or ""
+                )[:1500]
+                deep_link_payload["branch"] = input.branch
             try:
                 resolved = await workflow.execute_activity(
                     ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK,
-                    {"work_item_id": input.work_item_id,
-                     "tenant_id": input.tenant_id,
-                     "repo": input.repo,
-                     "pr_number": input.pr_number,
-                     "instruction": self._agent_instruction()[:3000],
-                     "files_changed": list(files_changed)[:40],
-                     "kind": "unknown"},
+                    deep_link_payload,
                     start_to_close_timeout=timedelta(seconds=90),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
@@ -4737,6 +4748,16 @@ class WorkItemLifecycleWorkflow:
                     await self._consume_cost(custo, source="preview_deep_link")
                 deep_path = (resolved or {}).get("path") or None
                 deep_note = (resolved or {}).get("note") or None
+                if workflow.patched("preview-test-guide-v1"):
+                    steps = [s for s in ((resolved or {}).get("steps") or [])
+                             if isinstance(s, str)]
+                    login = str((resolved or {}).get("login") or "")
+                    if steps or login:
+                        test_guide = {"steps": steps, "login": login}
+                        await self._audit(
+                            "preview_test_guide_resolved",
+                            {"steps": len(steps), "has_login": bool(login)},
+                        )
                 if deep_path:
                     await self._audit(
                         "preview_deep_link_resolved",
@@ -4747,19 +4768,22 @@ class WorkItemLifecycleWorkflow:
         input.preview_deep_path = deep_path
         input.preview_deep_note = deep_note
 
+        trigger_payload = {
+            "work_item_id": input.work_item_id,
+            "tenant_id": input.tenant_id,
+            "repo": input.repo,
+            "pr_number": input.pr_number,
+            "files_changed": list(files_changed),
+            "preview_enabled": preview_enabled,
+            "deep_path": deep_path,
+            "deep_note": deep_note,
+        }
+        if workflow.patched("preview-test-guide-v1"):
+            trigger_payload["test_guide"] = test_guide
         try:
             preview: PreviewRef = await workflow.execute_activity(
                 ACTIVITY_TRIGGER_PREVIEW,
-                {
-                    "work_item_id": input.work_item_id,
-                    "tenant_id": input.tenant_id,
-                    "repo": input.repo,
-                    "pr_number": input.pr_number,
-                    "files_changed": list(files_changed),
-                    "preview_enabled": preview_enabled,
-                    "deep_path": deep_path,
-                    "deep_note": deep_note,
-                },
+                trigger_payload,
                 result_type=PreviewRef,
                 **opts_tp,
             )

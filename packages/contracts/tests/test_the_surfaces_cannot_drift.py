@@ -79,6 +79,19 @@ def test_a_rejection_is_never_read_as_an_approval():
         assert route, "recusa sem rota deixa o workflow sem para onde ir"
 
 
+def test_how_to_test_is_one_shared_action_and_can_never_read_as_a_rejection():
+    """O id do How to test vive AQUI, como os outros três — e não pode conter
+    token de recusa: um desvio perdido cairia no fallthrough, e "leu o guia"
+    virando "rejeitou o plano" seria pior que o bug que o Details já matou."""
+    from dse_contracts.surface import ACTION_HOW_TO_TEST, parse_approval_click
+
+    assert ACTION_HOW_TO_TEST == "dse_how_to_test"
+    verdict, _ = parse_approval_click(ACTION_HOW_TO_TEST, "how_to_test")
+    assert verdict == "approved", (
+        "o id contém um token de recusa — um clique de leitura rejeitaria o plano"
+    )
+
+
 def test_the_slack_adapter_reads_from_the_shared_source():
     """Se o Slack voltar a ter cópia própria, esta asserção cai — e é ela que
     impede a divergência de reaparecer pela porta de trás."""

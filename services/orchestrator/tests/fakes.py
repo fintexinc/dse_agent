@@ -275,6 +275,8 @@ class FakeControlPlane:
     demo_trace_key: str | None = "evidence/trace.zip"
     visual_diff_changed_pct: float = 0.0
     last_preview_payload: dict | None = None
+    #: O pedido que o resolvedor de deep link recebeu (guia: test_plan/branch).
+    last_deep_link_payload: dict | None = None
     last_demo_payload: dict | None = None
     last_visual_diff_payload: dict | None = None
 
@@ -320,6 +322,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
 
     async def resolve_preview_deep_link(payload: dict) -> dict:
         state.calls_log.append("resolve_preview_deep_link")
+        state.last_deep_link_payload = dict(payload)
         if state.deep_link_raise:
             raise ApplicationError("deep link model unreachable (fake)",
                                    type="DeepLinkError", non_retryable=True)
