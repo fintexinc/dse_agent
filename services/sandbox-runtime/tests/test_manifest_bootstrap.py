@@ -161,3 +161,34 @@ def test_the_worker_registry_carries_both_activities():
     }
     assert "probe_repo_manifest" in nomes
     assert "bootstrap_repo_manifest" in nomes
+
+
+def test_the_probe_returns_the_validated_services_and_prepare():
+    """O probe é quem já lê o manifesto ANTES do Planner — é ele que carrega a
+    declaração de serviços até o provision, validada pelo parser REAL. Uma
+    chamada de API, zero novas."""
+    manifesto = {
+        "version": 1,
+        "commands": {"test": ["npm", "test"]},
+        "services": {"postgres": {"image": "postgres:16-alpine", "port": 5432}},
+        "prepare": ["sh", "-c", "npx prisma migrate deploy"],
+    }
+    client = _client(files={".dse/validation.json": json.dumps(manifesto)})
+    r = mb.probe_manifest(client, "acme/svc", "main")
+
+    assert r["services"] == {"postgres": {"image": "postgres:16-alpine", "port": 5432}}
+    assert r["prepare"] == ["sh", "-c", "npx prisma migrate deploy"]
+
+
+def test_an_invalid_services_block_keeps_the_probe_fail_open():
+    """Manifesto inválido continua sendo notícia do L1, com a mensagem dele —
+    o probe não mata tarefa: devolve services vazio e o fluxo segue como um
+    repo sem serviços."""
+    manifesto = {"version": 1, "commands": {},
+                 "services": {"db": {"port": 5432}}}  # sem image
+    client = _client(files={".dse/validation.json": json.dumps(manifesto)})
+    r = mb.probe_manifest(client, "acme/svc", "main")
+
+    assert r["present"] is True
+    assert r.get("services") in (None, {})
+    assert r.get("prepare") in (None, [])
