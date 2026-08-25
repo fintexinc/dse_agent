@@ -8,7 +8,6 @@ pelo `action_id` que viaja no `data` do card — o mesmo canal que já carrega o
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -70,12 +69,17 @@ def test_the_dialog_without_login_omits_the_credentials_line():
 
 @pytest.fixture()
 def cliente(monkeypatch):
+    from types import SimpleNamespace
+
     from adapter_teams import app as app_mod
 
-    monkeypatch.setattr(app_mod, "is_activated", lambda: True)
-    monkeypatch.setattr(app_mod, "audit_emit", lambda **kw: None)
-    monkeypatch.setattr(app_mod, "_verificar_assinatura",
-                        lambda body, hdr: json.loads(body), raising=False)
+    monkeypatch.setattr(app_mod, "is_activated", lambda: True, raising=False)
+    monkeypatch.setattr(app_mod, "audit_emit", lambda **kw: None, raising=False)
+    # A porta de assinatura tem teste próprio; aqui ela é dada como cumprida
+    # (rota HMAC: sem header Bearer o endpoint cai em verify_teams_signature).
+    monkeypatch.setattr(app_mod, "get_teams_shared_secret", lambda: "s")
+    monkeypatch.setattr(app_mod, "verify_teams_signature",
+                        lambda **kw: SimpleNamespace(verified=True, reason=""))
     return TestClient(app_mod.app)
 
 

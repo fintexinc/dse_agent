@@ -44,6 +44,7 @@ from .backend import (
     SlackCommentBackend,
     status_blocks,
     plan_details_view,
+    how_to_test_view,
     build_real_slack_client,
     repo_select_blocks,
 )
@@ -184,6 +185,29 @@ def _consume_verdict(conn, work_item_id: str, stage: str,
 #: já concluído ao lado de um no gate mostraria o plano ERRADO na tela de
 #: decisão. Leitura errada num gate é pior que leitura nenhuma.
 _TERMINAL_STATUSES = ("done", "failed", "cancelled", "escalated")
+
+
+def _test_guide_for_item(work_item_id: str) -> tuple[dict | None, str | None, str | None]:
+    """(guia, url, deep_path) do preview do item — o guia nasce no turno do
+    deep link e persiste em `wse_previews.test_guide`; {} = sem guia."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT test_guide, url, deep_path FROM wse_previews "
+                "WHERE work_item_id = %s",
+                (work_item_id,),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+    if not row:
+        return None, None, None
+    guia = row[0] if isinstance(row[0], dict) else None
+    if not guia or not (guia.get("steps") or guia.get("login")):
+        return None, row[1], row[2]
+    return guia, row[1], row[2]
 
 
 def _plan_for_message(
@@ -657,6 +681,40 @@ async def slack_interactions(request: Request) -> dict:
                               "I could not open the plan — please try again.")
             return {"ok": True, "path": "plan_details_failed"}
         return {"ok": True, "path": "plan_details_opened"}
+
+    if action.get("action_id") == "dse_how_to_test":
+        # Leitura, como o Details — e desviada ANTES do fallthrough pelas
+        # MESMAS três razões (parse_slack_approval aprovaria, o veredito
+        # one-shot seria consumido, o ack apagaria os botões).
+        channel = payload["channel"]["id"]
+        message = payload.get("message") or {}
+        work_item_id, _plan, _risk, item_repo, _siblings, _outcome = _plan_for_message(
+            tenant_id, channel, message)
+        if not work_item_id:
+            _notify_ephemeral(channel, user_id,
+                              "I could not find the task for this message.")
+            return {"ok": True, "path": "how_to_test_no_item"}
+        guia, url, deep_path = _test_guide_for_item(work_item_id)
+        if not guia:
+            _notify_ephemeral(
+                channel, user_id,
+                "There is no test guide for this preview (it may have expired, "
+                "or the change needed none).")
+            return {"ok": True, "path": "how_to_test_no_guide"}
+        try:
+            build_real_slack_client(
+                get_slack_bot_token(), deadline=time.monotonic()
+            ).views_open(
+                trigger_id=payload.get("trigger_id", ""),
+                view=how_to_test_view(work_item_id, guia, url=url,
+                                      deep_path=deep_path, repo=item_repo),
+            )
+        except Exception:  # noqa: BLE001 — sem modal, a mensagem continua clicável
+            logger.warning("views_open failed (how to test)", exc_info=True)
+            _notify_ephemeral(channel, user_id,
+                              "I could not open the guide — please try again.")
+            return {"ok": True, "path": "how_to_test_failed"}
+        return {"ok": True, "path": "how_to_test_opened"}
 
     if action.get("action_id") == "dse_repo_select":
         # No-op ack: an empty 200 keeps the Slack client from flagging the

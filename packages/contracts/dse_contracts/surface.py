@@ -51,6 +51,10 @@ DEFAULT_REJECT_ROUTE = "re_plan"
 ACTION_APPROVE = "dse_plan_approve"
 ACTION_REJECT = "dse_plan_reject"
 ACTION_DETAILS = "dse_plan_details"
+#: "How to test" — leitura, como o Details: as superfícies o DESVIAM antes de
+#: qualquer máquina de veredito. O nome não pode conter token de recusa
+#: (cadeado em test_the_surfaces_cannot_drift).
+ACTION_HOW_TO_TEST = "dse_how_to_test"
 
 
 def progress_stages(status: str) -> list[tuple[str, str]] | None:

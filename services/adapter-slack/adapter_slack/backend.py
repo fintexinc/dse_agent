@@ -70,6 +70,12 @@ def status_blocks(body: str, *, status: str = "", repo: str | None = None) -> li
     # cor igual convidaria o clique errado.
     elements.append({"type": "button", "action_id": "dse_plan_details",
                      "text": {"type": "plain_text", "text": "Details"}, "value": "details"})
+    if status == "pr_ready":
+        # Só na mensagem que carrega o preview: antes dela não há o que
+        # testar, e no `done` o link já foi embora com a reescrita.
+        elements.append({"type": "button", "action_id": "dse_how_to_test",
+                         "text": {"type": "plain_text", "text": "How to test"},
+                         "value": "how_to_test"})
     blocks.append({"type": "actions", "block_id": "dse_plan_approval",
                    "elements": elements})
     return blocks
@@ -221,6 +227,43 @@ def plan_details_view(
         "type": "modal",
         "callback_id": "dse_plan_details",
         "title": {"type": "plain_text", "text": "Plan"},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": blocks,
+    }
+
+
+def how_to_test_view(work_item_id: str, guide: dict, *, url: str | None = None,
+                     deep_path: str | None = None,
+                     repo: str | None = None) -> dict:
+    """O "How to test", legível, num modal — irmão do plan_details_view.
+
+    O conteúdo vem de `wse_previews.test_guide` (gerado no turno do deep link,
+    grounded nas seeds reais do repo). SÓ LEITURA, sem `submit` — a mesma
+    ausência que impede o Details de virar veredito por acidente."""
+    blocks: list[dict] = []
+    if repo:
+        blocks.append({"type": "context",
+                       "elements": [{"type": "mrkdwn", "text": f"`{_escape(repo)}`"}]})
+    link = f"{url}{deep_path}" if url and deep_path else url
+    if link:
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn", "text": f"*Preview:* {link}"}})
+    login = str(guide.get("login") or "")
+    if login:
+        blocks.append({"type": "section", "text": {
+            "type": "mrkdwn",
+            "text": f"*Login:* {_escape(login)[:_SECTION_CHARS - 20]}"}})
+    steps = [s for s in (guide.get("steps") or []) if isinstance(s, str) and s]
+    if steps:
+        passos = "\n".join(f"{i}. {_escape(s)}" for i, s in enumerate(steps[:_MAX_ITEMS], 1))
+        blocks.append({"type": "section", "text": {
+            "type": "mrkdwn", "text": f"*Steps*\n{passos}"[:_SECTION_CHARS]}})
+    blocks.append({"type": "context", "elements": [
+        {"type": "mrkdwn", "text": f"Work item `{work_item_id}`"}]})
+    return {
+        "type": "modal",
+        "callback_id": "dse_how_to_test",
+        "title": {"type": "plain_text", "text": "How to test"},
         "close": {"type": "plain_text", "text": "Close"},
         "blocks": blocks,
     }

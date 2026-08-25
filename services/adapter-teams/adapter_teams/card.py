@@ -22,6 +22,7 @@ from typing import Any
 from dse_contracts.surface import (
     ACTION_APPROVE,
     ACTION_DETAILS,
+    ACTION_HOW_TO_TEST,
     ACTION_REJECT,
     DEFAULT_REJECT_ROUTE,
     progress_line,
@@ -90,6 +91,10 @@ def status_card(body: str, *, status: str = "", repo: str | None = None,
     # igual convidaria o clique errado.
     acoes.append(_acao(ACTION_DETAILS, "Details", "details",
                        dialogo=True, work_item_id=work_item_id))
+    if status == "pr_ready":
+        # Só no card que carrega o preview — paridade com o Slack.
+        acoes.append(_acao(ACTION_HOW_TO_TEST, "How to test", "how_to_test",
+                           dialogo=True, work_item_id=work_item_id))
 
     return {
         "contentType": "application/vnd.microsoft.card.adaptive",
@@ -155,6 +160,29 @@ def refusal_dialog(mensagem: str) -> dict[str, Any]:
     """Recusa VISÍVEL. Um 200 vazio fecha o diálogo em branco, que é
     indistinguível de erro — e foi o que o operador viu na rc.111."""
     return _envelope("DSE", [_texto(mensagem)])
+
+
+def how_to_test_dialog(work_item_id: str, guide: dict, *, url: str | None,
+                       deep_path: str | None) -> dict[str, Any]:
+    """O "How to test" deste preview, para leitura — irmão do plan_details.
+
+    Conteúdo de `wse_previews.test_guide` (nascido no turno do deep link,
+    grounded nas seeds reais do repo). Linha de login SÓ quando existe: linha
+    vazia é ruído que confunde quem está testando."""
+    corpo: list[dict[str, Any]] = []
+    link = f"{url}{deep_path}" if url and deep_path else url
+    if link:
+        corpo.append(_texto(f"**Preview:** {link}"))
+    login = str(guide.get("login") or "")
+    if login:
+        corpo.append(_texto(f"**Login:** {login[:300]}"))
+    steps = [s for s in (guide.get("steps") or []) if isinstance(s, str) and s]
+    if steps:
+        passos = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
+        corpo.append(_texto(f"**Steps**\n{passos[:_MAX_CHARS]}"))
+    if not corpo:
+        corpo.append(_texto("_There is no test guide for this preview._"))
+    return _envelope("How to test", corpo)
 
 
 def plan_details_dialog(work_item_id: str, plan: dict | None, *, risk: str | None,

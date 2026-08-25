@@ -149,9 +149,12 @@ def test_how_to_test_never_becomes_a_verdict(fake_slack):
     conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM ingest_events WHERE work_item_id=%s",
+            # `kind='approval'` como no molde do Details: o task_request da
+            # própria menção que criou o item é legítimo e fica.
+            cur.execute("SELECT count(*) FROM ingest_events "
+                        "WHERE work_item_id=%s AND kind='approval'",
                         (work_item_id,))
-            assert cur.fetchone()[0] == 0, "o clique virou evento"
+            assert cur.fetchone()[0] == 0, "o clique virou evento de aprovação"
             cur.execute("SELECT count(*) FROM verdict_consumptions WHERE work_item_id=%s",
                         (work_item_id,))
             assert cur.fetchone()[0] == 0, "o clique consumiu o veredito one-shot"

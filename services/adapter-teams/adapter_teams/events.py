@@ -211,6 +211,18 @@ def task_fetch_work_item(activity: dict[str, Any]) -> str | None:
     return str(item) if item else None
 
 
+def task_fetch_action_id(activity: dict[str, Any]) -> str:
+    """Qual diálogo o card pediu — o `action_id` viaja no MESMO `data` que o
+    work_item_id. Ausente = o Details de sempre (cards antigos ainda vivos
+    nas conversas não carregam o campo... carregam, mas a rota não pode
+    depender disso para o comportamento legado)."""
+    value = activity.get("value")
+    data = value.get("data") if isinstance(value, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("action_id") or "")
+
+
 def correlation_ref(activity: dict[str, Any]) -> dict[str, str]:
     """O ref que a correlação usa para achar (ou não) uma tarefa existente.
 

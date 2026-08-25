@@ -44,7 +44,9 @@ from pydantic import BaseModel
 
 from . import events
 from .backend import TeamsCommentBackend, build_real_teams_client
-from .card import plan_details_dialog, refusal_dialog, status_card
+from dse_contracts.surface import ACTION_HOW_TO_TEST
+
+from .card import how_to_test_dialog, plan_details_dialog, refusal_dialog, status_card
 from .comment_store import SURFACE, PgCommentStateStore
 from .config import (
     get_default_service_url,
@@ -97,6 +99,40 @@ def _resolve_tenant_for(activity: dict) -> str:
         return rt.tenant_id
     finally:
         conn.close()
+
+
+def _how_to_test_dialog_for(activity: dict) -> dict:
+    """O diálogo do "How to test" — leitura pura, como o do plano.
+
+    O guia vive em `wse_previews.test_guide` (nasce no turno do deep link);
+    o escopo da leitura é o par (tenant, source) via work_items, como toda
+    leitura deste repositório."""
+    work_item_id = events.task_fetch_work_item(activity)
+    if not work_item_id:
+        return refusal_dialog("I could not find the task for this message.")
+
+    conn = get_connection()
+    try:
+        tenant_id = resolve_tenant(
+            conn, platform="teams", binding_key=events.aad_tenant_id(activity)).tenant_id
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT p.test_guide, p.url, p.deep_path "
+                "FROM wse_previews p JOIN work_items w ON w.id = p.work_item_id "
+                "WHERE p.work_item_id = %s AND w.tenant_id = %s AND w.source = %s",
+                (work_item_id, tenant_id, "teams"),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    finally:
+        conn.close()
+
+    guia = row[0] if row and isinstance(row[0], dict) else None
+    if not guia or not (guia.get("steps") or guia.get("login")):
+        return refusal_dialog(
+            "There is no test guide for this preview (it may have expired, "
+            "or the change needed none).")
+    return how_to_test_dialog(work_item_id, guia, url=row[1], deep_path=row[2])
 
 
 def _plan_dialog_for(activity: dict) -> dict:
@@ -254,6 +290,11 @@ async def teams_messages(request: Request):
     # SÍNCRONA — o Teams lê o corpo desta resposta HTTP, e um 200 vazio abre o
     # diálogo em branco.
     if events.is_task_fetch(activity):
+        # O card diz QUAL diálogo quer pelo action_id que viaja no data —
+        # o mesmo canal do work_item_id. Default = Details (comportamento
+        # de sempre para qualquer card antigo ainda vivo numa conversa).
+        if events.task_fetch_action_id(activity) == ACTION_HOW_TO_TEST:
+            return JSONResponse(status_code=200, content=_how_to_test_dialog_for(activity))
         return JSONResponse(status_code=200, content=_plan_dialog_for(activity))
 
     if activity.get("type") != "message":
