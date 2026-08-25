@@ -352,6 +352,35 @@ def egress_denial_note(
     )
 
 
+def services_hint_note(output: str, *, services_declared: bool) -> str:
+    """A linha que aponta o dono certo de um `connection refused` local.
+
+    Tema 1: o sandbox não tem docker e o egress é proxy HTTP — uma suite que
+    precisa de Postgres/Redis morre em ECONNREFUSED, o veredito diz FAIL, e o
+    laço de fix edita asserções que não têm culpa. O conserto mora no
+    MANIFESTO (`services` + `prepare`), e é isso que a nota diz. Enriquece,
+    nunca decide: quem chama já fechou `passed`/`status`.
+
+    Com `services` declarado a nota SOME — o banco existe, e "declare
+    services" mandaria o laço na direção errada (aí o suspeito é porta/env do
+    próprio repo). Compartilhada com o Tester do sandbox-runtime, como o
+    builder do settings.xml: um texto só, dono só."""
+    if services_declared:
+        return ""
+    low = (output or "").lower()
+    if "econnrefused" not in low and "connection refused" not in low:
+        return ""
+    return (
+        "\na REFUSED LOCAL CONNECTION appears in this output and the "
+        "repository manifest declares no `services`. This sandbox has no "
+        "docker daemon and the egress proxy only forwards HTTP, so a suite "
+        "that needs postgres/redis/etc cannot start one here and cannot reach "
+        "one outside. If the code under test needs a backing service, declare "
+        "`services` (and `prepare` for migrations/seed) in "
+        ".dse/validation.json — editing the test will not create a database.\n"
+    )
+
+
 def lint_check(
     executor: SandboxExecutor, cfg: L1Config, changed_files: set[str] | None = None,
     egress_denials: "Callable[[], Iterable[tuple[str, int]]] | Iterable[tuple[str, int]] | None" = None,
@@ -1029,6 +1058,13 @@ def test_check(
             "CONFIG ADVISORY: the test command in this repository excludes "
             f"{', '.join(excluded)}. A test the DSE writes is not excluded by "
             "it, so it can hit a wall the existing suite never reports.\n"
+        )
+    # ADVISORY do Tema 1: aponta o manifesto quando o vermelho é um
+    # `connection refused` sem `services` declarado. Só em detail — `passed` e
+    # `status` já estão decididos acima e a nota nunca os toca.
+    if not passed:
+        inherited_note += services_hint_note(
+            output, services_declared=bool(cfg.services_declared)
         )
     detail = inherited_note + _detail_with(summary, [] if passed else failing, result)
     return L1Finding(

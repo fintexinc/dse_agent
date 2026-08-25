@@ -3575,8 +3575,17 @@ def _tester_pod_sync(
         # Say it in words the next round will act on. The raw output of a killed
         # suite ends mid-run and reads like a pass, which is precisely how six
         # non-terminating files got authored in a row.
+        # Tema 1: um ECONNREFUSED sem `services` no manifesto não se conserta
+        # editando teste — a nota aponta o manifesto ANTES de o Tester gastar
+        # uma rodada reescrevendo asserções. O texto é o mesmo do L1 (função
+        # compartilhada da camada de validação), e `manifest` é o que o pod
+        # tem AGORA — o estado contra o qual a suite acabou de rodar.
+        from dse_validation.l1.quality_checks import services_hint_note
+
         failure_output = _infra_outcome_note(
             outcome, returncode, suite_timeout_seconds=clocks.suite
+        ) + services_hint_note(
+            failure_output, services_declared=bool(manifest.get("services"))
         ) + failure_output
         # 1200, not 300: at 300 the cut landed mid-token ("e: 'suite'") and the
         # actual assertion never appeared.
