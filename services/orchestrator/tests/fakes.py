@@ -190,6 +190,11 @@ class FakeControlPlane:
     #: rc.105 — declarações que o manifesto presente NÃO tem. Vazio = completo,
     #: o caso de todo teste antigo.
     repo_manifest_missing: list[str] = field(default_factory=list)
+    #: Tema 1 — o que o probe devolve como declaração de serviços do repo.
+    repo_manifest_services: dict[str, Any] = field(default_factory=dict)
+    repo_manifest_prepare: list[str] = field(default_factory=list)
+    #: Payloads EXATOS que o workflow mandou ao provision — a asserção do fio.
+    provision_payloads: list[dict] = field(default_factory=list)
     amend_result: dict = field(default_factory=lambda: {
         "ok": True, "pr_number": 2, "existing": False,
         "url": "https://github.com/x/y/pull/2", "reason": ""})
@@ -294,7 +299,9 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         state.calls_log.append("probe_repo_manifest")
         return {"present": state.repo_manifest_present,
                 "reachable": state.repo_manifest_reachable,
-                "missing": list(state.repo_manifest_missing)}
+                "missing": list(state.repo_manifest_missing),
+                "services": dict(state.repo_manifest_services),
+                "prepare": list(state.repo_manifest_prepare)}
 
     async def bootstrap_repo_manifest(payload: dict) -> dict:
         state.calls_log.append("bootstrap_repo_manifest")
@@ -402,6 +409,7 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
     async def provision_sandbox(payload: dict) -> SandboxHandle:
         state.provision_calls += 1
         state.calls_log.append("provision_sandbox")
+        state.provision_payloads.append(dict(payload))
         _maybe_fail_closed(state, ACTIVITY_PROVISION_SANDBOX)
         inp = ProvisionSandboxInput(**payload)  # REAL decode
         return SandboxHandle(

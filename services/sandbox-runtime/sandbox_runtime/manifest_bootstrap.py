@@ -144,7 +144,26 @@ def probe_manifest(client, repo: str, base_branch: str) -> dict:
         return {"present": False, "reachable": False, "missing": []}
     if texto is None:
         return {"present": False, "reachable": True, "missing": []}
-    return {"present": True, "reachable": True, "missing": missing_declarations(texto)}
+    # Tema 1: o probe é quem carrega a declaração de serviços até o provision —
+    # validada pelo parser REAL, na forma normalizada (`as_payload`). Manifesto
+    # inválido é fail-open: o probe devolve vazio e a má notícia, com a mensagem
+    # certa, continua sendo do L1.
+    servicos: dict = {}
+    prepare: list[str] = []
+    try:
+        import json as _json
+
+        from dse_validation.config import parse_repo_prepare, parse_repo_services
+
+        payload = _json.loads(texto)
+        servicos = {name: decl.as_payload()
+                    for name, decl in parse_repo_services(payload, source="probe").items()}
+        prepare = parse_repo_prepare(payload, source="probe")
+    except Exception:  # noqa: BLE001 — inválido aqui = vazio; o L1 dá a notícia
+        servicos, prepare = {}, []
+    return {"present": True, "reachable": True,
+            "missing": missing_declarations(texto),
+            "services": servicos, "prepare": prepare}
 
 
 #: O que a plataforma precisa que o repositório declare, e o que ela é obrigada

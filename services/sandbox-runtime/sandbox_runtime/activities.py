@@ -133,6 +133,9 @@ class ProvisionSandboxInput(BaseModel):
     repo: str | None = None  # S4: target repo (e.g. "andre2654/fintex-wallet") to clone
     budget: dict[str, Any] = Field(default_factory=dict)
     image: str | None = None
+    #: Tema 1 — vindos do probe do manifesto, já validados; o driver re-valida.
+    services: dict[str, Any] | None = None
+    prepare: list[str] | None = None
 
 
 @activity.defn(name=ACTIVITY_PROVISION_SANDBOX)
@@ -160,6 +163,8 @@ async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
                 budget=inp.budget or {},
                 repo=inp.repo,
                 base_branch=inp.base_branch,
+                services=inp.services,
+                prepare=inp.prepare,
             )
         )
         # Guidance into the Pod. `provision` returns only after `_bootstrap`, so

@@ -2308,6 +2308,10 @@ class WorkItemLifecycleWorkflow:
                             "manifest amendment failed; the task proceeds with the "
                             "platform's fallback recipe"
                         )
+                # Tema 1: o probe carrega `services`/`prepare` validados; o
+                # provision (mais abaixo, sob patch próprio) os repassa ao Pod.
+                self._repo_services = dict(probe.get("services") or {}) or None
+                self._repo_prepare = list(probe.get("prepare") or []) or None
             await self._run_planner_and_gate()
             # rc.93 (decisão do operador, auditoria de 08-14): a barreira do
             # GRUPO fica entre o gate próprio e o sandbox — antes de gastar
@@ -2320,14 +2324,24 @@ class WorkItemLifecycleWorkflow:
 
         if not input.sandbox_id:
             await self._boundary_gate()
+            provision_payload: dict[str, Any] = {
+                "work_item_id": input.work_item_id,
+                "tenant_id": input.tenant_id,
+                "repo": input.repo,
+                "base_branch": input.base_branch or "main",
+            }
+            # Tema 1, sob patch: o payload só muda para execuções novas —
+            # histórias em voo replayam byte-idênticas. Item que retoma já com
+            # plano (sem probe nesta encarnação) provisiona sem serviços, como
+            # antes do patch — degradação aceita e documentada.
+            if workflow.patched("sandbox-services-from-manifest-v1"):
+                if getattr(self, "_repo_services", None):
+                    provision_payload["services"] = self._repo_services
+                if getattr(self, "_repo_prepare", None):
+                    provision_payload["prepare"] = self._repo_prepare
             handle: SandboxHandle = await self._run_model_activity(
                 ACTIVITY_PROVISION_SANDBOX,
-                {
-                    "work_item_id": input.work_item_id,
-                    "tenant_id": input.tenant_id,
-                    "repo": input.repo,
-                    "base_branch": input.base_branch or "main",
-                },
+                provision_payload,
                 SandboxHandle,
             )
             input.sandbox_id = handle.sandbox_id
