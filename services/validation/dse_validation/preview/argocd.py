@@ -1812,6 +1812,7 @@ def _trigger_preview(
         namespace=namespace, url=url, ttl_seconds=ttl, expires_at=expires_at,
         detail=detail_row,
         deep_path=inp.deep_path or "", deep_note=inp.deep_note or "",
+        test_guide=inp.test_guide or {},
     )
     if audit_emit is not None:
         audit_emit(
@@ -1827,6 +1828,7 @@ def _trigger_preview(
         status="created", namespace=namespace, url=url, kind=kind,
         detail=nota or "",
         deep_path=inp.deep_path, deep_note=inp.deep_note,
+        test_guide=inp.test_guide or {},
     )
 
 

@@ -676,6 +676,8 @@ class TriggerPreviewInput(BaseModel):
     #: a nota de 1 linha. Opcionais e aditivos: payload antigo decodifica igual.
     deep_path: str | None = None
     deep_note: str | None = None
+    #: "How to test" (mesmo turno do deep link): {steps, login}; {} = sem guia.
+    test_guide: dict = Field(default_factory=dict)
     # `**/*.html` is load-bearing: a plain static page is the most common shape
     # of a UI change, and without it a PR that only edits index.html was
     # classified backend-only and silently skipped the preview.
@@ -719,6 +721,9 @@ class PreviewRef(BaseModel):
     kind: str = ""
     deep_path: str | None = None
     deep_note: str | None = None
+    #: "How to test" — {steps: [...], login: "..."} gerado no mesmo turno do
+    #: deep link; {} = sem guia. Aditivo: payload antigo decodifica igual.
+    test_guide: dict = Field(default_factory=dict)
 
 
 class TriagePreviewFailureInput(BaseModel):

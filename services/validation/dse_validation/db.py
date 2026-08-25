@@ -517,6 +517,7 @@ def upsert_preview(
     expires_at=None,
     deep_path: str = "",
     deep_note: str = "",
+    test_guide: dict | None = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -525,20 +526,22 @@ def upsert_preview(
                 """
                 INSERT INTO wse_previews
                     (work_item_id, tenant_id, pr_number, repo, status, namespace, url,
-                     detail, ttl_seconds, expires_at, deep_path, deep_note)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     detail, ttl_seconds, expires_at, deep_path, deep_note, test_guide)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (work_item_id) DO UPDATE SET
                     pr_number = EXCLUDED.pr_number, status = EXCLUDED.status,
                     namespace = EXCLUDED.namespace, url = EXCLUDED.url,
                     detail = EXCLUDED.detail, ttl_seconds = EXCLUDED.ttl_seconds,
                     expires_at = EXCLUDED.expires_at,
                     deep_path = EXCLUDED.deep_path, deep_note = EXCLUDED.deep_note,
+                    test_guide = EXCLUDED.test_guide,
                     reaped_at = CASE WHEN EXCLUDED.status = 'created' THEN NULL
                                      ELSE wse_previews.reaped_at END,
                     updated_at = now()
                 """,
                 (work_item_id, tenant_id, pr_number, repo, status, namespace, url,
-                 detail, ttl_seconds, expires_at, deep_path, deep_note),
+                 detail, ttl_seconds, expires_at, deep_path, deep_note,
+                 json.dumps(test_guide or {})),
             )
         conn.commit()
     finally:
@@ -551,7 +554,8 @@ def get_preview(work_item_id: str) -> dict[str, Any] | None:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT work_item_id, tenant_id, pr_number, repo, status, namespace, url, "
-                "detail, ttl_seconds, expires_at, reaped_at, deep_path, deep_note "
+                "detail, ttl_seconds, expires_at, reaped_at, deep_path, deep_note, "
+                "test_guide "
                 "FROM wse_previews WHERE work_item_id = %s",
                 (work_item_id,),
             )
@@ -560,7 +564,7 @@ def get_preview(work_item_id: str) -> dict[str, Any] | None:
             return None
         keys = ["work_item_id", "tenant_id", "pr_number", "repo", "status", "namespace",
                 "url", "detail", "ttl_seconds", "expires_at", "reaped_at",
-                "deep_path", "deep_note"]
+                "deep_path", "deep_note", "test_guide"]
         return dict(zip(keys, row))
     finally:
         conn.close()
