@@ -59,7 +59,6 @@ def _post_interaction(payload: dict) -> dict:
 
 
 def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake_slack):
-    from dse_identity import resolve_principal
 
     created = _post_event({
         "type": "app_mention", "channel": _CH, "ts": "9201.000100",
@@ -71,13 +70,6 @@ def test_a_click_on_a_finished_item_updates_the_message_and_signals_nothing(fake
         with conn.cursor() as cur:
             cur.execute("UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
                         (work_item_id,))
-            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
-            tenant_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
-                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (tenant_id, resolve_principal("slack", "U_DF_REQ")),
-            )
         conn.commit()
     finally:
         conn.close()

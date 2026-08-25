@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 from dse_audit.client import get_connection
-from dse_platform import is_console_active, is_steering_allowed
+from dse_platform import is_console_active
 from dse_platform.dev_idp import DevIdP
 from dse_platform.sso import (
     InvalidToken,
@@ -106,29 +106,6 @@ def test_contractor_expiry_denies_login(idp, verifier):
     assert is_console_active(principal) is False
     with pytest.raises(LoginDenied):
         login(verifier, idp.mint_id_token(subject=sub, audience=AUDIENCE))
-
-
-def test_offboarding_removes_from_steering(idp, verifier):
-    tenant = f"acme-steer-{uuid.uuid4().hex[:8]}"
-    sub = f"sub-{uuid.uuid4().hex[:8]}"
-    session = login(verifier, idp.mint_id_token(subject=sub, audience=AUDIENCE))
-
-    # add to the WS-A steering allowlist (data plane)
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s,%s) "
-                "ON CONFLICT DO NOTHING",
-                (tenant, session.principal_id),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    assert is_steering_allowed(tenant, session.principal_id) is True
-    offboard(session.principal_id, reason="left", actor="system:test")
-    assert is_steering_allowed(tenant, session.principal_id) is False
 
 
 def test_offboard_requires_reason(idp, verifier):

@@ -4,7 +4,7 @@ This README documents the whole workstream (WS-A): `services/ingest-gateway/`
 (this directory, the core), `services/adapter-slack/`,
 `services/adapter-github/` and (Phase 2) `services/adapter-jira/`. Every
 adapter imports `ingest_gateway` as a library — all the admission, correlation,
-intake defense, steering allowlist and (Phase 2) tenant binding logic lives here
+intake defense and (Phase 2) tenant binding logic lives here
 and is shared, not duplicated.
 
 > **Phase 2 ("Judgment & queue"):** see the
@@ -143,43 +143,19 @@ and is shared, not duplicated.
     `provenance_work_item_id` filled in (the caller writes the provenance link
     into the audit of the new admission).
 
-### WSA-E6-T2a — Steering allowlist fallback
-- `ingest_gateway.steering.is_authorized_to_steer(tenant_id, principal_id)
-  -> bool`: an explicit per-tenant allowlist fallback
-  (`tenant_steering_allowlist`, `migrations/0002_wsa.sql`). No row =
-  **not authorized** — never "anyone can steer".
-  A stable signature (`(tenant_id, principal_id) -> bool`, no `conn` in the
-  public contract) so WS-F can swap the implementation for a real identity map
-  in Phase 4 without breaking `correlate()`/the adapters.
-- `correlate()` applies this gate for `kind in {steering, review_comment}`
-  (the two forms of "someone injects new direction into an active task" via a
-  comment) — `clarification_answer`/`approval` are expected replies from the
-  flow itself and do not go through the gate. Rejection produces
-  `dse_audit.emit(action="steering_rejected_unauthorized")` and returns
-  `"unauthorized"` instead of `"signal"`.
+### Steering — autorização por canal (desde 2026-08-21)
 
-### WSA-E6-T2b (Phase 4) — Steering over the REAL identity map
-The implementation of `is_authorized_to_steer` was swapped underneath (the
-`(tenant_id, principal_id) -> bool` signature **did not change** — a stable
-contract since Phase 1). It now resolves a **role**, not just membership in a
-list, using WS-F's sources of truth (Phase 2). Deterministic order
-(P1), deny by default:
-  0. **Offboarding overrides everything** (WSF-E3-T3): a principal with an
-     inactive/expired row in `dse_console_identity` → denied, even if on the
-     allowlist/bundle.
-  1. **RBAC role via `dse_console_identity.roles`** (∩ `STEERING_ROLES` =
-     operator/approver/steerer/maintainer/platform_admin/admin), scoped to the
-     home tenant (or `tenant_id IS NULL` = platform operator).
-  2. **Approver role via `dse_access_bundle.designated_approvers`** of the
-     tenant's effective bundle (default channel).
-  3. **Documented fallback**: the explicit Phase 1 allowlist
-     (`tenant_steering_allowlist`) = requester + CODEOWNERS-equivalents,
-     for as long as the identity map does not resolve a role.
-  - **P8**: the GRANT emits `dse_audit.emit(action="steering_authorized")` with
-    the resolution `method`; the REJECTION is still audited by `correlate`
-    (`steering_rejected_unauthorized`) — the Phase 1 invariant is preserved.
-  - The swap does not break the Phase 1 steering tests (the allowlist still
-    authorizes). See `tests/test_steering.py`.
+As seções WSA-E6-T2a/T2b (allowlist explícita `tenant_steering_allowlist` +
+resolução de papel por cima dela) foram REMOVIDAS por decisão de operador: o
+convite ao canal é a autorização. Quem lê o que o DSE escreve no canal pode
+responder; a assimetria "lê mas não dirige" custava mais do que protegia, e
+cada superfície nova (Teams foi a prova) recriava o problema, porque a mesma
+pessoa tem uma identidade por plataforma e nenhuma nasce numa lista. A tabela
+caiu na migração `0046_drop_steering_allowlist.sql`; `correlate()` não aplica
+mais gate de identidade em `steering`/`review_comment`. A APROVAÇÃO DE PLANO
+não passou por aqui e continua com a cascata própria (CODEOWNERS → aprovadores
+designados do access bundle). O offboarding (ADR-22) continua valendo onde há
+papel: aprovação e console.
 
 ## What is a local fixture/mock (documented, not production)
 

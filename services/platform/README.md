@@ -275,7 +275,7 @@ removed/renamed. Reserved migration: `migrations/0013_wsf2.sql`. New port:
 | Task | Where | Proof |
 |---|---|---|
 | **WSF-E3-T2 — Per-tenant/channel access bundles** | `dse_platform/access_bundles.py` + `migrations/0013_wsf2.sql` (`dse_access_bundle`) | `tests/test_access_bundles.py` — CRUD, channel-over-default resolution, deny-by-default (no bundle denies repo/mode), `blocked_actions` (e.g. `direct_merge_to_protected_branch`), **an empty approver cascade BLOCKS** (`NoApproverError`, P3), an offboarded user is removed from the cascade |
-| **WSF-E3-T3 — ADR-22 + console SSO/OIDC** | `infra/ADR-22-identity.md` (design), `dse_platform/sso.py` (`OIDCVerifier`/`login`/`offboard`/`provision_console_user`), `dse_platform/dev_idp.py` (dev OIDC IdP), `dse_platform/steering_resolution.py`, login in `queue_board/app.py` | `tests/test_sso.py` — real RSA verification (signature/iss/aud/exp), account matching on a stable `sub`, JIT login, **offboarding denies login AND removes from approver/steering**, contractor expiry |
+| **WSF-E3-T3 — ADR-22 + console SSO/OIDC** | `infra/ADR-22-identity.md` (design), `dse_platform/sso.py` (`OIDCVerifier`/`login`/`offboard`/`provision_console_user`), `dse_platform/dev_idp.py` (dev OIDC IdP), login in `queue_board/app.py` | `tests/test_sso.py` — real RSA verification (signature/iss/aud/exp), account matching on a stable `sub`, JIT login, **offboarding denies login AND removes from approver resolution**, contractor expiry |
 | **WSF-E4-T3 — Multi-tenant isolation suite (NFR-03)** | `dse_platform/tenant_isolation.py` | `tests/test_tenant_isolation.py` — layer by layer (queues/fairness keys, artifacts/prefixes, skills, retrieval, audit, tokens) with **ACTIVE cross-tenant attempts** that fail (`CrossTenantViolation`) and are audited (`cross_tenant_access_denied`) |
 | **WSF-E6-T1 — Queue board API** | `dse_platform/queue_board/api.py` | `tests/test_queue_board.py` — §9.3 projection (all states), `to_public_status` reused, budgets + aggregated cost, `active_work_items`, quarantine, audit trail |
 | **WSF-E6-T2 — Operator controls → Temporal signals** | `dse_platform/queue_board/operator.py` + `signals.py` + `dse_platform/kill_switches.py` | `tests/test_queue_board.py` + `tests/test_kill_switches.py` — pause/resume/cancel/retry/reassign model+runtime/force_clarification/escalate/quarantine + **kill switches at all 4 scopes** (global/tenant/channel/task); every action audited with the operator's identity; the intent is audited even if the signal fails |
@@ -399,7 +399,6 @@ services/platform/
     access_bundles.py        (WSF-E3-T2)
     sso.py                    (WSF-E3-T3 — OIDC verify, login, offboard)
     dev_idp.py                (WSF-E3-T3 — dev OIDC IdP, fixture)
-    steering_resolution.py    (WSF-E3-T3 — offboarding × steering)
     kill_switches.py          (WSF-E6-T2 — 4 scopes + quarantine)
     tenant_isolation.py       (WSF-E4-T3 — layer-by-layer enforcement)
     queue_board/

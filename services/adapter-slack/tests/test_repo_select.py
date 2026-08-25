@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import adapter_slack.app as app_module
-from adapter_slack.app import app, resolve_principal
+from adapter_slack.app import app
 from adapter_slack.backend import FakeSlackClient, repo_select_blocks
 
 from .helpers import sign
@@ -170,19 +170,6 @@ def _seed_repos(tenant_id: str) -> None:
     conn.close()
 
 
-def _allow_steering(tenant_id: str, slack_user_id: str) -> None:
-    """The gate denies by default — without this row the Confirm returns `unauthorized`."""
-    conn = psycopg2.connect(SUPERUSER_DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s,%s) "
-            "ON CONFLICT DO NOTHING",
-            (tenant_id, resolve_principal("slack", slack_user_id)),
-        )
-    conn.commit()
-    conn.close()
-
-
 def _clarification_snapshots(work_item_id: str) -> list[str]:
     conn = psycopg2.connect(DSN)
     with conn.cursor() as cur:
@@ -210,7 +197,6 @@ def test_choosing_in_the_dropdown_decides_nothing(tenant_id, fake_slack):
     select RECORDED the signal right away: the first option clicked already
     fired the turn."""
     _seed_repos(tenant_id)
-    _allow_steering(tenant_id, "U_STEER")
     work_item_id = _make_work_item(tenant_id)
 
     data = _post_interaction(
@@ -223,7 +209,6 @@ def test_choosing_in_the_dropdown_decides_nothing(tenant_id, fake_slack):
 
 def test_confirm_promotes_the_staged_choice_to_a_signal(tenant_id, fake_slack):
     _seed_repos(tenant_id)
-    _allow_steering(tenant_id, "U_STEER")
     work_item_id = _make_work_item(tenant_id)
 
     data = _post_interaction(
@@ -243,7 +228,6 @@ def test_confirm_without_a_choice_warns_instead_of_failing_silently(tenant_id, f
     """If the Confirm finds no choice (nothing selected, or the message state was
     lost), the human needs to know — otherwise they keep clicking a mute button."""
     _seed_repos(tenant_id)
-    _allow_steering(tenant_id, "U_STEER")
     work_item_id = _make_work_item(tenant_id)
 
     data = _post_interaction(
@@ -259,7 +243,6 @@ def test_confirm_refuses_a_repo_the_tenant_never_offered(tenant_id, fake_slack):
     """The repo arrives via the message `state`; confining it to repo_bindings
     guarantees that only a repo WE offered can become the target of an agent turn."""
     _seed_repos(tenant_id)
-    _allow_steering(tenant_id, "U_STEER")
     work_item_id = _make_work_item(tenant_id)
 
     data = _post_interaction(
@@ -275,7 +258,6 @@ def test_confirm_refuses_a_repo_the_tenant_never_offered(tenant_id, fake_slack):
 def test_confirm_falls_back_to_the_button_value_when_block_id_is_missing(tenant_id, fake_slack):
     """The button's `value` duplicates the work_item_id precisely for this case."""
     _seed_repos(tenant_id)
-    _allow_steering(tenant_id, "U_STEER")
     work_item_id = _make_work_item(tenant_id)
 
     data = _post_interaction(

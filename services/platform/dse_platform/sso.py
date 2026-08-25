@@ -9,8 +9,8 @@ Two responsibilities:
    platform "sso"), guarantees a row in `dse_console_identity`, and REFUSES the
    login if the account is offboarded (`active = false`) or expired (contractor
    past `expires_at`). `offboard` deactivates the account — which also removes it
-   from approver/steering resolution (see access_bundles and
-   steering_resolution).
+   from approver resolution (see access_bundles). A direção não tem mais
+   lista própria desde 2026-08-21 (migração 0046): canal = autorização.
 
 Account matching (ADR-22): by the IdP's stable `sub` (subject), NOT by email
 (email can be reassigned). The email is stored only for display/contact.
@@ -342,7 +342,8 @@ def provision_console_user(
 def offboard(principal_id: str, *, reason: str, actor: str, conn=None) -> None:
     """Offboarding (ADR-22): deactivates the console identity. Cascading effect:
     the principal is dropped from approver resolution (access_bundles.resolve_plan_approvers
-    filters `active = false`) and from steering (steering_resolution.is_steering_allowed).
+    filters `active = false`). A allowlist de direção saiu em 2026-08-21
+    (migração 0046): direção é autorizada pelo acesso ao canal, não por lista.
     Idempotent. Writes an audit entry (P8). `reason` is required."""
     if not reason:
         raise ValueError("offboard requires `reason` (P8: never silent)")

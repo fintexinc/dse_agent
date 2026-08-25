@@ -68,7 +68,6 @@ def _post_interaction(payload: dict) -> dict:
 
 
 def _gated_item(fake_slack, *, ts: str) -> tuple[str, dict]:
-    from dse_identity import resolve_principal
 
     created = _post_event({
         "type": "app_mention", "channel": _CH, "ts": ts,
@@ -80,13 +79,6 @@ def _gated_item(fake_slack, *, ts: str) -> tuple[str, dict]:
         with conn.cursor() as cur:
             cur.execute("UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
                         (work_item_id,))
-            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
-            tenant_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
-                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (tenant_id, resolve_principal("slack", "U_ACK_REQ")),
-            )
         conn.commit()
     finally:
         conn.close()

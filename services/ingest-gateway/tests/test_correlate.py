@@ -65,17 +65,6 @@ def test_match_on_active_work_item_returns_signal(tenant_id):
     ref = {"channel": "C1", "thread_ts": "111.111"}
     wi_id = _insert_work_item(tenant_id, ref, status="implementing")
 
-    # clarification_answer is steering-gated (§F F4): the legitimate requester is
-    # on the allowlist; here we authorize so the test focuses on Path B correlation.
-    allow_conn = psycopg2.connect(DSN)
-    with allow_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s, %s)",
-            (tenant_id, "usr_someone"),
-        )
-    allow_conn.commit()
-    allow_conn.close()
-
     conn = get_connection()
     event = _event(EventKind.clarification_answer, ref)
     result = correlate(conn, tenant_id=tenant_id, event=event, requester_principal="usr_someone")
@@ -101,15 +90,6 @@ def test_steering_by_authorized_principal_is_signal(tenant_id):
     ref = {"repo": "acme/widgets", "number": 43}
     wi_id = _insert_work_item(tenant_id, ref, status="implementing")
 
-    allow_conn = psycopg2.connect(DSN)
-    with allow_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s, %s)",
-            (tenant_id, "usr_maintainer"),
-        )
-    allow_conn.commit()
-    allow_conn.close()
-
     conn = get_connection()
     event = _event(EventKind.steering, ref, principal="usr_maintainer")
     result = correlate(conn, tenant_id=tenant_id, event=event, requester_principal="usr_maintainer")
@@ -118,20 +98,11 @@ def test_steering_by_authorized_principal_is_signal(tenant_id):
     assert result.work_item_id == wi_id
 
 
-def test_clarification_answer_by_third_party_on_allowlist_is_signal(tenant_id):
-    """A third party who is NOT the requester but is authorized (allowlist) can
-    answer as well."""
+def test_clarification_answer_by_a_third_party_is_signal(tenant_id):
+    """A third party who is NOT the requester can answer as well — desde
+    2026-08-21, estar no canal É a autorização."""
     ref = {"channel": "C1", "thread_ts": "555.555"}
     wi_id = _insert_work_item(tenant_id, ref, status="needs_clarification")
-
-    allow_conn = psycopg2.connect(DSN)
-    with allow_conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s, %s)",
-            (tenant_id, "usr_helper"),
-        )
-    allow_conn.commit()
-    allow_conn.close()
 
     conn = get_connection()
     event = _event(EventKind.clarification_answer, ref, principal="usr_helper")

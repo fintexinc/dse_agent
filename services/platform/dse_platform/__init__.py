@@ -58,7 +58,6 @@ from .secret_rotation import (
     rotate_from_manifest,
     rotate_secret,
 )
-from .steering_resolution import is_steering_allowed
 from .tenant_isolation import (
     CrossTenantViolation,
     artifact_key,
@@ -111,7 +110,6 @@ __all__ = [
     "offboard",
     "provision_console_user",
     "is_console_active",
-    "is_steering_allowed",
     # tenant isolation (WSF-E4-T3)
     "CrossTenantViolation",
     "guard_same_tenant",

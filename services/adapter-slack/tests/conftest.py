@@ -40,7 +40,6 @@ def _cleanup():
             )
             cur.execute("DELETE FROM work_items WHERE tenant_id LIKE 'test_tenant_%'")
             cur.execute("DELETE FROM channel_kill_switches WHERE tenant_id LIKE 'test_tenant_%'")
-            cur.execute("DELETE FROM tenant_steering_allowlist WHERE tenant_id LIKE 'test_tenant_%'")
             cur.execute("DELETE FROM audit_log WHERE tenant_id LIKE 'test_tenant_%'")
         conn.commit()
     finally:

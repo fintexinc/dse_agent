@@ -16,21 +16,10 @@ from .helpers import sign
 TENANT_ID = "test_tenant_github_adapter"
 
 
-def _allow_steering(login: str) -> str:
-    """Resolves the principal for `login` and adds it to the test tenant's
-    steering allowlist (WSA-E6-T2a) — without this, review_comment/steering from
-    an unlisted principal is rejected by design."""
-    principal_id = resolve_principal("github", login, login)
-    conn = psycopg2.connect(DSN)
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) VALUES (%s, %s) "
-            "ON CONFLICT DO NOTHING",
-            (TENANT_ID, principal_id),
-        )
-    conn.commit()
-    conn.close()
-    return principal_id
+def _principal_for(login: str) -> str:
+    """Resolves the principal for `login`. A allowlist de direção saiu
+    (2026-08-21): estar no canal — aqui, no repo — é a autorização."""
+    return resolve_principal("github", login, login)
 
 client = TestClient(app)
 DSN = "postgresql://dse_app:dse_app_dev_only@localhost:5432/dse"
@@ -175,7 +164,7 @@ def test_pr_comment_on_active_work_item_correlates_as_signal_zero_new_work_items
         "delivery-400",
     )
     work_item_id = created["work_item_id"]
-    _allow_steering("carol")
+    _principal_for("carol")
 
     review = _post(
         {
@@ -218,7 +207,7 @@ def test_pull_request_review_comment_event_correlates_as_signal():
         "delivery-500",
     )
     work_item_id = created["work_item_id"]
-    _allow_steering("dave")
+    _principal_for("dave")
 
     review = _post(
         {
@@ -327,7 +316,7 @@ def test_pull_request_review_submitted_carries_review_state_for_verdict():
         "delivery-700",
     )
     work_item_id = created["work_item_id"]
-    _allow_steering("erin")
+    _principal_for("erin")
 
     review = _post(
         {

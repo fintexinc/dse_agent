@@ -96,7 +96,6 @@ def _item_at_the_plan_gate(fake_slack, *, ts: str) -> tuple[str, dict]:
     """Um item parado no gate de plano, COM plano no banco — que é o estado
     real quando a mensagem é postada (`persist-plan-before-coder-v1` grava o
     plano antes do gate)."""
-    from dse_identity import resolve_principal
 
     work_item_id = _post_event({
         "type": "app_mention", "channel": _CH, "ts": ts,
@@ -109,13 +108,6 @@ def _item_at_the_plan_gate(fake_slack, *, ts: str) -> tuple[str, dict]:
                 "UPDATE work_items SET status='awaiting_plan_approval', plan=%s::jsonb "
                 "WHERE id=%s",
                 (json.dumps(_PLAN), work_item_id),
-            )
-            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
-            tenant_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
-                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (tenant_id, resolve_principal("slack", "U_PLAN_REQ")),
             )
         conn.commit()
     finally:
@@ -226,7 +218,6 @@ def test_a_missing_plan_does_not_break_the_button(fake_slack):
     `continue_as_new`, e nada garante que o plano esteja lá. O modal abre
     dizendo o que sabe em vez de estourar — o botão nunca pode derrubar a
     única via de aprovação."""
-    from dse_identity import resolve_principal
 
     work_item_id = _post_event({
         "type": "app_mention", "channel": _CH, "ts": "7005.000100",
@@ -237,13 +228,6 @@ def test_a_missing_plan_does_not_break_the_button(fake_slack):
         with conn.cursor() as cur:
             cur.execute("UPDATE work_items SET status='awaiting_plan_approval' WHERE id=%s",
                         (work_item_id,))
-            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
-            tenant_id = cur.fetchone()[0]
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
-                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (tenant_id, resolve_principal("slack", "U_PLAN_REQ")),
-            )
         conn.commit()
     finally:
         conn.close()
@@ -268,7 +252,6 @@ def test_the_modal_shows_the_EFFECTIVE_risk_not_the_declared_one(fake_slack):
     Sem isto, a tela que o humano abre PARA DECIDIR argumentaria na direção de
     aprovar — e no mesmo commit em que a mensagem do gate passou a dizer o
     risco certo."""
-    from dse_identity import resolve_principal
 
     work_item_id = _post_event({
         "type": "app_mention", "channel": _CH, "ts": "7007.000100",
@@ -282,12 +265,6 @@ def test_the_modal_shows_the_EFFECTIVE_risk_not_the_declared_one(fake_slack):
                 "UPDATE work_items SET status='awaiting_plan_approval', "
                 "plan=%s::jsonb, risk_class='high' WHERE id=%s",
                 (json.dumps(declarado_low), work_item_id),
-            )
-            cur.execute("SELECT tenant_id FROM work_items WHERE id=%s", (work_item_id,))
-            cur.execute(
-                "INSERT INTO tenant_steering_allowlist (tenant_id, principal_id) "
-                "VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (cur.fetchone()[0], resolve_principal("slack", "U_PLAN_REQ")),
             )
         conn.commit()
     finally:
