@@ -121,9 +121,20 @@ def test_the_password_never_appears_anywhere_in_the_manifest_set():
     assert "secretKeyRef" in corpo
     assert "dse-preview-service-password" in corpo
     assert "$(DSE_SERVICE_PASSWORD)" in corpo, "valores usam a expansão do kubelet"
-    for linha in corpo.splitlines():
-        if "DSE_SERVICE_PASSWORD" in linha and "value:" in linha:
-            raise AssertionError(f"senha literal no manifest set: {linha.strip()}")
+    # A DEFINIÇÃO da variável é sempre valueFrom (nunca `value:` inline) — as
+    # ocorrências de $(DSE_SERVICE_PASSWORD) em valores de OUTRAS variáveis
+    # são o design: expansão do kubelet, resolvida fora do manifest set.
+    linhas = corpo.splitlines()
+    definicoes = [i for i, ln in enumerate(linhas)
+                  if ln.strip() == "- name: DSE_SERVICE_PASSWORD"]
+    assert definicoes, "a variável nunca é definida"
+    for i in definicoes:
+        seguinte = linhas[i + 1].strip()
+        assert seguinte.startswith("valueFrom"), (
+            f"senha definida inline no manifest set: {seguinte}"
+        )
+    # E o token cru (sem tradução) não sobrevive em lugar nenhum.
+    assert "$DSE_SERVICE_PASSWORD\"" not in corpo.replace("$(DSE_SERVICE_PASSWORD)", "")
 
 
 def test_the_sidecar_env_defines_the_secret_ref_before_any_reference():

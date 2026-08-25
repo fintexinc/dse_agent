@@ -44,9 +44,17 @@ from datetime import datetime, timedelta, timezone
 from dse_contracts.activities import PreviewRef, TriggerPreviewInput
 
 from dse_validation import db
-from dse_validation.config import PreviewConfig, RepoPreviewDeclaration
+from dse_validation.config import (
+    PreviewConfig,
+    RepoPreviewDeclaration,
+    RepoServiceDeclaration,
+)
 from dse_validation.preview import gitops
 from dse_validation.preview.paths_filter import preview_decision
+from dse_validation.service_credentials import (
+    references_service_password,
+    translate_service_password,
+)
 
 try:
     from dse_audit import emit as audit_emit
@@ -200,6 +208,12 @@ DEPLOY_KEY_SECRET = "dse-preview-deploy-key"
 #: volume o que existir — ver dse_validation.build_credentials.
 BUILD_CREDENTIALS_SECRET = "dse-preview-build-credentials"
 
+#: Tema 1 — a senha dos `services` declarados pelo repo. Gerada POR PREVIEW e
+#: semeada fora do manifest set (em gitops o set vira commit; a garantia por
+#: construção é que build_manifests nem recebe a senha — o pod a lê por
+#: secretKeyRef desta Secret).
+SERVICE_PASSWORD_SECRET = "dse-preview-service-password"
+
 
 def build_credential_files_for(cfg: "PreviewConfig") -> dict[str, str]:
     """Os arquivos de credencial que ESTE deployment tem para dar ao preview.
@@ -235,6 +249,29 @@ def apply_build_credentials(
         "type: Opaque\n"
         "data:\n"
         f"{linhas}"
+    ))
+
+
+def apply_service_password(
+    cfg: "PreviewConfig", namespace: str,
+    repo_services: dict[str, "RepoServiceDeclaration"] | None,
+) -> None:
+    """Gera e materializa a senha dos services — via kubectl, fora do manifest
+    set (a garantia por construção da deploy key e das build credentials)."""
+    if not repo_services:
+        return
+    from dse_validation.service_credentials import generate_service_password
+
+    senha = generate_service_password()
+    _kubectl(cfg, ["apply", "-f", "-"], input_text=(
+        "apiVersion: v1\n"
+        "kind: Secret\n"
+        "metadata:\n"
+        f"  name: {SERVICE_PASSWORD_SECRET}\n"
+        f"  namespace: {namespace}\n"
+        "type: Opaque\n"
+        "data:\n"
+        f"  password: {base64.b64encode(senha.encode()).decode()}\n"
     ))
 
 
@@ -351,13 +388,70 @@ data:
     return True
 
 
+#: O env que injeta a senha por referência — a variável PRIMEIRO, porque a
+#: expansão `$(VAR)` do kubelet só enxerga o que foi definido antes na lista.
+_PASSWORD_ENV_YAML = f"""            - name: DSE_SERVICE_PASSWORD
+              valueFrom:
+                secretKeyRef: {{ name: {SERVICE_PASSWORD_SECRET}, key: password }}
+"""
+
+
+def _service_sidecars_yaml(
+    repo_services: dict[str, RepoServiceDeclaration],
+) -> str:
+    """Os `services` do repo como sidecars NATIVOS no pod do preview — o mesmo
+    desenho do sandbox (initContainer + restartPolicy Always: ordenação pelo
+    startupProbe e restart independente), MENOS o hardening: `user`, `writable`
+    e readOnlyRootFilesystem são ignorados de propósito, porque o namespace de
+    preview não tem PSA e a imagem escreve na própria camada do container
+    (efêmera como o namespace). Os campos existem no contrato por causa do
+    sandbox endurecido."""
+    if not repo_services:
+        return ""
+    linhas = "      initContainers:\n"
+    for nome, svc in sorted(repo_services.items()):
+        env = ""
+        if any(references_service_password(v) for v in svc.env.values()):
+            env += _PASSWORD_ENV_YAML
+        for env_nome, valor in svc.env.items():
+            # json.dumps pela razão de sempre: valor do manifesto do cliente
+            # não escapa do YAML gerado.
+            env += (f"            - name: {env_nome}\n"
+                    f"              value: "
+                    f"{json.dumps(translate_service_password(valor))}\n")
+        env_yaml = f"          env:\n{env}" if env else ""
+        if svc.ready:
+            probe = f"exec: {{ command: {json.dumps(list(svc.ready))} }}"
+        else:
+            probe = f"tcpSocket: {{ port: {svc.port} }}"
+        linhas += f"""        - name: svc-{nome}
+          image: {svc.image}
+          restartPolicy: Always
+{env_yaml}          ports:
+            - containerPort: {svc.port}
+          startupProbe:
+            {probe}
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            {probe}
+            periodSeconds: 5
+          resources:
+            requests: {{ cpu: "50m", memory: "128Mi" }}
+            limits: {{ cpu: "500m", memory: "512Mi" }}
+"""
+    return linhas
+
+
 def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
                        repo: str, branch: str, kind: str = "ui",
                        api_proxy_target: str | None = None,
                        auth_mode: str = "ssh",
                        repo_preview: RepoPreviewDeclaration | None = None,
                        build_cmd: list[str] | None = None,
-                       build_credential_files: tuple[str, ...] = ()) -> str:
+                       build_credential_files: tuple[str, ...] = (),
+                       repo_services: dict[str, RepoServiceDeclaration] | None = None,
+                       repo_prepare: list[str] | None = None) -> str:
     """Deployment that runs the PR branch straight from source.
 
     No image is built anywhere in this path, and that is the whole point: this
@@ -426,6 +520,12 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             f"mkdir -p {destino_dir} && "
             f"cp /preview-build-creds/{arquivo} {destino}; fi; "
         )
+    # Tema 1: a migração+seed do repo (`prepare`) roda ANTES do install/build,
+    # simétrico ao sandbox — o app já nasce com o schema que os sidecars vão
+    # servir. O comando chega PARSEADO (argv do manifesto, via
+    # _validate_command); _shlex.join preserva a forma.
+    servicos = repo_services or {}
+    prepare_step = _shlex.join(repo_prepare) + "; " if repo_prepare else ""
     # Single-quoted in the shell and injected from values the DSE itself
     # generated (repo slug, `dse/<work_item_id>` branch) — never from PR text.
     if kind == "deployable":
@@ -476,6 +576,7 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
             + cred_prelude
+            + prepare_step
             + install_step
             + build_step
             + start_step
@@ -497,7 +598,10 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             linhas = [f'            - name: SERVER_PORT\n              value: "{port}"']
             for nome, valor in decl.env.items():
                 # `json.dumps` no valor: aspas/quebras vindas do manifesto do
-                # cliente não podem escapar do YAML gerado.
+                # cliente não podem escapar do YAML gerado. Com services
+                # declarados, o token da senha vira a expansão do kubelet.
+                if servicos:
+                    valor = translate_service_password(valor)
                 linhas.append(f"            - name: {nome}\n"
                               f"              value: {json.dumps(valor)}")
             env_yaml = "\n".join(linhas) + "\n"
@@ -610,6 +714,7 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
             "cd /srv/app; "
             + cred_prelude
+            + prepare_step
             + install_step
             + proxy_step + start
         )
@@ -623,6 +728,8 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         # branch deployable — conteúdo do manifesto do cliente não escapa do
         # YAML gerado.
         for nome, valor in decl.env.items():
+            if servicos:
+                valor = translate_service_password(valor)
             env_yaml += (f"            - name: {nome}\n"
                          f"              value: {json.dumps(valor)}\n")
         probe_yaml = f"""          readinessProbe:
@@ -655,6 +762,11 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
     else:
         cred_volume = ""
         cred_mount = ""
+    services_yaml = _service_sidecars_yaml(servicos)
+    if servicos:
+        # A ÚNICA variável que a plataforma dá ao repo — e PRIMEIRA da lista,
+        # porque a expansão $(VAR) do kubelet só enxerga o que veio antes.
+        env_yaml = _PASSWORD_ENV_YAML + env_yaml
     return f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -676,7 +788,7 @@ metadata:
           secret:
             secretName: {DEPLOY_KEY_SECRET}
             defaultMode: 256
-{cred_volume}      containers:
+{cred_volume}{services_yaml}      containers:
         - name: web
           image: {image}
           command: ["sh", "-c"]
@@ -748,6 +860,47 @@ def read_repo_preview(repo: str, branch: str) -> RepoPreviewDeclaration | None:
         return None
 
 
+def read_repo_services(repo: str, branch: str) -> dict[str, RepoServiceDeclaration]:
+    """O bloco `services` do manifesto no branch da PR — mesmo best-effort do
+    read_repo_preview e pela mesma razão: manifesto ausente ou torto significa
+    "sem serviços" (o preview de sempre), nunca preview derrubado; quem dá a
+    notícia de manifesto inválido é o L1."""
+    try:
+        from dse_validation.config import L1_MANIFEST_PATH, parse_repo_services
+        from dse_validation.github.client import GitHubConfig, build_github_client
+
+        client = build_github_client(GitHubConfig())
+        reader = getattr(client, "get_file_text", None)
+        if reader is None:
+            return {}
+        texto = reader(repo, L1_MANIFEST_PATH, branch)
+        if not texto:
+            return {}
+        return parse_repo_services(json.loads(texto), source=f"{repo}@{branch}")
+    except Exception as exc:  # noqa: BLE001 — ver docstring
+        logger.info("preview: no usable services in %s@%s (%s)", repo, branch, exc)
+        return {}
+
+
+def read_repo_prepare(repo: str, branch: str) -> list[str] | None:
+    """O `prepare` do manifesto no branch da PR — best-effort como acima."""
+    try:
+        from dse_validation.config import L1_MANIFEST_PATH, parse_repo_prepare
+        from dse_validation.github.client import GitHubConfig, build_github_client
+
+        client = build_github_client(GitHubConfig())
+        reader = getattr(client, "get_file_text", None)
+        if reader is None:
+            return None
+        texto = reader(repo, L1_MANIFEST_PATH, branch)
+        if not texto:
+            return None
+        return parse_repo_prepare(json.loads(texto), source=f"{repo}@{branch}") or None
+    except Exception as exc:  # noqa: BLE001 — ver docstring
+        logger.info("preview: no usable prepare in %s@%s (%s)", repo, branch, exc)
+        return None
+
+
 def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     expires_at: datetime, ttl_seconds: int, cfg: PreviewConfig,
                     *, image: str | None = None, app_port: int | None = None,
@@ -756,7 +909,9 @@ def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
                     auth_mode: str = "ssh",
                     repo_preview: RepoPreviewDeclaration | None = None,
                     build_cmd: list[str] | None = None,
-                    build_credential_files: tuple[str, ...] = ()) -> dict[str, str]:
+                    build_credential_files: tuple[str, ...] = (),
+                    repo_services: dict[str, RepoServiceDeclaration] | None = None,
+                    repo_prepare: list[str] | None = None) -> dict[str, str]:
     """Plan 08 §D: `image` (D4 — the PR image; defaults to the cfg placeholder)
     and `app_port` (the app's port inside the container; Service/Ingress publish
     80 → targetPort). When `cfg.external_host_template` is set, also generates
@@ -793,7 +948,9 @@ metadata:
                                     kind=kind, api_proxy_target=api_proxy_target,
                                     auth_mode=auth_mode, repo_preview=repo_preview,
                                     build_cmd=build_cmd,
-                                    build_credential_files=build_credential_files)
+                                    build_credential_files=build_credential_files,
+                                    repo_services=repo_services,
+                                    repo_prepare=repo_prepare)
         # A porta que o Service/Ingress publicam tem que ser a MESMA que o
         # container escuta — se o repo declarou a dele, o encaminhamento segue
         # junto, senão o preview responde 502 com o pod saudável.
@@ -845,7 +1002,12 @@ metadata:
     # Spring aponta seu datasource para o Service `postgres` e o Flyway/JPA do
     # PRÓPRIO app migra no boot (a migração da PR viaja no jar). emptyDir: o
     # dado morre com o namespace no TTL, que é exatamente o que se quer.
-    if kind == "deployable":
+    # Tema 1: `services` declarado SUPRIME este chute — o repo disse o que
+    # precisa, e o que precisa sobe como sidecar no pod do app. E a probe do
+    # legacy checa o banco que o env CRIA (POSTGRES_DB): checava `-d preview`,
+    # um banco que nunca existiu, e a semântica PQping do pg_isready mascarava
+    # a dessincronização ao vivo.
+    if kind == "deployable" and not repo_services:
         manifests["postgres.yaml"] = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -883,7 +1045,7 @@ metadata:
           ports:
             - containerPort: 5432
           readinessProbe:
-            exec: {{ command: ["pg_isready", "-U", "preview", "-d", "preview"] }}
+            exec: {{ command: ["sh", "-c", "pg_isready -U preview -d {cfg.preview_db_name}"] }}
             periodSeconds: 5
             failureThreshold: 12
           resources:
@@ -902,6 +1064,30 @@ metadata:
   ports:
     - port: 5432
       targetPort: 5432
+"""
+
+    # Tema 1: cada serviço declarado ganha um alias DNS apontando para o pod
+    # do PRÓPRIO app (o sidecar mora lá). HEADLESS + publishNotReadyAddresses
+    # porque um ClusterIP comum seria deadlock por construção: ele só publica
+    # endpoint de Pod Ready, o app não fica Ready sem o banco, e o banco está
+    # no mesmo Pod. Headless resolve para o IP do Pod (entrega local, sem
+    # hairpin) e publishNotReadyAddresses quebra o ovo-e-galinha — mantendo o
+    # endereço `postgres:5432` que os manifests dos clientes já usam.
+    for nome, svc_decl in sorted((repo_services or {}).items()):
+        manifests[f"svc-{nome}.yaml"] = f"""apiVersion: v1
+kind: Service
+metadata:
+  name: {nome}
+  namespace: {namespace}
+  labels:
+{labels}spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: preview
+  ports:
+    - port: {svc_decl.port}
+      targetPort: {svc_decl.port}
 """
 
     hostname = cfg.external_hostname_for(namespace)
@@ -1544,6 +1730,11 @@ def _trigger_preview(
     repo_build_cmd = read_repo_build_cmd(inp.repo, branch)
     # Fase A1: as credenciais de build deste deployment (vazio = nada muda).
     cred_files = build_credential_files_for(cfg)
+    # Tema 1: os serviços que o repo declara sobem como sidecars no pod do
+    # preview (e suprimem o Postgres hardcoded); o `prepare` roda no script do
+    # app antes do install. Best-effort como toda leitura de manifesto aqui.
+    repo_services = read_repo_services(inp.repo, branch)
+    repo_prepare = read_repo_prepare(inp.repo, branch)
 
     try:
         manifests = build_manifests(namespace, inp.work_item_id, inp.tenant_id, expires_at, ttl, cfg,
@@ -1552,7 +1743,9 @@ def _trigger_preview(
                                     api_proxy_target=api_proxy_target,
                                     auth_mode=auth_mode, repo_preview=repo_preview,
                                     build_cmd=repo_build_cmd,
-                                    build_credential_files=tuple(sorted(cred_files)))
+                                    build_credential_files=tuple(sorted(cred_files)),
+                                    repo_services=repo_services,
+                                    repo_prepare=repo_prepare)
         if cfg.apply_mode == "kubectl":
             def _seed_credential() -> None:
                 if not auth_material:
@@ -1565,6 +1758,9 @@ def _trigger_preview(
                 # Depois da deploy key, pela mesma porta e pela mesma razão:
                 # fora do manifest set, antes do workload que monta o volume.
                 apply_build_credentials(cfg, namespace, cred_files)
+                # E a senha dos services — antes do workload que a referencia
+                # por secretKeyRef (sem ela o pod fica em CreateContainerConfigError).
+                apply_service_password(cfg, namespace, repo_services)
             _apply_manifests(cfg, manifests, after_namespace=_seed_credential)
         else:
             gitops.write_preview_dir(cfg.repo_dir, namespace, manifests)
