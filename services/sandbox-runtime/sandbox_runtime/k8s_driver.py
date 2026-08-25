@@ -90,6 +90,20 @@ class K8sSandboxConfig:
     # build_pod_manifest logs/flags that; production must set it.
     runtime_class: str = os.environ.get("DSE_SANDBOX_RUNTIME_CLASS", "gvisor")
     service_account: str = os.environ.get("DSE_SANDBOX_SERVICE_ACCOUNT", "dse-sandbox-runner")
+    #: Tetos dos SIDECARS de serviço (Tema 1) — da plataforma, jamais
+    #: declaráveis: o repo não pode se conceder o nó. Espelham o postgres do
+    #: preview hardcoded, que roda há semanas nesses números.
+    service_cpu_request: str = _quantity_from_env("DSE_SERVICE_CPU_REQUEST", "100m")
+    service_cpu_limit: str = _quantity_from_env("DSE_SERVICE_CPU_LIMIT", "500m")
+    service_mem_request: str = _quantity_from_env("DSE_SERVICE_MEM_REQUEST", "128Mi")
+    service_mem_limit: str = _quantity_from_env("DSE_SERVICE_MEM_LIMIT", "512Mi")
+    service_ephemeral_request: str = _quantity_from_env("DSE_SERVICE_EPHEMERAL_REQUEST", "256Mi")
+    service_ephemeral_limit: str = _quantity_from_env("DSE_SERVICE_EPHEMERAL_LIMIT", "1Gi")
+    service_emptydir_size_limit: str = _quantity_from_env("DSE_SERVICE_EMPTYDIR_SIZE_LIMIT", "512Mi")
+    service_tmp_size_limit: str = _quantity_from_env("DSE_SERVICE_TMP_SIZE_LIMIT", "256Mi")
+    #: Teto do `prepare` (migração+seed do repo). Um prepare que passa disso
+    #: está quebrado — e o laço não pode ficar refém dele.
+    prepare_timeout_seconds: int = 300
     # Default FQDN + port 8806 (the real value comes from the configmap via env;
     # this default only applies outside the chart and avoids the stale port 3128
     # footgun).
@@ -233,7 +247,121 @@ def _label_value(v: str) -> str:
     return v[:63].rstrip("-_.")
 
 
-def build_pod_manifest(request: SandboxProvisionRequest, cfg: K8sSandboxConfig | None = None) -> dict[str, Any]:
+
+def _service_sidecars(
+    services: "dict[str, Any]", cfg: "K8sSandboxConfig", service_password: str,
+    container_sec: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(initContainers, volumes) dos serviços declarados — sidecars NATIVOS.
+
+    initContainer com `restartPolicy: Always` (GA k8s ≥1.29; o k3s do piloto é
+    1.31) e não container comum, pelas duas propriedades que importam aqui:
+    o container principal só arranca depois do startupProbe do sidecar (o
+    clone nunca dispara contra um Postgres em initdb), e o sidecar reinicia
+    sozinho num Pod `restartPolicy: Never` (um banco que OOMa VOLTA, em vez de
+    deixar toda rodada seguinte morrendo em ECONNREFUSED).
+
+    A dupla-validação é aqui embaixo, em `build_pod_manifest`: o payload chega
+    do probe já validado, mas quem escreve YAML re-valida com o MESMO parser —
+    payload adulterado (ou de um worker antigo) não vira Pod.
+    """
+    from dse_validation.service_credentials import (
+        references_service_password,
+        translate_service_password,
+    )
+
+    sidecars: list[dict[str, Any]] = []
+    volumes: list[dict[str, Any]] = []
+    for name in sorted(services):
+        decl = services[name]
+        sec = dict(container_sec)
+        if decl.user is not None:
+            # Só NESTE container: PSA restricted exige non-root, não um uid
+            # específico — e 70 (postgres-alpine) tem entrada no passwd da
+            # imagem, o que fecha o "could not look up effective user ID" do
+            # initdb. O agent-runner continua 10001; o fsGroup pod-level dá o
+            # acesso aos volumes por grupo suplementar.
+            sec["runAsUser"] = decl.user
+            sec["runAsGroup"] = decl.user
+
+        env: list[dict[str, str]] = []
+        usa_senha = any(references_service_password(v) for v in decl.env.values())
+        if usa_senha:
+            # PRIMEIRO na lista: a expansão `$(VAR)` do kubelet só enxerga
+            # variáveis definidas antes.
+            env.append({"name": "DSE_SERVICE_PASSWORD", "value": service_password})
+        env.extend(
+            {"name": key, "value": translate_service_password(value)}
+            for key, value in decl.env.items()
+        )
+
+        probe_handler: dict[str, Any] = (
+            {"exec": {"command": list(decl.ready)}}
+            if decl.ready
+            else {"tcpSocket": {"port": decl.port}}
+        )
+
+        mounts: list[dict[str, Any]] = []
+        graveis = list(decl.writable)
+        if "/tmp" not in graveis:
+            # /tmp gravável por default: readOnlyRootFilesystem também vale
+            # nos sidecars, e quase toda imagem escreve algo em /tmp.
+            graveis.append("/tmp")
+        for idx, path in enumerate(graveis):
+            vol_name = _label_value(f"svc-{name}-w{idx}")
+            size = (
+                cfg.service_tmp_size_limit if path == "/tmp"
+                else cfg.service_emptydir_size_limit
+            )
+            volumes.append({"name": vol_name, "emptyDir": {"sizeLimit": size}})
+            mounts.append({"name": vol_name, "mountPath": path})
+
+        sidecars.append({
+            "name": _label_value(f"svc-{name}"),
+            "image": decl.image,
+            # `Always` num initContainer é o que o torna SIDECAR nativo.
+            "restartPolicy": "Always",
+            "securityContext": sec,
+            "env": env,
+            "startupProbe": {**probe_handler, "periodSeconds": 2, "failureThreshold": 60},
+            "readinessProbe": dict(probe_handler),
+            "resources": {
+                "requests": {
+                    "cpu": cfg.service_cpu_request,
+                    "memory": cfg.service_mem_request,
+                    "ephemeral-storage": cfg.service_ephemeral_request,
+                },
+                "limits": {
+                    "cpu": cfg.service_cpu_limit,
+                    "memory": cfg.service_mem_limit,
+                    "ephemeral-storage": cfg.service_ephemeral_limit,
+                },
+            },
+            "volumeMounts": mounts,
+        })
+    return sidecars, volumes
+
+def build_pod_manifest(
+    request: SandboxProvisionRequest,
+    cfg: K8sSandboxConfig | None = None,
+    service_password: str | None = None,
+) -> dict[str, Any]:
+    # ---- Serviços declarados (Tema 1) -----------------------------------
+    # Dupla-validação deliberada: o payload chega do probe já validado, mas
+    # quem ESCREVE YAML re-valida com o MESMO parser do manifesto — payload
+    # adulterado, truncado ou de um worker antigo não vira Pod. O import é
+    # local pelo mesmo motivo do manifest_bootstrap: evitar ciclo de import
+    # entre sandbox_runtime e dse_validation no load do worker.
+    from dse_validation.config import parse_repo_services
+
+    servicos = parse_repo_services(
+        {"services": request.services} if request.services else {},
+        source=f"provision:{request.work_item_id[:16]}",
+    )
+    if servicos and service_password is None:
+        from dse_validation.service_credentials import generate_service_password
+
+        service_password = generate_service_password()
     """Ephemeral, HARDENED Pod spec. The security core of §G (testable).
 
     Hardening (every item is asserted by the conformance suite):
@@ -291,6 +419,14 @@ def build_pod_manifest(request: SandboxProvisionRequest, cfg: K8sSandboxConfig |
                     },
                 },
                 "env": [
+                    # A ÚNICA credencial que a plataforma dá ao repositório
+                    # (Tema 1) — primeira da lista pela mesma regra dos
+                    # sidecars: expansão $(VAR) do kubelet só enxerga o que
+                    # veio antes. Presente apenas quando há serviço declarado.
+                    *(
+                        [{"name": "DSE_SERVICE_PASSWORD", "value": service_password}]
+                        if servicos else []
+                    ),
                     {"name": "HTTP_PROXY", "value": cfg.egress_proxy_url},
                     {"name": "HTTPS_PROXY", "value": cfg.egress_proxy_url},
                     {"name": "NO_PROXY", "value": "localhost,127.0.0.1,.svc,.cluster.local"},
@@ -346,6 +482,12 @@ def build_pod_manifest(request: SandboxProvisionRequest, cfg: K8sSandboxConfig |
             {"name": "tmp", "emptyDir": {}},
         ],
     }
+    if servicos:
+        sidecars, svc_volumes = _service_sidecars(
+            servicos, cfg, service_password or "", container_sec
+        )
+        spec["initContainers"] = sidecars
+        spec["volumes"].extend(svc_volumes)
     annotations: dict[str, str] = {}
     # The FULL work_item_id. It does not fit in a label — `wi_` + 64 hex = 67
     # chars and _label_value truncates to 63 — so the label cannot identify the
@@ -454,7 +596,37 @@ class KubernetesSandboxDriver:
         manifest = build_pod_manifest(request, self._cfg)
         self._kubectl(["apply", "-f", "-"], input_text=json.dumps(manifest))
         name = pod_name_for(request.work_item_id)
-        self._kubectl(["wait", "--for=condition=Ready", f"pod/{name}", "-n", self._cfg.namespace, "--timeout=120s"])
+        servicos = sorted(request.services or {})
+        # Um Pod com banco tem pull de imagem + initdb sob gVisor pela frente:
+        # 120s do Pod de hoje + 90s por serviço, com teto — esperar mais que
+        # isso não conserta nada, só atrasa o diagnóstico.
+        wait_s = min(120 + 90 * len(servicos), 300) if servicos else 120
+        try:
+            self._kubectl(
+                ["wait", "--for=condition=Ready", f"pod/{name}", "-n", self._cfg.namespace,
+                 f"--timeout={wait_s}s"],
+                timeout=wait_s + 60,
+            )
+        except IsolatedStageExecutionUnavailable as exc:
+            # "timed out" sozinho é inútil: não separa imagem errada de initdb
+            # travado de probe mentirosa. O erro carrega as palavras do próprio
+            # sidecar — best-effort, o diagnóstico nunca esconde o erro real.
+            partes = []
+            for svc in servicos:
+                try:
+                    logs = self._kubectl(
+                        ["logs", f"pod/{name}", "-c", _label_value(f"svc-{svc}"),
+                         "-n", self._cfg.namespace, "--tail=5"],
+                        timeout=30,
+                    )
+                    tail = (logs.stdout or logs.stderr or "").strip()[-300:]
+                except Exception:  # noqa: BLE001 — diagnóstico é melhor-esforço
+                    tail = "(no logs available)"
+                partes.append(f"svc-{svc}: {tail}")
+            detalhe = ("; ".join(partes))[:900]
+            raise IsolatedStageExecutionUnavailable(
+                f"{exc}" + (f"; sidecar diagnostics: {detalhe}" if partes else "")
+            )
         self._bootstrap(request)
         # /tmp/.m2 because MAVEN_OPTS (build_pod_manifest) pins user.home=/tmp;
         # /tmp is an emptyDir, so this survives exactly as long as the Pod does.
@@ -468,6 +640,33 @@ class KubernetesSandboxDriver:
                 feed_token=self._cfg.maven_feed_token,
             ),
         )
+        if request.prepare:
+            # A migração+seed DO REPO — depois do clone (`_bootstrap`) e do
+            # settings.xml, porque o comando pode precisar do proxy Maven.
+            # Falha NÃO é degradação: um banco sem schema faria toda rodada
+            # seguinte reprovar em erro de SQL acusando o diff — melhor morrer
+            # aqui, com o nome certo e o stderr na mão.
+            import shlex as _shlex
+
+            cap = int(self._cfg.prepare_timeout_seconds)
+            comando = f"cd /workspace && timeout -k 10 {cap} {_shlex.join(request.prepare)}"
+            try:
+                proc = self._kubectl(
+                    ["exec", "-i", name, "-n", self._cfg.namespace, "--",
+                     "sh", "-c", comando],
+                    timeout=cap + 60,
+                )
+            except IsolatedStageExecutionUnavailable as exc:
+                raise IsolatedStageExecutionUnavailable(
+                    f"the repository's prepare command failed — {exc}"
+                )
+            if proc.returncode != 0:
+                tail = ((proc.stderr or "") + (proc.stdout or ""))[-400:]
+                raise IsolatedStageExecutionUnavailable(
+                    f"the repository's prepare command failed "
+                    f"(exit={proc.returncode}, rc=124 means it outlived its "
+                    f"{cap}s budget): {tail}"
+                )
         return docker_driver.ProvisionedSandbox(
             container_id=name,
             container_name=name,

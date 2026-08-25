@@ -151,18 +151,39 @@ def test_ephemeral_storage_request_fits_under_its_limit():
 
 def test_emptydir_size_limits_stay_within_the_pod_ephemeral_budget():
     """The two caps must tell the same story. The kubelet bills the SUM of the
-    emptyDirs against the container's ephemeral-storage limit, so emptyDirs
-    whose sizeLimits add up to more than that limit would let the Pod die of the
-    total while every single volume still looks healthy. No sizeLimit is set
-    yet; this holds the invariant for whoever sets the first one."""
-    pod = _pod()
-    limit = _as_bytes(pod["spec"]["containers"][0]["resources"]["limits"]["ephemeral-storage"])
-    declared = sum(
-        _as_bytes(v["emptyDir"]["sizeLimit"])
-        for v in pod["spec"]["volumes"]
-        if "sizeLimit" in v.get("emptyDir", {})
+    emptyDirs against the POD's ephemeral-storage budget — which is the sum of
+    every container's limit, initContainer sidecars included (Tema 1: each
+    declared service brings its own 1Gi of ephemeral budget along with its
+    sized emptyDirs). EDITED when sidecars landed: the original compared
+    against the single agent container's limit, which undercounts a Pod that
+    now carries services — the invariant is per POD, matching how the kubelet
+    actually evicts."""
+    from sandbox_runtime.driver import SandboxProvisionRequest
+    from sandbox_runtime.k8s_driver import build_pod_manifest
+
+    com_servicos = build_pod_manifest(
+        SandboxProvisionRequest(
+            work_item_id="wi_abc123", tenant_id="tenant_dev",
+            branch="dse/wi_abc123", workspace_path="/w", checkpoint_path="/c",
+            services={"postgres": {
+                "image": "postgres:16-alpine", "port": 5432, "user": 70,
+                "writable": ["/var/lib/postgresql/data", "/var/run/postgresql"],
+            }},
+        ),
+        K8sSandboxConfig(),
+        service_password="x" * 32,
     )
-    assert declared <= limit
+    for pod in (_pod(), com_servicos):
+        containers = pod["spec"]["containers"] + pod["spec"].get("initContainers", [])
+        budget = sum(
+            _as_bytes(c["resources"]["limits"]["ephemeral-storage"]) for c in containers
+        )
+        declared = sum(
+            _as_bytes(v["emptyDir"]["sizeLimit"])
+            for v in pod["spec"]["volumes"]
+            if "sizeLimit" in v.get("emptyDir", {})
+        )
+        assert declared <= budget
 
 
 def test_ephemeral_storage_read_from_env(monkeypatch):

@@ -214,9 +214,9 @@ class _KubectlFake:
 
 
 def _driver(monkeypatch, fake):
-    from sandbox_runtime.k8s_driver import K8sSandboxDriver, K8sSandboxConfig
+    from sandbox_runtime.k8s_driver import KubernetesSandboxDriver, K8sSandboxConfig
 
-    drv = K8sSandboxDriver(K8sSandboxConfig())
+    drv = KubernetesSandboxDriver(K8sSandboxConfig())
     monkeypatch.setattr(drv, "_kubectl", fake)
     monkeypatch.setattr(drv, "_bootstrap", lambda request: fake.chamadas.append(["<bootstrap>"]))
     return drv

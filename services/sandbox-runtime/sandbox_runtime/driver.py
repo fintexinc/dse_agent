@@ -9,6 +9,8 @@ fail-closed on any unavailability — this contract never degrades to
 """
 from __future__ import annotations
 
+import logging
+
 import json
 import shutil
 import subprocess
@@ -36,6 +38,14 @@ class SandboxProvisionRequest:
     # at bootstrap, through the egress-proxy. None → empty workspace.
     repo: str | None = None
     base_branch: str = "main"
+    #: Tema 1 — os serviços de apoio que o REPO declara (`services` do
+    #: manifesto, já validados pelo parser real no probe). Forma normalizada
+    #: `nome -> {image, port, env, ready, user, writable}`. None/{} = nenhum,
+    #: o comportamento de sempre.
+    services: dict[str, Any] | None = None
+    #: O comando de migração+seed DO REPO, executado após o clone com os
+    #: serviços prontos. A plataforma não entende seed nenhuma — só executa.
+    prepare: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -144,7 +154,21 @@ class DockerSandboxDriver:
     def sandbox_id_for(self, work_item_id: str) -> str:
         return docker_driver.container_name_for(work_item_id)
 
+    def _warn_services_unsupported(self, request: SandboxProvisionRequest) -> None:
+        """O driver Docker local (dev) não implementa sidecars — e não pode
+        fingir que implementa: os testes do repo rodariam sem o banco que o
+        manifesto declara e reprovariam acusando o diff. Ignora COM aviso
+        nomeado; nunca em silêncio."""
+        if request.services:
+            logging.getLogger("sandbox_runtime.driver").warning(
+                "sandbox %s declares services %s but the local Docker driver "
+                "does not run sidecars — integration tests that need them will "
+                "fail here; use the K8s runtime",
+                request.work_item_id, sorted(request.services),
+            )
+
     def provision(self, request: SandboxProvisionRequest) -> docker_driver.ProvisionedSandbox:
+        self._warn_services_unsupported(request)
         return docker_driver.provision_container(
             work_item_id=request.work_item_id,
             tenant_id=request.tenant_id,
