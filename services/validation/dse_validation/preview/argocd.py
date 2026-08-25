@@ -497,6 +497,14 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             "\"$(cat /preview-keys/token)\" > /tmp/.git-credentials; "
             "git config --global credential.helper "
             "'store --file=/tmp/.git-credentials'; "
+            # Dependência git+ssh no lockfile (medido: wealth-components no
+            # glide-path) morre no npm install — não há chave ssh aqui. O
+            # helper acima já responde por https://github.com; as formas
+            # ssh/scp-like são reescritas para cair nele.
+            "git config --global url.'https://github.com/'.insteadOf "
+            "'ssh://git@github.com/'; "
+            "git config --global --add url.'https://github.com/'.insteadOf "
+            "'git@github.com:'; "
         )
     else:
         clone_url = f"git@github.com:{repo}.git"
