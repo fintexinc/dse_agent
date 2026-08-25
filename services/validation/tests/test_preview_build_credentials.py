@@ -157,6 +157,22 @@ def test_the_secret_is_seeded_outside_the_manifest_set():
     assert "kind: Secret" not in corpo
 
 
+def test_token_mode_rewrites_git_ssh_dependencies_to_the_stored_credential():
+    """Dependência `git+ssh://git@github.com/...` no lockfile (medido no
+    glide-path: wealth-components privado) morre no npm install do preview —
+    não há chave ssh lá. No modo token o credential helper já guarda o token
+    para https://github.com; a receita reescreve as formas ssh/scp-like para
+    https e o npm passa a alcançar a dependência com a credencial que já
+    existe. No modo ssh a deploy key só abre o próprio repo — residual."""
+    y = argocd._source_deployment(
+        "preview-wi", _LABELS, _cfg(), repo="acme/svc", branch="dse/wi",
+        kind="deployable", auth_mode="token",
+    )
+    assert "insteadOf" in y
+    assert "ssh://git@github.com/" in y
+    assert "git@github.com:" in y
+
+
 def test_apply_build_credentials_writes_the_secret_via_kubectl(monkeypatch):
     chamadas: list[str] = []
     monkeypatch.setattr(

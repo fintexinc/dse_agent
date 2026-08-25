@@ -62,6 +62,44 @@ def _ensure_safe_directory() -> None:
     )
 
 
+def _configure_git_dependency_transport() -> None:
+    """Ensina o git GLOBAL do pod a alcançar dependências git de github.com.
+
+    Medido em wi_ef766cdd: `git+ssh://git@github.com/...` no package-lock — o
+    npm invoca git, ssh não atravessa o egress-proxy, o pod não segura
+    credencial por desenho (P2/ADR-12), e o `npm install` morre; sem
+    node_modules o typecheck cai em `tsc: not found` (rc=127) e o laço escala
+    culpando ninguém.
+
+    A máquina já existia: o proxy TERMINA o `http://`, deriva o repo do PATH e
+    injeta o installation token (auditado; o residual "qualquer repo da mesma
+    instalação" está documentado no proxy). Aqui só se reescreve TODA forma de
+    github.com para essa porta: ssh, scp-like e https (que viraria CONNECT
+    opaco). O header é PLACEHOLDER — nenhuma credencial toca este container.
+    Global de propósito, e isso conserta de passagem o residual antigo do
+    clone ("um git fetch simples sai sem proxy"): o config vive em $HOME
+    (/tmp, emptyDir) e morre com o Pod. Sem proxy no ambiente (docker/dev
+    local), nada é escrito."""
+    proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or ""
+    if not proxy:
+        return
+    pares = [
+        ("url.http://github.com/.insteadOf", "ssh://git@github.com/"),
+        ("url.http://github.com/.insteadOf", "git@github.com:"),
+        ("url.http://github.com/.insteadOf", "https://github.com/"),
+    ]
+    for chave, valor in pares:
+        subprocess.run(["git", "config", "--global", "--add", chave, valor],
+                       capture_output=True, text=True)
+    for chave, valor in (
+        ("http.proxy", proxy),
+        ("http.extraHeader", "X-Dse-Inject-Credential: github"),
+        ("http.followRedirects", "false"),
+    ):
+        subprocess.run(["git", "config", "--global", chave, valor],
+                       capture_output=True, text=True)
+
+
 def _is_git_workspace(workspace_dir: str) -> bool:
     return (Path(workspace_dir) / ".git").exists()
 
@@ -169,6 +207,7 @@ def bootstrap_workspace(req: WorkspaceBootstrapRequest) -> WorkspaceBootstrapRes
     """
     try:
         _ensure_safe_directory()
+        _configure_git_dependency_transport()
         ws = Path(req.workspace_dir)
         ws.mkdir(parents=True, exist_ok=True)
 
