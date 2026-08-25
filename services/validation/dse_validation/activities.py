@@ -555,18 +555,38 @@ def _triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerd
 
 def _resolve_preview_deep_link(payload: dict) -> dict:
     """rc.103 — o LLM decide o caminho fundo do preview; o portão determinístico
-    e o fail-open vivem em `preview.deep_link` (o modelo nunca compõe URL)."""
+    e o fail-open vivem em `preview.deep_link` (o modelo nunca compõe URL).
+    O MESMO turno devolve o guia "How to test" (steps/login) quando o payload
+    traz `test_plan`/`branch` — grounded nas seeds e no manifesto do repo."""
     from dse_validation.config import GitHubConfig
     from dse_validation.github.client import build_github_client
-    from dse_validation.preview.deep_link import build_completer, resolve_deep_link
+    from dse_validation.preview.deep_link import (
+        build_completer,
+        manifest_facts_block,
+        resolve_deep_link,
+        seed_files_block,
+    )
 
+    client = build_github_client(GitHubConfig())
+    files_changed = list(payload.get("files_changed") or [])
+    branch = str(payload.get("branch") or "")
+    seed_block = ""
+    manifest_facts = ""
+    if branch:
+        seed_block = seed_files_block(
+            client, payload["repo"], branch, files_changed=files_changed,
+        )
+        manifest_facts = manifest_facts_block(client, payload["repo"], branch)
     return resolve_deep_link(
-        build_github_client(GitHubConfig()),
+        client,
         repo=payload["repo"],
         pr_number=int(payload["pr_number"]),
         instruction=str(payload.get("instruction") or ""),
-        files_changed=list(payload.get("files_changed") or []),
+        files_changed=files_changed,
         kind=str(payload.get("kind") or "unknown"),
+        test_plan=str(payload.get("test_plan") or ""),
+        manifest_facts=manifest_facts,
+        seed_block=seed_block,
         complete=build_completer(
             str(payload.get("tenant_id") or "unknown"),
             str(payload.get("work_item_id") or "unknown"),
