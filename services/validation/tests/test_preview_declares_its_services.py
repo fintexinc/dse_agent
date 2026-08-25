@@ -155,3 +155,30 @@ def test_a_ui_kind_repo_gets_its_services_too():
     y = _deployment(kind="ui", repo_services=_services(postgres=_POSTGRES))
     assert "initContainers:" in y
     assert "image: postgres:16-alpine" in y
+
+
+# --- a semeadura da senha (fora do manifest set) ----------------------------
+
+def test_apply_service_password_seeds_the_secret_via_kubectl(monkeypatch):
+    """A senha é GERADA aqui e materializada via kubectl no closure
+    after_namespace — o molde de apply_build_credentials, pela mesma razão."""
+    chamadas: list[str] = []
+    monkeypatch.setattr(
+        argocd, "_kubectl",
+        lambda cfg, args, input_text=None, timeout=60: chamadas.append(input_text or ""),
+    )
+    argocd.apply_service_password(_cfg(), "preview-wi", _services(postgres=_POSTGRES))
+    assert chamadas, "nenhum kubectl apply"
+    assert "dse-preview-service-password" in chamadas[0]
+    assert "preview-wi" in chamadas[0]
+    assert "password:" in chamadas[0]
+
+
+def test_apply_service_password_is_a_noop_without_declared_services(monkeypatch):
+    chamadas: list[str] = []
+    monkeypatch.setattr(
+        argocd, "_kubectl",
+        lambda cfg, args, input_text=None, timeout=60: chamadas.append(input_text or ""),
+    )
+    argocd.apply_service_password(_cfg(), "preview-wi", {})
+    assert not chamadas, "Secret semeada para um repo sem services"
