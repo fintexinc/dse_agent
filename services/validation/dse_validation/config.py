@@ -671,6 +671,319 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
     )
 
 
+# ---------------------------------------------------------------------------
+# `services` — os serviços de apoio que o REPOSITÓRIO declara (Tema 1)
+# ---------------------------------------------------------------------------
+
+#: Campos de uma declaração de serviço. Fechado como o do preview: um typo
+#: (`imagen:`) tem que ser erro explicado, não default silencioso.
+_SERVICE_FIELDS = ("image", "port", "env", "ready", "user", "writable")
+
+#: Nome de serviço vira nome de container, de volume e de Service DNS no
+#: preview — DNS-1123 label, ≤24 chars (sobra para prefixos ≤63 do k8s).
+_SERVICE_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,22}[a-z0-9])?$")
+
+#: `preview` colide com o Service do próprio app no namespace de preview.
+#: `postgres` é PERMITIDO de propósito: quem o declara assume o endereço DNS
+#: legacy (`postgres:5432`) que os manifests dos testbeds já usam.
+_RESERVED_SERVICE_NAMES = frozenset({"preview"})
+
+#: A referência de imagem vai parar em YAML de Pod escrito por f-string — o
+#: item 3.2 da auditoria de escala é exatamente injeção via string do
+#: manifesto. O alfabeto fecha aqui, antes de a string existir (precedente:
+#: `_REPORT_GLOB_RE`): `name[:tag][@sha256:hex64]`, sem espaço, sem quebra de
+#: linha, sem aspas, sem `$`. Registry com PORTA fica de fora por ora (o `:`
+#: é ambíguo com a tag) — limitação nomeada no plano.
+_SERVICE_IMAGE_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9._/-]*[a-z0-9])?"
+    r"(:[A-Za-z0-9._-]{1,128})?"
+    r"(@sha256:[a-f0-9]{64})?$"
+)
+_MAX_SERVICE_IMAGE_CHARS = 256
+
+_SERVICE_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+#: Cada path de `writable` vira um emptyDir montado no sidecar. Alfabeto
+#: fechado + contenção: o path também é interpolado em YAML.
+_SERVICE_WRITABLE_RE = re.compile(r"^(/[A-Za-z0-9._-]+)+$")
+_MAX_SERVICE_WRITABLE = 8
+_MAX_SERVICE_WRITABLE_CHARS = 128
+
+_MAX_SERVICES = 4
+_MAX_SERVICE_ENV_KEYS = 32
+
+#: A ÚNICA credencial que a plataforma dá ao repositório: gerada por
+#: sandbox/preview, substituída nos env dos sidecars e exportada ao container
+#: principal. Nunca vive no repo nem na PR.
+SERVICE_PASSWORD_TOKEN = "$DSE_SERVICE_PASSWORD"
+
+
+@dataclasses.dataclass(frozen=True)
+class RepoServiceDeclaration:
+    """UM serviço de apoio que o repo declara — a plataforma não sabe se é
+    Postgres, Redis ou um WireMock: sabe `image + port + env + ready`.
+
+    `user` e `writable` existem por causa do sandbox endurecido (PSA
+    restricted + readOnlyRootFilesystem + runAsUser pod-level): uma imagem de
+    banco precisa de uid próprio (70 = postgres-alpine, 999 = redis-alpine) e
+    de diretórios graváveis (que viram emptyDir). O renderer do preview os
+    ignora — o namespace de preview não tem PSA."""
+
+    image: str
+    port: int
+    env: dict[str, str] = dataclasses.field(default_factory=dict)
+    ready: list[str] | None = None
+    user: int | None = None
+    writable: list[str] = dataclasses.field(default_factory=list)
+
+    def as_payload(self) -> dict[str, Any]:
+        """A forma JSON-safe que o probe transporta até o provision."""
+        out: dict[str, Any] = {"image": self.image, "port": self.port}
+        if self.env:
+            out["env"] = dict(self.env)
+        if self.ready:
+            out["ready"] = list(self.ready)
+        if self.user is not None:
+            out["user"] = self.user
+        if self.writable:
+            out["writable"] = list(self.writable)
+        return out
+
+
+def parse_repo_prepare(payload: Any, *, source: str = "manifest") -> list[str]:
+    """O comando que prepara os serviços — migração + seed que o repo JÁ tem.
+
+    É a resposta à pergunta "quem entende as seeds?": ninguém da plataforma.
+    O repo declara o `supabase migration up`/Flyway/prisma dele; a plataforma
+    só executa, depois do clone e com os serviços prontos. Dado específico de
+    feature nova é fixture de teste no diff — nunca uma etapa daqui."""
+    if not isinstance(payload, dict):
+        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
+    raw = payload.get("prepare")
+    if raw is None:
+        return []
+    cmd = _validate_command("prepare", raw)
+    if not cmd:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} prepare must be a non-empty argv array",
+            summary="prepare must be a non-empty argv array",
+        )
+    return cmd
+
+
+def parse_repo_services(
+    payload: Any, *, source: str = "manifest"
+) -> dict[str, RepoServiceDeclaration]:
+    """Lê o bloco `services` de um manifesto já decodificado. Bloco ausente ou
+    `{}` = nenhum serviço (o comportamento de sempre)."""
+    if not isinstance(payload, dict):
+        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
+    raw = payload.get("services")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} services must be an object of name -> declaration",
+            summary="services must be an object of name -> declaration",
+        )
+    if len(raw) > _MAX_SERVICES:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} services has {len(raw)} entries "
+            f"(maximum {_MAX_SERVICES}) — a sandbox shares one node's budget",
+            summary=f"services has {len(raw)} entries (maximum {_MAX_SERVICES})",
+        )
+
+    # A porta do preview participa da checagem de unicidade, lida de forma
+    # defensiva: o bloco preview tem parser próprio e é validado por ele.
+    preview_raw = payload.get("preview")
+    preview_port = None
+    if isinstance(preview_raw, dict):
+        candidate = preview_raw.get("port")
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            preview_port = candidate
+
+    out: dict[str, RepoServiceDeclaration] = {}
+    seen_ports: dict[int, str] = {}
+    for name, decl_raw in raw.items():
+        if not isinstance(name, str) or not _SERVICE_NAME_RE.match(name):
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source}: service name must be a DNS label of at "
+                "most 24 chars (lowercase letters, digits, hyphens; no leading/"
+                "trailing hyphen) — it becomes a container, a volume and a DNS "
+                "Service name",
+                summary="a service name is not a DNS label",
+            )
+        if name in _RESERVED_SERVICE_NAMES:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source}: service name `{name}` is reserved — it is "
+                "the preview app's own Service",
+                summary=f"service name `{name}` is reserved",
+            )
+        if not isinstance(decl_raw, dict):
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name} must be an object",
+                summary=f"services.{name} must be an object",
+            )
+        unknown = sorted(set(decl_raw) - set(_SERVICE_FIELDS))
+        if unknown:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name} has unknown fields: {unknown}",
+                summary=(
+                    f"services.{name} has {len(unknown)} unknown field(s) "
+                    f"(valid fields: {sorted(_SERVICE_FIELDS)})"
+                ),
+            )
+
+        image = decl_raw.get("image")
+        if (
+            not isinstance(image, str)
+            or len(image) > _MAX_SERVICE_IMAGE_CHARS
+            or not _SERVICE_IMAGE_RE.match(image)
+        ):
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.image must be a plain image "
+                "reference (name[:tag][@sha256:...]) — it is written into a Pod "
+                "manifest, so nothing beyond that alphabet is accepted",
+                summary=f"services.{name}.image is not a plain image reference",
+            )
+
+        port = decl_raw.get("port")
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.port must be an integer "
+                "between 1024 and 65535",
+                summary=f"services.{name}.port must be an integer 1024-65535",
+            )
+        if port < 1024:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.port is {port}: ports below "
+                "1024 cannot be bound — the sandbox drops every capability and "
+                "runs as non-root",
+                summary=f"services.{name}.port below 1024 needs privileges the sandbox does not have",
+            )
+        if port in seen_ports or port == preview_port:
+            dono = seen_ports.get(port, "preview.port")
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.port {port} is already taken "
+                f"by {dono} — every service shares the Pod's one network namespace",
+                summary=f"services.{name}.port collides with {dono}",
+            )
+        seen_ports[port] = f"services.{name}"
+
+        env_raw = decl_raw.get("env") or {}
+        if not isinstance(env_raw, dict):
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.env must be an object",
+                summary=f"services.{name}.env must be an object",
+            )
+        if len(env_raw) > _MAX_SERVICE_ENV_KEYS:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.env has {len(env_raw)} keys "
+                f"(maximum {_MAX_SERVICE_ENV_KEYS})",
+                summary=f"services.{name}.env has too many keys",
+            )
+        env: dict[str, str] = {}
+        for key, value in env_raw.items():
+            if not isinstance(key, str) or not _SERVICE_ENV_NAME_RE.match(key):
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} services.{name}.env has an invalid "
+                    "variable name (letters, digits and _ only, not starting "
+                    "with a digit)",
+                    summary=f"services.{name}.env has an invalid variable name",
+                )
+            # Valor vira string: YAML de Pod exige string, e um `true` de JSON
+            # viraria `True` do Python no manifesto gerado (mesma disciplina
+            # do preview.env).
+            text = str(value)
+            if len(text) > _MAX_ARG_LENGTH:
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} services.{name}.env.{key} exceeds "
+                    f"{_MAX_ARG_LENGTH} characters",
+                    summary=f"services.{name}.env has an oversized value",
+                )
+            env[key] = text
+
+        ready_raw = decl_raw.get("ready")
+        ready = None
+        if ready_raw is not None:
+            ready = _validate_command(f"services.{name}.ready", ready_raw)
+            if not ready:
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} services.{name}.ready must be a "
+                    "non-empty argv array",
+                    summary=f"services.{name}.ready must be a non-empty argv array",
+                )
+
+        user_raw = decl_raw.get("user")
+        user = None
+        if user_raw is not None:
+            if (
+                not isinstance(user_raw, int)
+                or isinstance(user_raw, bool)
+                or not 1 <= user_raw <= 65535
+            ):
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} services.{name}.user must be an integer "
+                    "between 1 and 65535 — the sandbox enforces runAsNonRoot, "
+                    "so uid 0 is not a thing here",
+                    summary=f"services.{name}.user must be 1-65535 (runAsNonRoot)",
+                )
+            user = user_raw
+
+        writable_raw = decl_raw.get("writable") or []
+        if not isinstance(writable_raw, list) or len(writable_raw) > _MAX_SERVICE_WRITABLE:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} services.{name}.writable must be a list of "
+                f"at most {_MAX_SERVICE_WRITABLE} absolute paths",
+                summary=f"services.{name}.writable must be a short list of paths",
+            )
+        writable: list[str] = []
+        for path in writable_raw:
+            ok = (
+                isinstance(path, str)
+                and len(path) <= _MAX_SERVICE_WRITABLE_CHARS
+                and _SERVICE_WRITABLE_RE.match(path)
+                and all(seg not in (".", "..") for seg in path.split("/"))
+            )
+            # O alfabeto permite ponto, então `..` é checado por segmento; e o
+            # mount não pode ser nem sombrear os volumes do próprio sandbox.
+            proibidos = ("/workspace", "/checkpoint.git")
+            if ok and any(path == base or path.startswith(base + "/") for base in proibidos):
+                ok = False
+            if not ok:
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} services.{name}.writable has a path that "
+                    "is not a plain absolute path, or escapes/shadows the "
+                    "sandbox's own volumes",
+                    summary=f"services.{name}.writable has an invalid path",
+                )
+            if path not in writable:
+                writable.append(path)
+
+        out[name] = RepoServiceDeclaration(
+            image=image, port=port, env=env, ready=ready, user=user, writable=writable
+        )
+    return out
+
 def _validate_command(name: str, raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -781,6 +1094,7 @@ class L1Config:
         build_cmd: list[str] | None = None,
         test_subset_cmd: list[str] | None = None,
         install_cmd: list[str] | None = None,
+        services_declared: frozenset[str] | set[str] | None = None,
         lint_fix_cmd: list[str] | None = None,
         junit_reports: str | None = None,
         timeout_seconds: int | None = None,
@@ -800,6 +1114,11 @@ class L1Config:
         self.test_subset_cmd = list(test_subset_cmd or [])
         #: Lido pelo LAÇO quando o gate `lint` reprova — nunca por um gate.
         self.lint_fix_cmd = list(lint_fix_cmd or [])
+        #: Nomes dos serviços que o repo declarou. Consumido pela nota de
+        #: honestidade do gate de teste (fase 5 do Tema 1): connection refused
+        #: SEM serviço declarado ganha a dica "declare services", em vez de o
+        #: laço culpar o diff.
+        self.services_declared = frozenset(services_declared or ())
         self.install_cmd = list(install_cmd or [])
         #: Glob do relatório JUnit, quando o repo declara onde ele cai. É o que
         #: deixa o gate de teste contar sem adivinhar o dialeto do runner.
@@ -917,7 +1236,8 @@ class L1Config:
             raise L1ManifestError(GateStatus.ERROR, f"manifest {source} must be a JSON object")
         allowed = {"version", "commands", "timeout_seconds", "timeouts",
                    "sast_severity_gate", "preview", "forbidden_paths",
-                   "disabled_stages", "install", "reports"}
+                   "disabled_stages", "install", "reports", "services",
+                   "prepare"}
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise L1ManifestError(
@@ -1025,12 +1345,28 @@ class L1Config:
         # preview precisa continua em `preview.build`.
         install = _validate_command("install", payload.get("install"))
         junit_reports = _parse_reports(payload, source=source)
-        # O bloco `preview` passa pela mesma porta AQUI, e não só na hora de
-        # subir o preview. Este parser é o portão do bootstrap e da emenda: uma
-        # chave que ele aceita e o preview recusa vira PR mergeada que quebra
-        # dias depois, longe do diff que a causou.
-        parse_repo_preview(payload, source=source)
+        # Os blocos `preview` e `services` passam pela mesma porta AQUI, e não
+        # só na hora de subir. Este parser é o portão do bootstrap e da emenda:
+        # uma chave que ele aceita e o consumidor recusa vira PR mergeada que
+        # quebra dias depois, longe do diff que a causou.
+        preview_decl = parse_repo_preview(payload, source=source)
+        services = parse_repo_services(payload, source=source)
+        parse_repo_prepare(payload, source=source)
+        # A senha só existe quando um serviço existe: um `$DSE_SERVICE_PASSWORD`
+        # órfão viraria env literal com o nome do token dentro — e o autor do
+        # manifesto descobriria em produção, não aqui.
+        if not services:
+            todos_envs = list(preview_decl.env.values())
+            if any(SERVICE_PASSWORD_TOKEN in value for value in todos_envs):
+                raise L1ManifestError(
+                    GateStatus.ERROR,
+                    f"manifest {source} references $DSE_SERVICE_PASSWORD but no "
+                    "service is declared — the password only exists when a "
+                    "service does",
+                    summary="$DSE_SERVICE_PASSWORD without a declared service",
+                )
         return cls(
+            services_declared=frozenset(services),
             install_cmd=install,
             junit_reports=junit_reports,
             test_subset_cmd=parsed["test_subset"],
