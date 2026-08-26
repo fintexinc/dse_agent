@@ -58,14 +58,28 @@ def test_the_grant_lands_on_the_worker_that_runs_the_capture():
     )
 
 
-def test_the_build_credentials_secret_is_reapplyable():
-    """Fase A1 (2026-08-19): `create` de secrets é irrestrito, mas
-    get/update/patch/delete são pinados por NOME — `kubectl apply` sobre um
-    objeto existente é um patch, então sem o nome novo na lista o RE-apply num
-    namespace vivo (refresh do preview) morre em Forbidden. Foi exatamente o
-    desenho que protegeu a deploy key; a secret nova entra na mesma lista."""
-    text = _CHART.read_text(encoding="utf-8")
-    assert "dse-preview-build-credentials" in text, (
-        "a secret de credenciais de build não está no resourceNames do "
-        "ClusterRole — o segundo apply no mesmo namespace toma 403"
+def test_every_secret_the_preview_applies_is_reapplyable():
+    """`create` de secrets é irrestrito, mas get/update/patch/delete são
+    pinados por NOME — `kubectl apply` faz um GET antes de escrever, então uma
+    secret fora da lista morre em Forbidden JÁ NO PRIMEIRO apply.
+
+    A lista vem do CÓDIGO, não escrita à mão aqui, e essa é a tese deste
+    teste. A versão anterior repetia `dse-preview-build-credentials` como
+    literal; quando o Tema 1 (rc.120) acrescentou a terceira secret — a senha
+    dos `services` — a lista manual não acompanhou, o conformance passou verde
+    e o preview de TODO repo que declara `services` quebrou em produção
+    (wi_bb9a7a99, 2026-08-26). Derivando das constantes, a próxima secret
+    quebra a suíte no mesmo commit que a introduz."""
+    from dse_validation.preview.argocd import (
+        BUILD_CREDENTIALS_SECRET,
+        DEPLOY_KEY_SECRET,
+        SERVICE_PASSWORD_SECRET,
     )
+
+    text = _CHART.read_text(encoding="utf-8")
+    for nome in (DEPLOY_KEY_SECRET, BUILD_CREDENTIALS_SECRET, SERVICE_PASSWORD_SECRET):
+        assert nome in text, (
+            f"a secret {nome!r} é aplicada pelo preview mas não está no "
+            "resourceNames do ClusterRole — o apply toma 403 e o preview "
+            "degrada inteiro"
+        )
