@@ -127,3 +127,47 @@ def test_both_docs_at_their_caps_cannot_evict_a_skill(monkeypatch):
         acts._PLANNER_AGENTS_MD_MAX_CHARS + acts._PLANNER_CODEOWNERS_MAX_CHARS + 10_351
         <= acts._PLANNER_CONTEXT_BUDGET_CHARS
     )
+
+# ---------------------------------------------------------------------------
+# O espécime REAL (não o de testbed que calibrou o cap original)
+# ---------------------------------------------------------------------------
+#: `AGENTS.md` de fintexinc/glide-path-planner-93, medido em 2026-08-26: 18.438
+#: chars. O cap original (2.800) foi calibrado contra um AGENTS.md de testbed
+#: com 2.256 — o primeiro repositório real tem 8x isso.
+_REAL_AGENTS_MD_CHARS = 18_438
+
+#: Onde as convenções que o modelo PRECISAVA estavam nesse arquivo. Ambas caíam
+#: fora do cap, e cada uma matou um work item: `app.inject` (o repo não tem
+#: supertest — o Coder importou o que não existe e 22 erros de lint type-aware
+#: viraram insolúveis, wi_d1e069ad) e `gen:contract` (endpoint novo exige
+#: regenerar o golden do OpenAPI — CI vermelho na PR #792).
+_CONVENTION_POSITIONS = {"app.inject": 5_071, "gen:contract": 7_926}
+
+
+def test_a_real_client_agents_md_arrives_whole():
+    """Duas escaladas pagas saíram daqui: o DSE lia 15% do arquivo e o modelo
+    era culpado por não seguir a convenção que nós escondemos dele."""
+    assert acts._PLANNER_AGENTS_MD_MAX_CHARS >= _REAL_AGENTS_MD_CHARS, (
+        f"o cap ({acts._PLANNER_AGENTS_MD_MAX_CHARS}) corta o AGENTS.md real "
+        f"({_REAL_AGENTS_MD_CHARS} chars) — as convenções em "
+        f"{sorted(_CONVENTION_POSITIONS.items(), key=lambda kv: kv[1])} nunca "
+        "chegam ao Planner"
+    )
+    for nome, posicao in _CONVENTION_POSITIONS.items():
+        assert acts._PLANNER_AGENTS_MD_MAX_CHARS > posicao, nome
+
+
+def test_the_real_doc_is_delivered_uncut_end_to_end(monkeypatch):
+    """A constante não basta: o que importa é o que SAI de `_repo_docs_for_planner`."""
+    corpo = "\n".join(
+        f"line {i}: a convention the model must follow" for i in range(430)
+    )
+    assert len(corpo) >= _REAL_AGENTS_MD_CHARS, f"espécime curto demais: {len(corpo)}"
+
+    (agents_md, _), tel = _run(monkeypatch, _Client({"AGENTS.md": corpo}))
+
+    assert tel["agents_md_truncated_chars"] == 0, "o doc real ainda é cortado"
+    assert "truncated" not in agents_md
+    assert agents_md.endswith("line 429: a convention the model must follow"), (
+        "o fim do arquivo — onde as convenções deste repo moram — não chegou"
+    )
