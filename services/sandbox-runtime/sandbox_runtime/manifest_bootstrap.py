@@ -197,6 +197,11 @@ def probe_manifest(client, repo: str, base_branch: str) -> dict:
 #: a adivinhar sem isso. SÓ entra aqui o que degrada de verdade — um campo
 #: "seria bom ter" viraria uma PR de emenda por repositório por release, que é
 #: ruído, não onboarding.
+#: Os gates que o REPOSITÓRIO possui. Comando ausente vira `NOT_CONFIGURED`,
+#: que REPROVA a rodada — e nada dentro do laço alcança: o Coder não pode
+#: consertar porque os gates leem o manifesto do SHA BASE, por desenho.
+_GATE_COMMANDS = ("lint", "typecheck", "test", "build")
+
 _REQUIRED = (
     (
         "preview.start",
@@ -204,6 +209,16 @@ _REQUIRED = (
         "`java -jar <artifact>` (JVM) or an npm dev-server ladder, which is "
         "wrong for every other ecosystem",
     ),
+) + tuple(
+    (
+        f"commands.{nome}",
+        f"the `{nome}` gate has no command, so it reports NOT_CONFIGURED and "
+        f"FAILS every round — and no turn inside the loop can fix it, because "
+        f"gates read this file from the base commit. Declare the command, or "
+        f"put \"{nome}\" in `disabled_stages` if this repository genuinely has "
+        f"no such step",
+    )
+    for nome in _GATE_COMMANDS
 )
 
 
@@ -225,6 +240,17 @@ def missing_declarations(manifest_text: str) -> list[str]:
     faltando: list[str] = []
     if isinstance(preview, dict) and preview and not preview.get("start"):
         faltando.append("preview.start")
+    # Comando de gate ausente é a falha mais cara que este arquivo pode ter:
+    # NOT_CONFIGURED reprova a rodada e NADA dentro do laço a alcança (os
+    # gates leem do SHA base). Quem não tem o estágio DESLIGA — a plataforma
+    # cobra a decisão, não o comando.
+    comandos = payload.get("commands")
+    comandos = comandos if isinstance(comandos, dict) else {}
+    desligados = payload.get("disabled_stages")
+    desligados = set(desligados) if isinstance(desligados, list) else set()
+    for nome in _GATE_COMMANDS:
+        if not comandos.get(nome) and nome not in desligados:
+            faltando.append(f"commands.{nome}")
     return faltando
 
 

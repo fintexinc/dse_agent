@@ -34,13 +34,27 @@ _TREE = ["pom.xml", "mvnw", "src/main/java/App.java"]
 
 _SEM_START = json.dumps({
     "version": 1,
-    "commands": {"test": ["sh", "-c", "./mvnw -B test"]},
+    # Os quatro gates declarados de propósito: desde que a emenda passou a
+    # cobrar comando de gate ausente (NOT_CONFIGURED reprova a rodada e nada
+    # no laço alcança), um fixture com só `test` provaria outra coisa — cada
+    # teste abaixo isola O QUE ele quer medir.
+    "commands": {"lint": ["./mvnw", "-B", "spotless:check"],
+                 "typecheck": ["./mvnw", "-B", "compile"],
+                 "test": ["sh", "-c", "./mvnw -B test"],
+                 "build": ["sh", "-c", "./mvnw -B package"]},
     "preview": {"image": "eclipse-temurin:21-jdk", "port": 8181},
 }, indent=2)
 
 _COM_START = json.dumps({
     "version": 1,
-    "commands": {"test": ["sh", "-c", "./mvnw -B test"]},
+    # Os quatro gates declarados de propósito: desde que a emenda passou a
+    # cobrar comando de gate ausente (NOT_CONFIGURED reprova a rodada e nada
+    # no laço alcança), um fixture com só `test` provaria outra coisa — cada
+    # teste abaixo isola O QUE ele quer medir.
+    "commands": {"lint": ["./mvnw", "-B", "spotless:check"],
+                 "typecheck": ["./mvnw", "-B", "compile"],
+                 "test": ["sh", "-c", "./mvnw -B test"],
+                 "build": ["sh", "-c", "./mvnw -B package"]},
     "preview": {"image": "eclipse-temurin:21-jdk", "port": 8181,
                 "start": ["sh", "-c", "java -jar bootstrap/target/*.jar"]},
 }, indent=2)
@@ -79,10 +93,15 @@ def test_a_complete_manifest_reports_nothing_missing():
 
 
 def test_a_repo_without_a_preview_block_is_not_nagged():
-    """Repo que não tem preview nenhum não precisa declarar como sobe."""
+    """Repo que não tem preview nenhum não precisa declarar como sobe.
+
+    A asserção mira `preview.start` em vez da lista inteira: a emenda passou a
+    cobrar TAMBÉM comando de gate ausente, e um manifesto que declara só
+    `test` é de fato incompleto — ele morreria em NOT_CONFIGURED no primeiro
+    L1. O que este teste protege é a regra do preview, não a do gate."""
     sem_preview = json.dumps({"version": 1, "commands": {"test": ["pytest"]}})
     r = mb.probe_manifest(_client(sem_preview), "acme/svc", "main")
-    assert not (r.get("missing") or [])
+    assert "preview.start" not in (r.get("missing") or [])
 
 
 # ---------------------------------------------------------------------------
