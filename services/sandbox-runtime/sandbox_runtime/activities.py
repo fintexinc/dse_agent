@@ -1050,10 +1050,16 @@ Rules:
 # skills), `ctx.render(skill_body_chars=0)` is 10.351 chars, so the 8.000 cut
 # dropped 2.351 and 5 skills never reached the model — among them
 # `redacting-pii-and-secrets`, in a regulated fintech tenant — while the ledger
-# recorded all 21 as hydrated. 16.000 holds today's registry with ~55% headroom,
-# but the headroom is not what makes this safe: overflow now drops WHOLE skills,
-# least relevant first, and names them on the ledger.
-_PLANNER_CONTEXT_BUDGET_CHARS = 16_000
+# recorded all 21 as hydrated. The headroom is not what makes this safe:
+# overflow drops WHOLE skills, least relevant first, and names them on the
+# ledger.
+#
+# 40.000 desde 2026-08-26, junto com o cap do AGENTS.md (abaixo). O 16.000 não
+# tinha folga para um AGENTS.md de repositório REAL: as 21 skills rendem 10.351
+# chars, e o doc de 18.438 do primeiro cliente de verdade não caberia sem
+# despejar metade do registry. 40.000 chars ≈ 10k tokens — modesto ao lado do
+# tree budget (160.000) e do preço de um turno de Coder.
+_PLANNER_CONTEXT_BUDGET_CHARS = 40_000
 
 # Tree budget: derived from the requirement, not rounded by taste. Assertion A1
 # wants coverage 1.0 for the directories the final diff touches, so the selected
@@ -1073,13 +1079,21 @@ _PLANNER_TREE_BUDGET_CHARS = 160_000
 # strings against a 1Gi pod.
 _PLANNER_TREE_FETCH_LIMIT = 200_000
 
-# Per-doc caps for the trusted repo docs. Sized against the measured specimen —
-# a real client AGENTS.md is 564 tokens ≈ 2.256 chars — with room for a longer
-# one, and low enough that both docs together (4.000 chars) cannot push the
-# render past the 16.000-char budget and start evicting skills. A tenant whose
-# doc is genuinely larger gets it cut on a line boundary, with the dropped char
-# count on the ledger, rather than the whole block silently disappearing.
-_PLANNER_AGENTS_MD_MAX_CHARS = 2_800
+# Per-doc caps for the trusted repo docs. O espécime que calibrou o 2.800 era de
+# TESTBED (2.256 chars); o primeiro repositório real tem 18.438, e o corte custou
+# duas escaladas pagas em 2026-08-26: `app.inject` (posição 5.071 — o repo não
+# usa supertest, e o Coder importou o que não existe, produzindo 22 erros de
+# lint type-aware insolúveis, wi_d1e069ad) e `gen:contract` (posição ~7.926 —
+# endpoint novo exige regenerar o golden do OpenAPI, CI vermelho na PR #792).
+# Nos dois o modelo foi culpado por não seguir a convenção que NÓS escondíamos
+# dele: líamos 15% do arquivo.
+#
+# 20.000 cobre o espécime real inteiro com folga, e o budget acima subiu junto
+# para que o par de docs continue cabendo SEM despejar skill — a invariante está
+# pinada em test_both_docs_at_their_caps_cannot_evict_a_skill. Um doc
+# genuinamente maior ainda é cortado em fronteira de linha, com os chars
+# perdidos no ledger, em vez de sumir em silêncio.
+_PLANNER_AGENTS_MD_MAX_CHARS = 20_000
 _PLANNER_CODEOWNERS_MAX_CHARS = 1_200
 
 _TREE_MAX_SELECTED_DIRS = 3

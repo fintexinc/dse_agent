@@ -337,8 +337,19 @@ def test_the_old_blind_cut_is_what_this_replaces():
     assert not rendered[:8000].endswith("\n")  # mid-line, i.e. mid-title
 
 
+def _title_chars_that_overflow() -> int:
+    """Títulos grandes o bastante para o registry vivo (21 skills) estourar o
+    budget — DERIVADO dele, não um número fixo.
+
+    Eram 900 chars, calibrados contra o budget de 16.000. Quando ele subiu para
+    40.000 (2026-08-26, para caber o AGENTS.md de um repositório real), o
+    fixture parou de transbordar e o teste passou a provar nada — que é
+    exatamente o que sua primeira asserção diz não aceitar."""
+    return acts._PLANNER_CONTEXT_BUDGET_CHARS // 15
+
+
 def test_a_skill_arrives_whole_or_is_named_on_the_ledger():
-    ctx = _live_registry_context(title_chars=900)
+    ctx = _live_registry_context(title_chars=_title_chars_that_overflow())
     rendered, tel = acts._fit_planner_context(ctx, instruction="redacting pii and secrets in the audit trail")
 
     assert tel["skills_dropped"], "this fixture must overflow, or it proves nothing"
@@ -357,7 +368,7 @@ def test_a_skill_arrives_whole_or_is_named_on_the_ledger():
 
 
 def test_dropping_skills_is_deterministic():
-    ctx = _live_registry_context(title_chars=900)
+    ctx = _live_registry_context(title_chars=_title_chars_that_overflow())
     first = acts._fit_planner_context(ctx, instruction="anything at all")[1]
     second = acts._fit_planner_context(ctx, instruction="anything at all")[1]
     assert first["skills_dropped"] == second["skills_dropped"]

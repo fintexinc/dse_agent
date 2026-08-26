@@ -107,7 +107,12 @@ def test_codeowners_follows_github_precedence(monkeypatch):
 def test_oversized_doc_is_cut_on_a_line_boundary_and_the_cut_is_recorded(monkeypatch):
     """Half a convention reads exactly like a whole one — the same reason
     `_expand_into` refuses to slice a directory listing."""
-    body = "\n".join(f"rule {i}: never do the thing" for i in range(400))
+    # O tamanho DERIVA do cap: um número fixo aqui (eram 400 linhas) para de
+    # exceder assim que o cap sobe, e o teste passa a provar nada — foi o que
+    # aconteceu quando o cap virou 20.000 em 2026-08-26.
+    _LINHA = "rule {}: never do the thing"
+    n = acts._PLANNER_AGENTS_MD_MAX_CHARS // len(_LINHA.format(0)) + 50
+    body = "\n".join(_LINHA.format(i) for i in range(n))
     assert len(body) > acts._PLANNER_AGENTS_MD_MAX_CHARS
 
     (agents_md, _), tel = _run(monkeypatch, _Client({"AGENTS.md": body}))
