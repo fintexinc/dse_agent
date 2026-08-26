@@ -90,8 +90,33 @@ print(json.dumps({"findings": findings}))
 '''
 
 
+def _scoped_to_the_diff(
+    findings: list[dict], changed_files: set[str] | None
+) -> tuple[list[dict], int]:
+    """(achados DESTA mudança, quantos ficaram de fora).
+
+    O gate julga o diff do work item, não a história do repositório — a mesma
+    doutrina de `_only_in_changed_files` (lint) e do `inherited` (test), e o
+    secret scan era o último a julgar a árvore inteira. Medido no
+    glide-path-planner-93: 87 achados no `main` LIMPO (65 em `.test.ts` com
+    senha de teste, o resto em `dist/` e docs), nenhum do item — e como este
+    gate é da PLATAFORMA (o repo não pode desligá-lo, nem deve), não havia
+    conserto possível: o item morria por construção.
+
+    `changed_files=None` = sem diff conhecido → tudo conta: perder um achado
+    real é pior que reportar um que não é nosso."""
+    if changed_files is None:
+        return findings, 0
+    nossos = [
+        f for f in findings
+        if str(f.get("file", "")).lstrip("./") in changed_files
+    ]
+    return nossos, len(findings) - len(nossos)
+
+
 def secret_scan_check(
-    executor: SandboxExecutor, target_dir: str = ".", timeout: int | None = None
+    executor: SandboxExecutor, target_dir: str = ".", timeout: int | None = None,
+    changed_files: set[str] | None = None,
 ) -> L1Finding:
     # Same reason as in `sast.py`: 60 s was frozen in this signature. At the
     # 91k lines/s the scanner measures inside the sandbox pod it covers ~5,5M
@@ -129,17 +154,24 @@ def secret_scan_check(
             summary="the secret scanner produced output that could not be parsed",
         )
 
-    findings = payload.get("findings", [])
+    findings, herdados = _scoped_to_the_diff(payload.get("findings", []), changed_files)
+    # A dívida pré-existente NUNCA é engolida em silêncio: ela não reprova o
+    # item que não a criou, mas o operador tem de saber que ela está lá.
+    nota_herdada = (
+        f" ({herdados} pre-existing, outside this change — reported, not charged)"
+        if herdados else ""
+    )
     if not findings:
+        summary = "no secret/token detected" + nota_herdada
         return L1Finding(
             check="secret_scan",
             passed=True,
-            detail="no secret/token detected",
-            summary="no secret/token detected",
+            detail=summary,
+            summary=summary,
         )
 
     lines = [f"- [{f['kind']}] {f['file']}:{f['line']} — {f['snippet']}" for f in findings[:20]]
-    summary = f"{len(findings)} possible secret(s) detected"
+    summary = f"{len(findings)} possible secret(s) detected" + nota_herdada
     # `snippet` IS the matched source line. It stays in `detail` only.
     detail = summary + ":\n" + "\n".join(lines)
     return L1Finding(

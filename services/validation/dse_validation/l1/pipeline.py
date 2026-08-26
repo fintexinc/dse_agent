@@ -157,7 +157,7 @@ def run_l1_pipeline_core(
         executor, target_dir, cfg.sast_severity_gate, cfg.timeout_for("sast")
     )))
     findings.append(_timed(step, "secret_scan", lambda: secret_scan.secret_scan_check(
-        executor, target_dir, cfg.timeout_for("secret_scan")
+        executor, target_dir, cfg.timeout_for("secret_scan"), changed_files=changed_files
     )))
     findings.extend(_timed(step, "plan_compliance", lambda: plan_compliance.plan_compliance_findings(
         executor, plan, base_sha, head_sha, diff=diff
