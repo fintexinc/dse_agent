@@ -64,9 +64,18 @@ rules:
   # feed privado que o build do preview monta. Precisa estar AQUI porque
   # `kubectl apply` sobre objeto existente é um patch — sem o nome, o RE-apply
   # num namespace vivo (refresh do preview) morre em Forbidden.
+  # `dse-preview-service-password` (Tema 1, rc.120): a senha GERADA por preview
+  # para os `services` que o repositório declara. Mesma razão das duas acima —
+  # e ela faltou aqui: o preview de todo repo com `services` declarado degradou
+  # em Forbidden no PRIMEIRO apply (wi_bb9a7a99, 2026-08-26), porque o `apply`
+  # faz um GET antes de escrever. O conformance agora deriva esta lista das
+  # constantes do código, então a próxima secret não repete o episódio.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["dse-preview-deploy-key", "dse-preview-build-credentials"]
+    resourceNames:
+      - "dse-preview-deploy-key"
+      - "dse-preview-build-credentials"
+      - "dse-preview-service-password"
     verbs: ["get", "update", "patch", "delete"]
   # Read-only: `kubectl wait` watches the Deployment, and reading pod status is
   # how a stuck preview gets diagnosed. No exec, no delete.
