@@ -141,6 +141,23 @@ async def _frozen_state(handle, key: str, attempts: int = 60, sleep_s: float = 0
     raise AssertionError(f"{key} never stopped moving, last={state!r}")
 
 
+async def _result_bounded(handle, *, segundos: float = 90.0):
+    """`handle.result()` COM prazo.
+
+    Sem isto o arquivo pendura para sempre quando um veredito se perde na
+    janela do continue_as_new — e como o pytest-timeout roda em modo thread,
+    ele mata o PROCESSO: a suite inteira do orchestrator morre e o CI reporta
+    um travamento mudo em vez do defeito. Prazo transforma isso em falha
+    legível, que é o mínimo que um teste deve entregar."""
+    try:
+        return await asyncio.wait_for(handle.result(), timeout=segundos)
+    except asyncio.TimeoutError:  # noqa: UP041 — pareado com o alias do runtime
+        raise AssertionError(
+            f"o workflow não terminou em {segundos}s após os signals — "
+            "veredito perdido (suspeita: janela do continue_as_new)"
+        ) from None
+
+
 @pytest.mark.asyncio
 async def test_the_row_reports_the_wait_while_the_wait_is_still_running(time_skipping_env):
     """The regression an OPERATOR sees, and the only assertion in this file made
@@ -192,7 +209,7 @@ async def test_the_row_reports_the_wait_while_the_wait_is_still_running(time_ski
         await wait_for_status(handle, {WorkItemStatus.review_ready.value})
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", _MERGE_SIGNAL)
-        result = await handle.result()
+        result = await _result_bounded(handle)
 
     assert result.status == WorkItemStatus.done.value
     # and the exit write still lands: the periodic one is a floor on freshness,
@@ -234,7 +251,7 @@ async def test_long_ci_wait_writes_two_ci_audit_rows(time_skipping_env):
         await wait_for_status(handle, {WorkItemStatus.review_ready.value})
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", _MERGE_SIGNAL)
-        result = await handle.result()
+        result = await _result_bounded(handle)
 
     assert result.status == WorkItemStatus.done.value
     # the wait really happened — 45 pending polls + the green one
@@ -273,7 +290,7 @@ async def test_ci_transition_row_carries_the_shape_of_the_wait(time_skipping_env
         await wait_for_status(handle, {WorkItemStatus.review_ready.value})
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", _MERGE_SIGNAL)
-        await handle.result()
+        await _result_bounded(handle)
 
     observed = [d for a, d in _read_audit(work_item_id) if a == "ci_status_observed"]
     assert len(observed) == 1
@@ -316,7 +333,7 @@ async def test_polls_cost_ci_calls_plus_one_status_write_per_period(time_skippin
             await wait_for_status(handle, {WorkItemStatus.review_ready.value})
             await handle.signal("review_comment", {"verdict": "approved"})
             await handle.signal("merged_by_human", _MERGE_SIGNAL)
-            await handle.result()
+            await _result_bounded(handle)
             counts[label] = _scheduled_activities(await handle.fetch_history())
 
     period = _input("x").ci_wait_persist_every_n_polls
@@ -371,7 +388,7 @@ async def test_continue_as_new_at_the_threshold_carries_the_whole_wait(time_skip
         final = await handle.query(WorkItemLifecycleWorkflow.get_state)
         await handle.signal("review_comment", {"verdict": "approved"})
         await handle.signal("merged_by_human", _MERGE_SIGNAL)
-        result = await handle.result()
+        result = await _result_bounded(handle)
 
     assert result.status == WorkItemStatus.done.value
     # it really continued as new from inside the wait (1 is the pre-existing
@@ -437,7 +454,7 @@ async def test_continue_as_new_refuses_to_close_a_run_holding_a_signal(time_skip
 
         await wait_for_status(handle, {WorkItemStatus.review_ready.value})
         await handle.signal("review_comment", {"verdict": "approved"})
-        result = await handle.result()
+        result = await _result_bounded(handle)
 
     # the parked merge signal survived the wait: no second merged_by_human was
     # ever sent, so reaching Done proves it was still there.
