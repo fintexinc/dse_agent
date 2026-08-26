@@ -144,6 +144,52 @@ _SPOTLESS_FILE_RE = re.compile(
 )
 
 
+#: O `stylish` do ESLint: o CAMINHO numa linha própria, os problemas
+#: indentados abaixo dela. É o formatter default do ecossistema JS/TS inteiro
+#: (o `unix`, que casaria com o parser canônico, saiu do core no ESLint 9 e
+#: exigiria dependência nova — proibido pela _SPEC do manifesto).
+_ESLINT_FILE_RE = re.compile(r"^(?P<path>[./]?[\w./-]+\.[jt]sx?)\s*$")
+_ESLINT_ISSUE_RE = re.compile(
+    r"^\s+(?P<line>\d+):(?P<col>\d+)\s+(?P<sev>error|warning)\s+(?P<msg>.+?)\s*$"
+)
+
+
+def _eslint_violations(text: str, changed_files: set[str] | None) -> list[str]:
+    """Linhas canônicas `path:line:col: msg` sintetizadas do stylish do ESLint.
+
+    Só `error` vira issue, e isso é FIDELIDADE ao repositório: o ESLint sai 0
+    quando só há warning, e um repo maduro normaliza dívida ali (236 warnings
+    no `apps/api` do glide-path). Contá-los faria o item pagar por debt de
+    qualquer arquivo que encostasse — o incidente que `_only_in_changed_files`
+    existe para impedir, entrando pela outra porta.
+
+    O caminho impresso é ABSOLUTO no pod (`/workspace/apps/...`) e o diff é
+    relativo ao repositório: resolve-se por sufixo contra `changed_files`, o
+    mesmo que o spotless precisou fazer."""
+    out: list[str] = []
+    atual: str | None = None
+    for ln in text.splitlines():
+        m = _ESLINT_FILE_RE.match(ln)
+        if m:
+            atual = m.group("path")
+            # O pod sempre monta o clone em /workspace: o prefixo é NOSSO, não
+            # do repositório, e sem removê-lo nenhum caminho casaria com o diff.
+            if atual.startswith("/workspace/"):
+                atual = atual[len("/workspace/"):]
+            atual = atual.lstrip("./")
+            if changed_files is not None and atual not in changed_files:
+                candidatos = sorted(f for f in changed_files if atual.endswith("/" + f))
+                if candidatos:
+                    atual = candidatos[0]
+            continue
+        if atual is None:
+            continue
+        mi = _ESLINT_ISSUE_RE.match(ln)
+        if mi and mi.group("sev") == "error":
+            out.append(f"{atual}:{mi.group('line')}:{mi.group('col')}: {mi.group('msg')}")
+    return out
+
+
 def _spotless_violations(text: str, changed_files: set[str] | None) -> list[str]:
     """Linhas canônicas `path:1:1: ...` sintetizadas do relatório do spotless.
 
@@ -406,6 +452,10 @@ def lint_check(
         # concisa nunca compete com ele — a síntese só roda quando o parser
         # canônico não viu nada.
         issue_lines = _spotless_violations(_output(result), changed_files)
+    if not issue_lines:
+        # E o stylish do ESLint, pela mesma razão e na mesma ordem: os dialetos
+        # só competem quando o parser canônico não viu nada.
+        issue_lines = _eslint_violations(_output(result), changed_files)
     all_issues = len(issue_lines)
     issue_lines = _only_in_changed_files(issue_lines, changed_files)
     # `result.ok` is dropped from the verdict ON PURPOSE when the diff is known:

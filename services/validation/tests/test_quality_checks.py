@@ -181,11 +181,20 @@ _ESLINT_OUTPUT = """
 
 
 def test_a_failed_lint_never_claims_there_were_no_issues():
+    """A invariante é esta: saída reprovada NUNCA vira "no lint issues".
+
+    A asserção de `exit=1` no summary saiu junto do dialeto do ESLint: ela
+    pinava a ILEGIBILIDADE desta saída (o gate só sabia dizer "reprovou e não
+    entendi"), e o stylish agora é lido. O veredito ficou melhor, não mais
+    frouxo — FAIL nomeando arquivo e regra, que o Coder conserta, em vez de
+    ERROR, que escala sem dono."""
     cfg = L1Config(lint_cmd=["npm", "run", "lint"])
     finding = lint_check(_canned(_ESLINT_OUTPUT, 1), cfg)
     assert finding.passed is False
     assert "no lint issues" not in finding.summary
-    assert "exit=1" in finding.summary
+    assert finding.status is GateStatus.FAIL
+    assert "1 lint issue" in finding.summary
+    assert "app.component.ts" in finding.detail
 
 
 _TSC_OUTPUT = (
