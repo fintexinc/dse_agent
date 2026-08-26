@@ -502,6 +502,67 @@ class _ActivityRetriesExhausted(Exception):
         self.reason = reason
 
 
+#: O literal que o repo escreve no manifesto para pedir a senha gerada. Fonte
+#: da verdade: `dse_validation.config.SERVICE_PASSWORD_TOKEN` — repetido aqui
+#: como string, e não importado, porque isto roda DENTRO do sandbox de
+#: workflow do Temporal, onde import pesado é proibido.
+SERVICE_PASSWORD_TOKEN = "$DSE_SERVICE_PASSWORD"
+
+#: Nomes de env cujo VALOR nunca entra na instrução — a instrução viaja para o
+#: gateway do modelo, para o audit e para o corpo da PR.
+_SEGREDO_RE = re.compile(r"(?i)(password|secret|token|api[_-]?key|credential)")
+
+
+def services_instruction_block(services: dict | None) -> str:
+    """Os FATOS dos serviços declarados, para a instrução dos agentes.
+
+    O Tema 1 põe os serviços do repo vivos em `localhost` dentro do sandbox —
+    e, medido em wi_a5a395f8, ninguém contava isso ao modelo: ele escrevia o
+    teste de integração contra uma URL que ninguém definiu, o teste falhava por
+    conexão e o laço gastava turno pago consertando código correto.
+
+    A plataforma repete o que o REPO declarou (nome, porta, chaves de env) e
+    acrescenta a única variável que ela dá de si — nunca interpreta: não monta
+    DSN, não nomeia tecnologia, não escolhe driver. Quem sabe a forma da URL é
+    o repositório.
+
+    VALOR de senha jamais entra aqui: esta string viaja para o gateway do
+    modelo, para o audit e para o corpo da PR. Só o NOME da variável viaja; o
+    valor vive no ambiente do Pod."""
+    if not services:
+        return ""
+    linhas = [
+        "Backing services declared by this repository are ALREADY RUNNING in "
+        "this sandbox, reachable on localhost (no docker, no compose needed):"
+    ]
+    for nome, decl in sorted(services.items()):
+        decl = decl or {}
+        porta = decl.get("port")
+        env = decl.get("env") or {}
+        # O VALOR só viaja quando o NOME da chave não é de segredo. A regra é
+        # pelo nome, não pelo conteúdo: um repositório pode escrever a senha
+        # literal no manifesto (má prática que o parser aceita), e esta string
+        # vai para o gateway do modelo, para o audit e para o corpo da PR.
+        segredo = sorted(
+            k for k, v in env.items()
+            if _SEGREDO_RE.search(k) or SERVICE_PASSWORD_TOKEN in str(v)
+        )
+        chaves = ", ".join(
+            f"{k}={v}" for k, v in sorted(env.items()) if k not in segredo
+        )
+        linha = f"- {nome}: localhost:{porta}"
+        if chaves:
+            linha += f" (declared env: {chaves})"
+        if segredo:
+            linha += (
+                f" — the value of {', '.join(segredo)} is in the "
+                "DSE_SERVICE_PASSWORD environment variable of this sandbox; "
+                "read it from the environment, never hardcode it"
+            )
+        linhas.append(linha)
+    return "\n".join(linhas)
+
+
 @workflow.defn(name=WORKFLOW_TYPE)
 class WorkItemLifecycleWorkflow:
     def __init__(self) -> None:
@@ -1039,6 +1100,13 @@ class WorkItemLifecycleWorkflow:
         for note in getattr(input, "fix_context", []) or []:
             if note and str(note).strip():
                 parts.append(str(note).strip())
+        # Tema 1: o sandbox tem os serviços do repo VIVOS em localhost, e sem
+        # esta linha o modelo escreve o teste de integração contra uma URL que
+        # ninguém definiu. Fatos declarados pelo repo, nunca valor de senha.
+        if getattr(self, "_services_in_instruction", False):
+            bloco = services_instruction_block(getattr(self, "_repo_services", None))
+            if bloco:
+                parts.append(bloco)
         return "\n\n".join(parts) or "Implement the requested task."
 
     def _pr_summary(self) -> str:
@@ -2312,6 +2380,13 @@ class WorkItemLifecycleWorkflow:
                 # provision (mais abaixo, sob patch próprio) os repassa ao Pod.
                 self._repo_services = dict(probe.get("services") or {}) or None
                 self._repo_prepare = list(probe.get("prepare") or []) or None
+                # O marker é lido AQUI, dentro do event loop do workflow, e o
+                # resultado vira flag: `_agent_instruction` também é chamado
+                # fora do loop (testes de unidade, e o corpo da PR), onde
+                # `workflow.patched` levanta _NotInWorkflowEventLoopError.
+                self._services_in_instruction = workflow.patched(
+                    "services-in-the-instruction-v1"
+                )
             await self._run_planner_and_gate()
             # rc.93 (decisão do operador, auditoria de 08-14): a barreira do
             # GRUPO fica entre o gate próprio e o sandbox — antes de gastar

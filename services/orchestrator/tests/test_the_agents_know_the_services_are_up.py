@@ -17,7 +17,21 @@ instrução viaja para o gateway do modelo, para o audit e para a PR).
 """
 from __future__ import annotations
 
-from dse_orchestrator.workflows import services_instruction_block
+import uuid
+
+import pytest
+from temporalio.worker import Worker
+
+from dse_orchestrator import policy
+from dse_orchestrator.workflows import (
+    WorkItemLifecycleWorkflow,
+    services_instruction_block,
+)
+
+from conftest import new_work_item_id, wait_for_status
+from fakes import FakeControlPlane
+
+from test_plan_approval_timeout import _Ledger, _gate_input, build_db_free_activities
 
 _SERVICES = {
     "postgres": {
@@ -56,6 +70,59 @@ def test_no_services_no_block():
     """Repo que não declara nada não ganha ruído na instrução."""
     assert services_instruction_block(None) == ""
     assert services_instruction_block({}) == ""
+
+
+@pytest.mark.asyncio
+async def test_the_coder_really_receives_it_end_to_end(time_skipping_env):
+    """A função pura não basta: o que importa é o que o Coder LÊ."""
+    state = FakeControlPlane(
+        plan_expected_files=["apps/api/src/health.ts"],
+        repo_manifest_services={
+            "postgres": {"image": "postgres:15-alpine", "port": 5432,
+                         "env": {"POSTGRES_DB": "app",
+                                 "POSTGRES_PASSWORD": "$DSE_SERVICE_PASSWORD"}},
+        },
+    )
+    ledger = _Ledger()
+    work_item_id = new_work_item_id("svcinstr")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id), id=work_item_id, task_queue=task_queue)
+        await wait_for_status(handle, {"review_ready"})
+        await handle.terminate()
+
+    assert state.coder_instructions, "o Coder nunca rodou"
+    instrucao = state.coder_instructions[0]
+    assert "localhost:5432" in instrucao, (
+        "o Coder escreveu código sem saber que existe um banco vivo ao lado"
+    )
+    assert "DSE_SERVICE_PASSWORD" in instrucao
+    assert "POSTGRES_DB=app" in instrucao
+
+
+@pytest.mark.asyncio
+async def test_a_repo_without_services_gets_no_extra_line(time_skipping_env):
+    state = FakeControlPlane(plan_expected_files=["apps/api/src/health.ts"])
+    ledger = _Ledger()
+    work_item_id = new_work_item_id("nosvc")
+    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
+    policy.set_codeowners_reader(lambda tenant_id, repo: "* @alice")
+    async with Worker(time_skipping_env.client, task_queue=task_queue,
+                      workflows=[WorkItemLifecycleWorkflow],
+                      activities=build_db_free_activities(ledger, state)):
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run,
+            _gate_input(work_item_id), id=work_item_id, task_queue=task_queue)
+        await wait_for_status(handle, {"review_ready"})
+        await handle.terminate()
+
+    assert state.coder_instructions
+    assert "localhost:" not in state.coder_instructions[0]
 
 
 def test_the_block_does_not_pretend_to_know_the_stack():
