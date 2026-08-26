@@ -13,6 +13,8 @@ straight from the package installed in the venv.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -266,9 +268,51 @@ def bootstrap_workspace(req: WorkspaceBootstrapRequest) -> WorkspaceBootstrapRes
         )
 
 
+#: Onde o git guarda ignores LOCAIS — invisível para o repositório do
+#: cliente, que é exatamente o ponto: o DSE não edita a política dele.
+logger = logging.getLogger(__name__)
+
+_LOCAL_EXCLUDE = ("info", "exclude")
+_EXCLUDE_MARCA = "# dse: generated test reports (declared in reports.junit)"
+
+
+def _exclude_declared_reports(workspace_dir: str) -> None:
+    """Mantém fora do commit o relatório que a PLATAFORMA pediu.
+
+    Medido em wi_e9764c2d: o checkpoint commitou um `junit.xml` de 12.733
+    linhas, maior que a mudança inteira, e ele iria para a PR que um humano
+    revisa. O caminho não é escolha do cliente — é o gate que exige
+    `reports.junit` para ler contagem em vez de adivinhar por prosa; então a
+    sujeira é nossa, e nós a limpamos.
+
+    Best-effort e idempotente: manifesto ausente ou torto não pode derrubar o
+    checkpoint, que é o que preserva o trabalho PAGO do turno."""
+    try:
+        manifesto = Path(workspace_dir) / ".dse" / "validation.json"
+        if not manifesto.is_file():
+            return
+        payload = json.loads(manifesto.read_text(encoding="utf-8", errors="ignore"))
+        glob = ((payload.get("reports") or {}) if isinstance(payload, dict) else {}).get("junit")
+        if not isinstance(glob, str) or not glob.strip():
+            return
+        destino = Path(workspace_dir, ".git", *_LOCAL_EXCLUDE)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        atual = destino.read_text() if destino.is_file() else ""
+        linha = glob.strip()
+        if linha in atual.splitlines():
+            return
+        with destino.open("a", encoding="utf-8") as fh:
+            if atual and not atual.endswith("\n"):
+                fh.write("\n")
+            fh.write(f"{_EXCLUDE_MARCA}\n{linha}\n")
+    except Exception as exc:  # noqa: BLE001 — ver docstring: nunca derruba o checkpoint
+        logger.info("could not exclude the declared test report (%s)", exc)
+
+
 def checkpoint_workspace(req: CheckpointOpRequest) -> CheckpointOpResult:
     try:
         _ensure_safe_directory()
+        _exclude_declared_reports(req.workspace_dir)
         session = ScopedGitSession(workspace_dir=req.workspace_dir, branch=req.branch)
         session.ensure_identity()
         if session.has_changes():

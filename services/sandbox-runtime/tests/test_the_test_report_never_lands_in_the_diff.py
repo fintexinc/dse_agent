@@ -43,8 +43,7 @@ def _workspace(tmp_path, *, manifesto: dict | None):
 def _checkpoint(ws, tmp_path):
     return checkpoint_workspace(CheckpointOpRequest.model_validate({
         "work_item_id": "wi-report", "branch": "dse/wi-report",
-        "workspace_dir": str(ws), "checkpoint_path": str(tmp_path / "checkpoint.git"),
-        "phase": "implementing",
+        "workspace_dir": str(ws), "phase": "implementing",
     }))
 
 
