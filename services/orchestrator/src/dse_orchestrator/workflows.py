@@ -4876,6 +4876,11 @@ class WorkItemLifecycleWorkflow:
             return
 
         input.preview_status = preview.status
+        # O trigger PROVA o caminho contra o serviço vivo (variante de prefixo
+        # que responde ≠ 404) e devolve o resultado no ref — a partir daqui,
+        # Slack, console e PR falam o caminho que o app de fato serve.
+        if workflow.patched("preview-deep-path-probed-v1"):
+            deep_path = getattr(preview, "deep_path", None) or deep_path
         # Console/evidência (display-only) mostram o link COMPOSTO; o baseURL
         # do demo continua sendo preview.url cru, logo abaixo.
         input.preview_url = (

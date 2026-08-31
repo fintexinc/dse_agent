@@ -180,6 +180,49 @@ def _validate_path(raw) -> str | None:
     return path
 
 
+#: Variantes de prefixo tentadas contra o serviço VIVO quando o caminho
+#: declarado responde 404. Isto é medição, não inferência: um candidato só
+#: vence se o app de verdade responder algo ≠ 404 para ele. A lista cobre o
+#: que o patch da PR não mostra (setGlobalPrefix/versionamento vivem no
+#: main.ts, fora do diff — wi_f1f27266).
+_PREFIX_CANDIDATES = ("", "/api", "/api/v1")
+
+
+def reconcile_deep_path(path, probe):
+    """O caminho que vai virar botão, provado contra o serviço vivo.
+
+    `probe(candidato) -> int | None` devolve o status HTTP (None = probe
+    quebrado). O declarado é tentado primeiro; respondeu ≠ 404, fica — 401/403
+    contam como rota existente (atrás de login). Probe quebrado ou nenhum
+    candidato respondendo: o declarado fica como está (fail-open — um probe
+    morto não pode piorar o link de hoje)."""
+    if not path:
+        return path
+    for prefixo in _PREFIX_CANDIDATES:
+        candidato = f"{prefixo}{path}"
+        status = probe(candidato)
+        if status is None:
+            return path
+        if status != 404:
+            return candidato
+    return path
+
+
+def rewrite_guide_paths(guide: dict, old: str, new: str) -> dict:
+    """Os passos do guia citam o caminho em texto livre — quando o caminho
+    reconciliado muda, o guia acompanha. Cópia, nunca mutação: o dict original
+    pode já ter ido para outro consumidor."""
+    if not guide or not old or old == new:
+        return guide
+    novo = dict(guide)
+    steps = guide.get("steps")
+    if isinstance(steps, list):
+        novo["steps"] = [
+            s.replace(old, new) if isinstance(s, str) else s for s in steps
+        ]
+    return novo
+
+
 def resolve_deep_link(
     client, *, repo: str, pr_number: int, instruction: str,
     files_changed: list[str], kind: str, complete,

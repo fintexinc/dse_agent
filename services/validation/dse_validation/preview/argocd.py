@@ -1361,6 +1361,30 @@ def _put_preview_in_pr_body(
         _preview_body_failed(inp, actor, f"{type(exc).__name__}: {exc}")
 
 
+def _http_status_probe(base_url: str):
+    """probe(candidato) -> status HTTP para `reconcile_deep_path`.
+
+    urllib da stdlib de propósito (nada novo no worker); GET e não HEAD (apps
+    Nest respondem 404 igual, e HEAD é o método que frameworks esquecem);
+    3s por candidato — são no máximo 3 contra um serviço que acabou de passar
+    no readiness. Erro de transporte → None (o chamador faz fail-open)."""
+    import urllib.error
+    import urllib.request
+
+    def probe(candidato: str):
+        try:
+            with urllib.request.urlopen(  # noqa: S310 — DNS interno do cluster
+                f"{base_url}{candidato}", timeout=3
+            ) as resp:
+                return int(resp.status)
+        except urllib.error.HTTPError as exc:
+            return int(exc.code)
+        except Exception:  # noqa: BLE001 — transporte morto = probe morto
+            return None
+
+    return probe
+
+
 def _announce_preview_provisioning(
     inp: TriggerPreviewInput, url: str, *, actor: str
 ) -> None:
@@ -1812,6 +1836,26 @@ def _trigger_preview(
     # otherwise the cluster-internal DNS (the link shows up on the PR either
     # way — D1).
     url = cfg.preview_url_for(namespace)
+    # O caminho do How to test é PROVADO contra o serviço que acabou de ficar
+    # Ready — pelo DNS interno (o worker não tem egress para a URL pública). O
+    # modelo leu o patch, e o patch não mostra setGlobalPrefix/versionamento
+    # (main.ts fora do diff): /version virou clique em 404 no wi_f1f27266.
+    deep_path = inp.deep_path or ""
+    test_guide = inp.test_guide or {}
+    if deep_path:
+        from .deep_link import reconcile_deep_path, rewrite_guide_paths
+
+        interno = f"http://preview.{namespace}.svc.cluster.local"
+        provado = reconcile_deep_path(deep_path, _http_status_probe(interno))
+        if provado != deep_path:
+            test_guide = rewrite_guide_paths(test_guide, deep_path, provado)
+            if audit_emit is not None:
+                audit_emit(
+                    actor=actor, action="preview_deep_link_reconciled",
+                    tenant_id=inp.tenant_id, work_item_id=inp.work_item_id,
+                    details={"declared": deep_path, "served": provado},
+                )
+            deep_path = provado
     # Available ≠ dev server são: pode ser o degrau do build servindo no lugar
     # de um `npm start` quebrado. A nota viaja no PreviewRef.detail até a frase
     # da PR — sem ela o fallback esconderia o defeito que acabou de contornar.
@@ -1824,8 +1868,8 @@ def _trigger_preview(
         pr_number=inp.pr_number, repo=inp.repo, status="created",
         namespace=namespace, url=url, ttl_seconds=ttl, expires_at=expires_at,
         detail=detail_row,
-        deep_path=inp.deep_path or "", deep_note=inp.deep_note or "",
-        test_guide=inp.test_guide or {},
+        deep_path=deep_path, deep_note=inp.deep_note or "",
+        test_guide=test_guide,
     )
     if audit_emit is not None:
         audit_emit(
@@ -1840,8 +1884,8 @@ def _trigger_preview(
         work_item_id=inp.work_item_id, pr_number=inp.pr_number,
         status="created", namespace=namespace, url=url, kind=kind,
         detail=nota or "",
-        deep_path=inp.deep_path, deep_note=inp.deep_note,
-        test_guide=inp.test_guide or {},
+        deep_path=deep_path or inp.deep_path, deep_note=inp.deep_note,
+        test_guide=test_guide,
     )
 
 
