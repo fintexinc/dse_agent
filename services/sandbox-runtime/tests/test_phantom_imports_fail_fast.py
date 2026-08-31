@@ -80,3 +80,98 @@ def test_non_js_files_are_left_alone(tmp_path):
     # Fora do alcance do freio v1 (JS/TS): nunca inventa veredito sobre o que
     # não sabe ler.
     assert _phantom_import_failure(_real_pod(tmp_path), ["test_x.py"]) is None
+
+
+# ---------------------------------------------------------------------------
+# O fio: o freio roda DENTRO do turno, antes de typecheck/suite
+# ---------------------------------------------------------------------------
+# O scanner acima é unidade; daqui para baixo é o comportamento que custou os
+# US$ 20: o turno tem que (1) re-autorar UMA vez com o feedback nomeado e
+# (2) se o fantasma sobreviver, falhar NOMEADO sem gastar a suíte — o
+# deferral não pode empurrar um import inexistente para o L1 como se fosse
+# asserção em desacordo.
+
+from dse_contracts import RunTesterTurnInput  # noqa: E402
+from sandbox_runtime import activities  # noqa: E402
+
+_SPEC = "apps/api/integration/health.integration.test.ts"
+
+
+def _done(argv, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+
+def _fake_cluster(seen):
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        joined = " ".join(argv)
+        if "head -c" in joined:
+            if "find ." in joined:
+                return _done(argv, 0, stdout="./apps/api/integration/old.test.ts\n")
+            if "cat package.json" in joined:
+                return _done(argv, 0, stdout='{"name":"fixture","scripts":{"test":"vitest"}}')
+            if "git show" in joined:
+                return _done(argv, 0, stdout="diff --git a/x b/x\n")
+            return _done(argv, 0, stdout="")
+        if "--grep='^tester('" in joined:
+            return _done(argv, 0, stdout="")  # nada reutilizado: autoria REAL
+        if any(m in joined for m in ("npm test", "python3 -m pytest", "vitest")):
+            return _done(argv, 0, stdout="Tests: 1 passed\n")
+        return _done(argv, 0, stdout="deadbeef\n")
+
+    return fake_run
+
+
+def _author_stub(calls, *, content='import request from "supertest";\n'):
+    def stub(inp, ctx, headers, virtual_key, *, error_feedback=""):
+        calls.append({"error_feedback": error_feedback})
+        return [{"tool": "write_file", "path": _SPEC, "content": content},
+                {"tool": "run_tests"}], 0.05
+
+    return stub
+
+
+def _run_turn(monkeypatch, *, scan_results):
+    seen: list = []
+    calls: list = []
+    rows: list[dict] = []
+    resultados = list(scan_results)
+    monkeypatch.setattr(subprocess, "run", _fake_cluster(seen))
+    monkeypatch.setattr(activities, "_model_authored_test_script", _author_stub(calls))
+    monkeypatch.setattr(activities, "audit_emit", lambda **kw: rows.append(kw))
+    monkeypatch.setattr(
+        activities, "_phantom_import_failure",
+        lambda pod_sh, files: resultados.pop(0) if resultados else None,
+    )
+    result = activities._tester_pod_sync(
+        RunTesterTurnInput(work_item_id="wi-ph", tenant_id="t", instruction="cover"),
+        "dse-sbx-wi-ph", None, "vk", False,
+    )
+    return result, seen, calls, rows
+
+
+def _suite_ran(seen):
+    return any(
+        any(isinstance(s, str) and ("npm test" in s or "vitest" in s or "pytest" in s) for s in a)
+        for a, _k in seen
+    )
+
+
+def test_a_surviving_phantom_fails_the_turn_named(monkeypatch):
+    msg = 'PHANTOM IMPORT — health.integration.test.ts imports "supertest", which is NOT a dependency'
+    result, seen, calls, rows = _run_turn(monkeypatch, scan_results=[msg, msg])
+    assert len(calls) == 2, "uma re-autoria, com o feedback nomeado"
+    assert "supertest" in calls[1]["error_feedback"]
+    assert result.tests_passed is False
+    assert result.suite_deferred is False, "import fantasma não é asserção: não defere"
+    assert "supertest" in (result.failure_output or "")
+    assert not _suite_ran(seen), "veredito determinístico já existe: a suíte não roda"
+    assert any(r["action"] == "tester_phantom_import" for r in rows)
+
+
+def test_a_phantom_fixed_by_the_retry_reaches_the_suite(monkeypatch):
+    msg = 'PHANTOM IMPORT — "supertest" is NOT a dependency'
+    result, seen, calls, rows = _run_turn(monkeypatch, scan_results=[msg, None])
+    assert len(calls) == 2
+    assert _suite_ran(seen), "fantasma resolvido: o turno segue normal"
+    assert result.tests_passed is True
