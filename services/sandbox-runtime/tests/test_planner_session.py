@@ -120,7 +120,8 @@ def test_planner_emits_structured_plan_with_hydrated_context(
             # the 'LLM' proposer sees the hydrated context
             assert "AGENTS" in ctx.agents_md
             assert "@payments-team" in ctx.codeowners
-            assert any(s.skill_key == "no-plaintext-secrets" for s in ctx.skills)
+            # Skills fora do serving (2026-08-31): o contexto chega sem elas.
+            assert ctx.skills == []
             return {
                 "steps": ["Add validation to the login"],
                 "expected_files": ["src/auth.py"],

@@ -145,54 +145,9 @@ def test_sh_quote_survives_a_single_quote():
     assert _sh_quote("a'b") == "'a'\\''b'"
 
 
-# ---------------------------------------------------------------------------
-# The two paths must say the SAME thing to the model.
-# ---------------------------------------------------------------------------
-def test_the_skills_note_is_identical_on_both_paths(tmp_path):
-    """A divergence here does not fail anything — it quietly weakens the
-    prompt, which is the hardest kind of bug to notice. The first version of
-    the pod-side reader looked in `.dse/skills` (the directory is
-    `.claude/skills`), dropped each skill's `description:` and lost the header
-    that tells the model the guidance is mandatory. It would simply have found
-    nothing, forever, and no test would have said so.
-
-    This drives a REAL `sh -c` against a real directory, because the whole
-    point is whether the shell loop and the Python reader agree."""
-    from sandbox_runtime.activities import _SKILLS_NOTE_CHARS
-    from sandbox_runtime.skill_files import workspace_skills_note
-
-    for name, desc in [("testing-style", "How this repo writes tests"),
-                       ("tenant-rules", "Tenant conventions")]:
-        d = tmp_path / ".claude" / "skills" / name
-        d.mkdir(parents=True)
-        (d / "SKILL.md").write_text(
-            f"---\nname: {name}\ndescription: {desc}\n---\nbody\n"
-        )
-
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
-
-    def pod_sh(script, *, timeout=None, input_text=None):
-        return subprocess.run(
-            ["sh", "-c", script.replace("cd /workspace &&", f"cd {tmp_path} &&", 1)],
-            capture_output=True, text=True, errors="replace",
-        )
-
-    assert (
-        _pod_tester_context(pod_sh).skills_note.strip()
-        == workspace_skills_note(str(tmp_path))[:_SKILLS_NOTE_CHARS].strip()
-    )
-
-
-def test_a_repo_with_no_skills_adds_nothing_to_the_prompt(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, capture_output=True)
-
-    def pod_sh(script, *, timeout=None, input_text=None):
-        return subprocess.run(
-            ["sh", "-c", script.replace("cd /workspace &&", f"cd {tmp_path} &&", 1)],
-            capture_output=True, text=True, errors="replace",
-        )
-
-    assert _pod_tester_context(pod_sh).skills_note == ""
+# Os testes da nota de skills saíram com o serving (2026-08-31): a nota não
+# existe mais — convenção de repo chega pelo .claude/ do próprio repositório,
+# nativo no substrato agêntico.
 
 
 # ---------------------------------------------------------------------------

@@ -21,13 +21,12 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
 
 _RUNNER_DIR = os.path.join(os.path.dirname(__file__), "..", "agent-runner")
 sys.path.insert(0, os.path.abspath(_RUNNER_DIR))
 
-import sandbox_runtime.activities as acts
-import sandbox_runtime.sessions as sessions
+import sandbox_runtime.activities as acts  # noqa: E402 — depois do sys.path do runner
+import sandbox_runtime.sessions as sessions  # noqa: E402
 
 _ACTIVITIES_SRC = Path(acts.__file__).read_text(encoding="utf-8")
 
@@ -37,7 +36,7 @@ def test_the_planner_context_never_reads_the_registry(monkeypatch):
     def _explode(*a, **k):
         raise AssertionError("o serving do Planner ainda lê o skill_registry")
 
-    monkeypatch.setattr(sessions, "read_approved_skills", _explode)
+    monkeypatch.setattr(sessions, "read_approved_skills", _explode, raising=False)
     ctx = sessions.hydrate_planner_context(
         work_item_id="wi_x", tenant_id="t", repo="acme/app",
         instruction="add a health endpoint",
@@ -77,9 +76,8 @@ def test_the_repo_committed_claude_dir_still_reaches_the_agent():
     """O substituto nativo, pinado: o substrato carrega o `.claude/` do REPO
     (`setting_sources=[\"project\"]`) — convenção de repositório mora no
     repositório, não num registry paralelo da plataforma."""
-    src = Path(sys.modules["sandbox_runtime.substrate"].__file__).read_text(encoding="utf-8")
+    import sandbox_runtime.substrate as _sub
+    src = Path(_sub.__file__).read_text(encoding="utf-8")
     assert 'setting_sources=["project"]' in src
 
 
-# O import de substrate precisa existir para o teste acima
-import sandbox_runtime.substrate  # noqa: E402,F401

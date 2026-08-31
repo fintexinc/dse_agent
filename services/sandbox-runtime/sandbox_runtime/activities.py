@@ -88,11 +88,6 @@ from .runtime_profile import (
     validate_runtime_startup,
 )
 from .scoped_git import GitScopeViolation, ScopedGitSession
-from .skill_files import (
-    materialize_skills,
-    workspace_skills_note,
-    workspace_skills_note_in_pod,
-)
 from .sessions import (
     FreshReviewerSession,
     PlannerContext,
@@ -167,51 +162,13 @@ async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
                 prepare=inp.prepare,
             )
         )
-        # Guidance into the Pod. `provision` returns only after `_bootstrap`, so
-        # the repo is cloned and `.git` exists — which the repo-sovereignty rule
-        # and the local exclude both depend on.
-        #
-        # Best-effort by construction: a skill that fails to land must never
-        # take down a provision that otherwise succeeded. The audit says which
-        # way it went, because the failure mode this replaces was silence — the
-        # Planner reading 21 skills while the Coder worked with none, and
-        # nothing anywhere recording the difference.
-        try:
-            from .skill_files import materialize_skills_in_pod as _materialize_pod
-            from .skill_registry import read_approved_skills as _read_skills
-            _served = _read_skills(inp.tenant_id, repo=inp.repo)
-            if not _served:
-                audit_emit(
-                    actor="system:sandbox-runtime",
-                    action="skills_resolved_empty",
-                    tenant_id=inp.tenant_id,
-                    work_item_id=inp.work_item_id,
-                    details={"repo": inp.repo, "stage": "provision", "runtime": "k8s"},
-                )
-            else:
-                _mat = _materialize_pod(
-                    _served,
-                    run=lambda argv, stdin: driver.run_in_pod(
-                        provisioned.container_id, argv, stdin
-                    ),
-                )
-                audit_emit(
-                    actor="system:sandbox-runtime",
-                    action="skills_materialized" if _mat else "skills_materialization_skipped",
-                    tenant_id=inp.tenant_id,
-                    work_item_id=inp.work_item_id,
-                    details={"skills": _mat, "repo": inp.repo, "runtime": "k8s",
-                             "served": len(_served)},
-                )
-        except Exception as exc:  # noqa: BLE001 — guidance never fails a provision
-            audit_emit(
-                actor="system:sandbox-runtime",
-                action="skills_materialization_skipped",
-                tenant_id=inp.tenant_id,
-                work_item_id=inp.work_item_id,
-                details={"error": f"{type(exc).__name__}: {str(exc)[:200]}",
-                         "repo": inp.repo, "runtime": "k8s"},
-            )
+        # Skills da plataforma saíram do caminho de execução (2026-08-31,
+        # decisão do operador): o substrato claude-agent carrega o `.claude/`
+        # que o PRÓPRIO repositório commita (setting_sources=["project"]) — a
+        # materialização paralela era latência, poluição de contexto entre
+        # clientes (25 skills globais, acme/aviso incluídas) e a origem do
+        # vazamento `.claude/.dse-materialized` na PR. Registry/promoção
+        # seguem dormentes no banco.
     else:
         is_new_checkpoint_repo = not Path(bare_repo_path).exists()
         if is_new_checkpoint_repo:
@@ -242,47 +199,6 @@ async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
             if not cloned:
                 git_checkpoint.init_task_workspace(workspace_dir, bare_repo_path, branch, inp.base_branch)
 
-        # Skills ticked for this repo (console → skill_registry.repo_scope, 0029)
-        # are materialized HERE — after the clone, when the workspace is
-        # guaranteed to be a git repo. Guidance is best-effort at provision time
-        # (the Planner still fails cleanly if the registry goes down — the
-        # mandatory read is its own); any skip is audited (P8).
-        try:
-            from .skill_files import materialize_skills as _materialize
-            from .skill_registry import read_approved_skills as _read_skills
-            _served = _read_skills(inp.tenant_id, repo=inp.repo)
-            if not _served:
-                # Keyed off the REGISTRY READ, not off the materialize result:
-                # an empty _mat with a non-empty _served is the legitimate
-                # "the repo already commits these skills" case, and the
-                # "workspace has no .git yet" no-op. Only an empty READ means
-                # the agent is running with no guidance at all — which is the
-                # state this whole tenant was silently in, because an empty
-                # list is a perfectly valid return and nothing said so.
-                audit_emit(
-                    actor="system:sandbox-runtime",
-                    action="skills_resolved_empty",
-                    tenant_id=inp.tenant_id,
-                    work_item_id=inp.work_item_id,
-                    details={"repo": inp.repo, "stage": "provision"},
-                )
-            _mat = _materialize(workspace_dir, _served)
-            if _mat:
-                audit_emit(
-                    actor="system:sandbox-runtime",
-                    action="skills_materialized",
-                    tenant_id=inp.tenant_id,
-                    work_item_id=inp.work_item_id,
-                    details={"skills": _mat, "repo": inp.repo},
-                )
-        except Exception as exc:  # noqa: BLE001 — guidance never brings down the provision
-            audit_emit(
-                actor="system:sandbox-runtime",
-                action="skills_materialization_skipped",
-                tenant_id=inp.tenant_id,
-                work_item_id=inp.work_item_id,
-                details={"reason": f"{type(exc).__name__}: {str(exc)[:200]}"},
-            )
 
         provisioned = docker_driver.provision_container(
             work_item_id=inp.work_item_id,
@@ -786,21 +702,21 @@ async def _run_coder_turn_impl(
         agent.driver, "workspace_is_host_visible", True
     )
 
-    # Repo skills (console ticks materialized at provision + skills committed in
-    # the target repo): ClaudeAgentSubstrate loads them via
-    # setting_sources=["project"]; the note covers the other substrates. The
-    # note is read WHERE THE WORKSPACE IS: on K8s that is the Pod volume — the
-    # host read below sees a directory that does not exist on the worker and
-    # shipped "" on every production Coder turn, while the Tester (whose note is
-    # built by a command run inside the Pod) listed the same skills (H3).
-    if pod_git:
-        run_in_pod = getattr(agent.driver, "run_in_pod", None)
-        if run_in_pod is not None:
-            inp.instruction += workspace_skills_note_in_pod(
-                lambda argv, stdin: run_in_pod(agent.sandbox_id, argv, stdin)
-            )
-    else:
-        inp.instruction += workspace_skills_note(workspace_dir)
+    # Contexto por LEITURA, não por injeção (2026-08-31): o agente tem
+    # Read/Grep e o workspace inteiro — a instrução manda ler as fontes de
+    # convenção que duas rodadas medidas provaram decisivas (supertest 2x: a
+    # regra estava no AGENTS.md e nos vizinhos, e o modelo nunca os viu). O
+    # `.claude/` que o REPO commita chega nativamente pelo substrato
+    # (setting_sources=["project"]); a nota de skills da plataforma saiu junto
+    # com a materialização.
+    inp.instruction += (
+        "\n\nBefore writing any code: read AGENTS.md at the repository root "
+        "(if present) and the nearest neighbours of every file you are about "
+        "to create or change (same directory first). Repository conventions "
+        "OVERRIDE ecosystem defaults — imitate the neighbours' style, runner "
+        "and helpers. Never import a package that is not already a dependency "
+        "of the workspace you are editing."
+    )
     if pod_git:
         # K8s runtime: the workspace lives in the Pod volume — the turn's start
         # sha comes from a no-op checkpoint INSIDE the sandbox.
@@ -1882,25 +1798,8 @@ async def _run_planner_turn_impl(
                 "reason": context_telemetry["repo_doc_unavailable_reason"],
             },
         )
-    if not ctx.skills:
-        # The emptiness was already ON the ledger — planner_turn_completed
-        # carries skills_hydrated=[] — but buried in a details field, so it
-        # could not be found with `WHERE action = …`. This makes the symmetric
-        # provision-stage fact queryable at the Planner too.
-        audit_emit(
-            actor="system:sandbox-runtime",
-            action="skills_resolved_empty",
-            tenant_id=inp.tenant_id,
-            work_item_id=inp.work_item_id,
-            details={"repo": inp.repo, "stage": "planner", "task_class": inp.task_class},
-        )
-
-    # File-based skills (`.claude/skills/`) are materialized by
-    # provision_sandbox (after the clone — the Planner may run BEFORE the
-    # provision, with the workspace not yet existing here). This re-materialize
-    # is a no-op in that case (the `.git` guard in skill_files) and refreshes the
-    # workspace when the registry changed between retries.
-    skills_materialized = materialize_skills(workspace_dir, ctx.skills)
+    # Skills da plataforma fora do serving (2026-08-31): sem leitura do
+    # registry, sem materialização — ver o cabeçalho da provisão.
 
     # Read-only session: any write step in the exploration_script FAILS here
     # (the planner toolset), which is exactly the conformance test.
@@ -2055,7 +1954,6 @@ async def _run_planner_turn_impl(
             # carry that, by name. It used to record 21 while 16 reached the
             # model, and the console had no way to know.
             "skills_hydrated": [s.skill_key for s in ctx.skills],
-            "skills_materialized": skills_materialized,
             "retrieval_hits": [f"{h.repo}/{h.path}" for h in ctx.retrieval_hits],
             "virtual_key_fixture": vk.fixture,
             **context_telemetry,
@@ -2327,17 +2225,9 @@ class _TesterContext(NamedTuple):
     example_test: str
     existing_tests: set[str]
     diff: str
-    skills_note: str
     #: The local copy of the repository, when one exists. `None` on K8s, where
     #: the repository lives only in the Pod.
     workspace_dir: str | None = None
-    #: Spec de referência declarada pelas SKILLS do repo
-    #: (.claude/skills/*/references/*.spec.*) — CONTEÚDO, não caminho. A nota
-    #: de skills lista arquivos e manda "ler", mas a autoria é one-shot sem
-    #: tools: instrução de leitura para ator sem leitura é prompt vazio.
-    #: Medido 3x (badge 'warning', pageSize, sortField): a resposta estava no
-    #: Pod e o modelo nunca a viu. Vazio quando o repo não declara referência.
-    reference_spec: str = ""
 
 
 def _pod_tester_context(pod_sh) -> _TesterContext:
@@ -2435,35 +2325,6 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
     # the --stat summary. The two paths must show the model the same thing.
     diff = _read("git show --stat -p HEAD | tail -c $((%d))" % _TESTER_DIFF_CHARS,
                  _TESTER_DIFF_CHARS)
-    # Same shape as `workspace_skills_note` on the Docker path, down to the
-    # header: the directory is `.claude/skills`, each entry names the SKILL.md
-    # and carries its `description:` line, and the framing tells the model the
-    # guidance is mandatory. Getting any of that wrong does not fail — it
-    # quietly weakens the prompt, which is the hardest kind of bug to notice.
-    skills = _read(
-        'for d in .claude/skills/*/; do [ -f "$d/SKILL.md" ] || continue; '
-        'desc=$(grep -m1 "^description:" "$d/SKILL.md" | cut -d: -f2- | '
-        "sed 's/^ *//'); n=$(basename \"$d\"); "
-        'echo "- .claude/skills/$n/SKILL.md — ${desc:-$n}"; done',
-        _SKILLS_NOTE_CHARS,
-    )
-    skills_note = (
-        "\n\n## Repository skills (MANDATORY guidance)\n"
-        "Before writing code, read each SKILL.md below and follow its rules:\n"
-        + skills.rstrip("\n")
-        if skills.strip()
-        else ""
-    )
-    # A referência declarada pelo REPO nas suas skills — CONTEÚDO inline, não
-    # caminho: a autoria é one-shot sem tools e não pode "ler" nada (a doença
-    # medida 3x: badge 'warning', pageSize, sortField — a forma completa da
-    # store estava em angular-testbed/references/ e o modelo nunca a viu).
-    # Primeiro match por ordem de glob; sem classificador — o repo declara.
-    reference_spec = _read(
-        'for f in .claude/skills/*/references/*.spec.*; do '
-        '[ -f "$f" ] && { echo "// $f"; cat "$f"; break; }; done',
-        _REFERENCE_SPEC_CHARS,
-    )
     # `workspace_dir` fica None aqui — no K8s o repositório vive só no Pod, e o
     # worker não tem onde rodar `git`. Isso era uma limitação enquanto havia
     # oráculo de autoria a consultar; desde 2026-08-10 não há posse de teste a
@@ -2473,8 +2334,6 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         example_test=example or "(no existing tests — use the ecosystem's default runner)",
         existing_tests=existing,
         diff=diff,
-        skills_note=skills_note,
-        reference_spec=reference_spec,
     )
 
 
@@ -2499,26 +2358,12 @@ def _local_tester_context(workspace_dir: str) -> _TesterContext:
     package_json, example_test, existing_tests = _tester_repo_context(
         workspace_dir, diff_files=changed
     )
-    # Espelho do read de referência do caminho K8s ("the two paths must show
-    # the model the same thing").
-    reference_spec = ""
-    try:
-        import glob as _glob
-        for f in sorted(_glob.glob(os.path.join(workspace_dir, ".claude/skills/*/references/*.spec.*"))):
-            with open(f, encoding="utf-8", errors="replace") as fh:
-                rel = os.path.relpath(f, workspace_dir)
-                reference_spec = f"// {rel}\n" + fh.read()[:_REFERENCE_SPEC_CHARS]
-            break
-    except OSError:
-        pass
     return _TesterContext(
         package_json=package_json,
         example_test=example_test,
         existing_tests=existing_tests,
         diff=diff,
-        skills_note=workspace_skills_note(workspace_dir)[:_SKILLS_NOTE_CHARS],
         workspace_dir=workspace_dir,
-        reference_spec=reference_spec,
     )
 
 
@@ -2560,19 +2405,6 @@ def _model_authored_test_script(
             f"\n## ERROR FROM THE PREVIOUS ATTEMPT (fix it!)\n{error_feedback}\n" if error_feedback else ""
         ),
     )
-    # Repo skills (materialized by the Planner + committed in the target repo):
-    # the Tester must follow the guidance too (test style, tenant conventions).
-    prompt += ctx.skills_note
-    # A referência das skills vai INLINE — este é um one-shot sem tools: um
-    # caminho listado é ilegível por construção, e foi assim que o mock saiu
-    # sem `pagination`/`tableSorting` três runs seguidos com a resposta
-    # committada no repo.
-    if getattr(ctx, "reference_spec", ""):
-        prompt += (
-            "\n\n## Known-good reference spec for THIS repo (declared by its "
-            "skills) — mirror its TestBed/store setup exactly:\n"
-            + ctx.reference_spec
-        )
     # DUAS tentativas, não uma (wi_95a54cb4, rc.101): o JSON do modelo veio
     # cortado no meio de uma string, o parse falhou, e `None` aqui virou
     # `tests_ran=false` → item TERMINAL, com o turno de Coder já pago. O

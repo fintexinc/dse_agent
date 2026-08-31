@@ -26,7 +26,7 @@ from dse_contracts import L2Verdict, PlanArtifact
 from dse_contracts.paths import file_matches_glob, first_forbidden_match
 
 from .retrieval import RetrievalHit, RetrievalService, render_untrusted_context
-from .skill_registry import Skill, read_approved_skills
+from .skill_registry import Skill
 from .toolsets import ReviewerToolset, Toolset, ToolInvocation
 
 
@@ -216,9 +216,13 @@ def hydrate_planner_context(
     two on the ledger — see `_repo_docs_for_planner`."""
     agents_md = agents_md or ""
     codeowners = codeowners or ""
-    # Per-repo checkboxes from the console (repo_scope, migration 0029): the
-    # Planner only sees skills that are global or ticked for THIS repo.
-    skills = read_approved_skills(tenant_id, task_class=task_class, repo=repo or None, conn=skills_conn)
+    # Skills da plataforma fora do serving (2026-08-31, decisão do operador):
+    # eram 25, todas globais, incluindo convenções de OUTROS clientes — ruído
+    # e risco de sangria. Convenção de repo mora no REPO (.claude/ committado,
+    # que o substrato agêntico carrega nativamente). Registry/promoção seguem
+    # dormentes; `skills_conn`/`task_class` ficam na assinatura para não
+    # quebrar chamadores.
+    skills: list[Skill] = []
 
     hits: list[RetrievalHit] = []
     repo_map = ""

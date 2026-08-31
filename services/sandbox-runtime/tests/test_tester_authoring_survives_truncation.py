@@ -39,7 +39,6 @@ def _ctx():
     return activities._TesterContext(
         package_json="(no package.json — likely Python/pytest)",
         example_test="", existing_tests=set(), diff="+ new endpoint",
-        skills_note="", reference_spec="",
     )
 
 

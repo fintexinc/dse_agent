@@ -574,9 +574,9 @@ def test_coverage_reaches_the_ledger(work_item_id, monkeypatch):
     assert details["tree_mode"] == "expanded"
     assert "tests" in details["tree_dirs_expanded"]
     assert details["planner_model_calls"] == 2
-    # A2: and the skills tell the truth about delivery, not just resolution.
+    # A2: skills fora do serving (2026-08-31) — hidratação vazia por desenho.
     assert details["skills_dropped"] == []
-    assert len(details["skills_delivered"]) == len(details["skills_hydrated"]) == 21
+    assert details["skills_delivered"] == details["skills_hydrated"] == []
     assert not _details(rows, "planner_tree_degraded")
     assert not _details(rows, "planner_context_truncated")
 
@@ -598,20 +598,9 @@ def test_a_degraded_tree_is_a_queryable_action(work_item_id, monkeypatch):
     assert _details(rows, "planner_turn_completed")[0]["tree_mode"] == "prefix_fallback"
 
 
-@pytest.mark.usefixtures("state_dir")
-def test_a_dropped_skill_is_a_queryable_action(work_item_id, monkeypatch):
-    chat = _Chat(plan={"steps": ["s"], "expected_files": ["a.py"], "test_plan": "t"})
-    fat = [Skill(tenant_id="fintex-poc", skill_key=f"skill-{i:02d}", title="t" * 900,
-                 body="b", category="engineering", applies_to=["default"]) for i in range(40)]
-
-    _plan, rows = _run_planner(monkeypatch, work_item_id, tree=["a.py"], chat=chat, skills=fat)
-
-    truncated = _details(rows, "planner_context_truncated")
-    assert len(truncated) == 1
-    assert truncated[0]["skills_resolved"] == 40
-    assert truncated[0]["skills_dropped"]
-    assert len(truncated[0]["skills_delivered"]) + len(truncated[0]["skills_dropped"]) == 40
-    assert truncated[0]["context_chars"] <= truncated[0]["context_budget_chars"]
+# test_a_dropped_skill_is_a_queryable_action saiu com o serving de skills
+# (2026-08-31): sem hidratação, a evicção de skill é inalcançável; o
+# truncamento de contexto segue pinado pelo teste do diretório que não coube.
 
 
 def test_the_escape_hatch_is_in_the_declared_schema_not_only_in_the_prose():
