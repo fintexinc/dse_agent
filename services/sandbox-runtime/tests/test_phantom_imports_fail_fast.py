@@ -28,7 +28,7 @@ def _real_pod(root):
     def pod_sh(script, *, timeout=None, input_text=None):
         return subprocess.run(
             ["sh", "-c", script.replace("cd /workspace &&", f"cd {root} &&", 1)],
-            capture_output=True, text=True, errors="replace",
+            capture_output=True, text=True, errors="replace", input=input_text,
         )
     return pod_sh
 

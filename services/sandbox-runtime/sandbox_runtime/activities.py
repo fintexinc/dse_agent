@@ -2178,6 +2178,24 @@ def _tester_repo_context(
         pkg = open(os.path.join(workspace_dir, "package.json")).read()[:1500]
     except OSError:
         pkg = "(no package.json — likely Python/pytest)"
+    # Espelho do caminho K8s: num monorepo, o package.json que manda é o do
+    # WORKSPACE que a mudança toca — o da raiz não lista as deps dele.
+    if diff_files:
+        d = os.path.dirname(os.path.join(workspace_dir, diff_files[0]))
+        raiz = os.path.abspath(workspace_dir)
+        while os.path.abspath(d).startswith(raiz) and os.path.abspath(d) != raiz:
+            candidato = os.path.join(d, "package.json")
+            if os.path.isfile(candidato):
+                try:
+                    corpo = open(candidato, encoding="utf-8", errors="replace").read()[:1500]
+                    rel = os.path.relpath(candidato, workspace_dir)
+                    pkg = (f"# {rel} (the workspace THIS change touches — its "
+                           f"dependencies are the law)\n{corpo}\n\n"
+                           f"# package.json (repository root)\n{pkg[:600]}")
+                except OSError:
+                    pass
+                break
+            d = os.path.dirname(d)
     existing: set[str] = set()
     for root, _dirs, files in os.walk(workspace_dir):
         if "/.git" in root or "/node_modules" in root:
@@ -2187,15 +2205,17 @@ def _tester_repo_context(
             if is_test_path(rel):
                 existing.add(rel)
 
-    example = ""
+    exemplos: list[str] = []
     for rel in _example_candidates(existing, diff_files or []):
         try:
             with open(os.path.join(workspace_dir, rel), encoding="utf-8",
                       errors="replace") as fh:
-                example = f"# {rel}\n" + fh.read()[:3000]
-            break
+                exemplos.append(f"# {rel}\n" + fh.read()[:3000])
+            if len(exemplos) == 2:
+                break
         except OSError:
             continue
+    example = "\n\n".join(exemplos)
     return pkg, example or "(no existing tests — use the ecosystem's default runner)", existing
 
 
@@ -2230,6 +2250,111 @@ class _TesterContext(NamedTuple):
     workspace_dir: str | None = None
 
 
+_PHANTOM_SCAN_SOURCE = r"""
+import json, os, re, sys
+
+BUILTINS = {
+    "assert","async_hooks","buffer","child_process","cluster","console",
+    "constants","crypto","dgram","diagnostics_channel","dns","domain","events",
+    "fs","http","http2","https","inspector","module","net","os","path",
+    "perf_hooks","process","punycode","querystring","readline","repl","stream",
+    "string_decoder","timers","tls","trace_events","tty","url","util","v8",
+    "vm","wasi","worker_threads","zlib","test",
+}
+IMPORT_RE = re.compile(
+    r'(?:from\s+|import\s+|require\(\s*|import\(\s*)["\']([^"\']+)["\']'
+)
+
+def deps_for(path):
+    nomes = set()
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    raiz = os.path.abspath(".")
+    vistos = []
+    while True:
+        pj = os.path.join(d, "package.json")
+        if os.path.isfile(pj):
+            vistos.append(os.path.relpath(pj))
+            try:
+                data = json.load(open(pj))
+                for k in ("dependencies","devDependencies","peerDependencies","optionalDependencies"):
+                    nomes.update((data.get(k) or {}).keys())
+            except Exception:
+                pass
+        if os.path.abspath(d) == raiz:
+            break
+        d = os.path.dirname(os.path.abspath(d))
+        if not os.path.abspath(d).startswith(raiz):
+            break
+    return nomes, vistos
+
+achados = []
+for arquivo in sys.argv[1:]:
+    if not arquivo.endswith((".ts",".tsx",".js",".jsx",".mts",".cts",".mjs",".cjs")):
+        continue
+    try:
+        corpo = open(arquivo, encoding="utf-8", errors="replace").read()
+    except OSError:
+        continue
+    nomes, vistos = deps_for(arquivo)
+    for m in IMPORT_RE.finditer(corpo):
+        alvo = m.group(1)
+        if alvo.startswith((".","/")):
+            continue
+        if alvo.startswith("node:"):
+            alvo = alvo[5:]
+        pacote = "/".join(alvo.split("/")[:2]) if alvo.startswith("@") else alvo.split("/")[0]
+        if pacote in BUILTINS or pacote in nomes:
+            continue
+        achados.append({"file": arquivo, "package": pacote, "package_jsons": vistos})
+print(json.dumps(achados))
+"""
+
+
+def _phantom_import_failure(pod_sh, files: list[str]) -> str | None:
+    """Freio determinístico contra a classe que custou US$ 20 em dois dias:
+    import de pacote que NÃO é dependência do workspace (supertest, rodadas 5
+    e 7 do glide-path). A regra em prompt perdeu duas vezes para o prior do
+    ecossistema; um scan de segundos ANTES de typecheck/suite não perde.
+
+    JS/TS apenas (v1) — sobre o que o freio não sabe ler, ele não inventa
+    veredito. Qualquer falha do scanner degrada para None: freio quebrado não
+    pode virar falso positivo num turno pago."""
+    import shlex as _shlex
+
+    js = [f for f in files if f.endswith((".ts", ".tsx", ".js", ".jsx",
+                                          ".mts", ".cts", ".mjs", ".cjs"))]
+    if not js:
+        return None
+    argv = " ".join(_shlex.quote(f) for f in js)
+    try:
+        proc = pod_sh(
+            f"cd /workspace && python3 - {argv}",
+            input_text=_PHANTOM_SCAN_SOURCE,
+        )
+        if proc.returncode != 0 or not (proc.stdout or "").strip():
+            return None
+        achados = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except Exception:  # noqa: BLE001 — ver docstring
+        return None
+    if not achados:
+        return None
+    linhas = []
+    for a in achados[:5]:
+        pjs = ", ".join(a.get("package_jsons") or []) or "package.json"
+        linhas.append(
+            f"- {a['file']} imports \"{a['package']}\", which is NOT a "
+            f"dependency of this repository (checked: {pjs})"
+        )
+    return (
+        "PHANTOM IMPORT — the file(s) you wrote import packages that are not "
+        "dependencies, so their types can never resolve and no edit to the "
+        "test logic will fix it:\n" + "\n".join(linhas)
+        + "\nUse ONLY packages listed in the package.json shown, and imitate "
+        "the neighbouring tests' style and helpers."
+    )
+
+
+
 def _pod_tester_context(pod_sh) -> _TesterContext:
     """Reads the authoring context out of the sandbox Pod, one bounded command
     at a time. Nothing is copied, so nothing can overrun a disk or a heap.
@@ -2262,9 +2387,33 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         # A trailing U+FFFD is the byte cut, not repository content.
         return (proc.stdout or "").rstrip("\ufffd")
 
+    # O diff primeiro: ele decide QUAL workspace a mudança toca — e portanto
+    # qual package.json a regra "não importe o que não está nas deps" deve
+    # apontar. Medido no glide-path (supertest 2x): o da raiz não lista as
+    # deps do apps/api, e a regra apontava para o arquivo errado.
+    changed = [
+        ln.strip() for ln in
+        _read("git show --name-only --pretty=format: HEAD", 4000).splitlines()
+        if ln.strip()
+    ]
     package_json = _read("cat package.json", _PKG_JSON_CHARS) or (
         "(no package.json — likely Python/pytest)"
     )
+    if changed:
+        perto = _read(
+            'd=$(dirname -- ' + "%s" % _sh_quote(changed[0]) + '); '
+            'while [ -n "$d" ] && [ "$d" != "." ] && [ "$d" != "/" ]; do '
+            '[ -f "$d/package.json" ] && { echo "$d/package.json"; break; }; '
+            'd=$(dirname -- "$d"); done', 300,
+        ).strip()
+        if perto and perto != "package.json":
+            corpo = _read(f"cat -- {_sh_quote(perto)}", _PKG_JSON_CHARS)
+            if corpo.strip():
+                package_json = (
+                    f"# {perto} (the workspace THIS change touches — its "
+                    f"dependencies are the law)\n{corpo}\n\n"
+                    f"# package.json (repository root)\n{package_json[:600]}"
+                )
     # `-prune` stops find BEFORE it descends into the trees nobody reads; on an
     # Angular install that is the difference between listing a handful of paths
     # and walking 40k. The `grep` is a coarse pre-filter, and it is a strict
@@ -2301,22 +2450,23 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
     # o exemplo ensina fixtures/mocks/imports e só ensina o certo se vier do
     # subsistema que a mudança tocou (o alfabético entregava um subsistema
     # aleatório, origem provável dos testes que não compilam).
-    changed = [
-        ln.strip() for ln in
-        _read("git show --name-only --pretty=format: HEAD", 4000).splitlines()
-        if ln.strip()
-    ]
     # `--` because `-` sorts before every other path character: a repository
     # file called `-e.test.js` would otherwise reach `cat` as an OPTION, return
     # rc 0 with empty output, and the prompt would say "no existing tests" while
     # listing those same tests as forbidden. And more than one candidate,
     # because the old local reader fell through to the next file when one could
     # not be read.
-    for candidate in _example_candidates(existing, changed)[:3]:
+    # ATÉ DOIS vizinhos, não um: o exemplo positivo é o que vence o prior do
+    # ecossistema, e um segundo arquivo do mesmo subsistema confirma que a
+    # convenção é regra, não acidente (supertest 2x com a resposta do lado).
+    exemplos: list[str] = []
+    for candidate in _example_candidates(existing, changed)[:4]:
         body = _read(f"cat -- {_sh_quote(candidate)}", _EXAMPLE_TEST_CHARS)
         if body.strip():
-            example = f"# {candidate}\n{body}"
-            break
+            exemplos.append(f"# {candidate}\n{body}")
+            if len(exemplos) == 2:
+                break
+    example = "\n\n".join(exemplos)
     # The diff is read IN THE POD, which is where the repository is. Running it
     # against a local copy is what broke when the copy stopped carrying .git:
     # `git show` exits 128 and the prompt silently reads "(diff unavailable)".
