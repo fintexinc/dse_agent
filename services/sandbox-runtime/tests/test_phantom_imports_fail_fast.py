@@ -151,8 +151,10 @@ def _run_turn(monkeypatch, *, scan_results):
 
 
 def _suite_ran(seen):
+    # "pytest" solto casaria o `.pytest_cache` do find do CONTEXTO; suíte de
+    # verdade é a invocação do runner, não uma substring de exclusão.
     return any(
-        any(isinstance(s, str) and ("npm test" in s or "vitest" in s or "pytest" in s) for s in a)
+        any(isinstance(s, str) and ("npm test" in s or "python3 -m pytest" in s) for s in a)
         for a, _k in seen
     )
 

@@ -2206,11 +2206,18 @@ def _tester_repo_context(
                 existing.add(rel)
 
     exemplos: list[str] = []
+    primeiro_dir: str | None = None
     for rel in _example_candidates(existing, diff_files or []):
+        # O segundo SÓ se for vizinho do primeiro (mesmo diretório): exemplo de
+        # outro subsistema ensina fixture errada, que é o bug que o ranking
+        # de proximidade existe para impedir.
+        if primeiro_dir is not None and os.path.dirname(rel) != primeiro_dir:
+            continue
         try:
             with open(os.path.join(workspace_dir, rel), encoding="utf-8",
                       errors="replace") as fh:
                 exemplos.append(f"# {rel}\n" + fh.read()[:3000])
+            primeiro_dir = os.path.dirname(rel)
             if len(exemplos) == 2:
                 break
         except OSError:
@@ -2459,11 +2466,18 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
     # ATÉ DOIS vizinhos, não um: o exemplo positivo é o que vence o prior do
     # ecossistema, e um segundo arquivo do mesmo subsistema confirma que a
     # convenção é regra, não acidente (supertest 2x com a resposta do lado).
+    # O segundo SÓ se for do MESMO diretório do primeiro: um "exemplo" de outro
+    # subsistema ensina as fixtures erradas — a lição do ranking de proximidade
+    # desfeita pela porta dos fundos.
     exemplos: list[str] = []
+    primeiro_dir: str | None = None
     for candidate in _example_candidates(existing, changed)[:4]:
+        if primeiro_dir is not None and os.path.dirname(candidate) != primeiro_dir:
+            continue
         body = _read(f"cat -- {_sh_quote(candidate)}", _EXAMPLE_TEST_CHARS)
         if body.strip():
             exemplos.append(f"# {candidate}\n{body}")
+            primeiro_dir = os.path.dirname(candidate)
             if len(exemplos) == 2:
                 break
     example = "\n\n".join(exemplos)
@@ -3333,6 +3347,47 @@ def _tester_pod_sync(
             else:
                 logger.warning("tester k8s: failed writing %s into the Pod: %.200s", path, (w.stderr or "")[:200])
 
+    # ---- Freio de import fantasma ----------------------------------------
+    # Rodadas 5 e 7 do glide-path: `supertest` importado sem ser dependência,
+    # o tipo nunca resolve, e ~US$ 20 de turnos pagos morrem tentando "consertar"
+    # um módulo ausente. A proibição em prompt perdeu duas vezes para o prior do
+    # ecossistema; o scan determinístico de segundos não perde. Só os arquivos
+    # que ESTE turno escreveu — sobre alvo reutilizado quem age é a porta 5,
+    # com a saída do runner na mão.
+    phantom_msg = _phantom_import_failure(_pod_sh, test_files) if authored_new else None
+    if phantom_msg:
+        retry_feedback = (
+            f"{phantom_msg}\nRewrite EXACTLY these files, at these exact paths: "
+            + ", ".join(test_files)
+        )
+        # `ctx` existe sempre que authored_new: é a leitura que alimentou a autoria.
+        retry_script, retry_cost = _model_authored_test_script(
+            inp, ctx, headers, virtual_key, error_feedback=retry_feedback
+        )
+        authoring_cost_usd += retry_cost
+        for s in (retry_script or []):
+            if s.get("tool") != "write_file":
+                continue
+            path, content = str(s.get("path") or ""), str(s.get("content") or "")
+            # Mesmo filtro determinístico da porta 5: só os caminhos deste
+            # turno — arquivo novo aqui seria o alvo móvel de volta.
+            if path not in test_files or not content:
+                continue
+            _pod_sh(
+                f'cd /workspace && cat > {_shlex.quote(path)}',
+                input_text=content,
+            )
+        ainda = _phantom_import_failure(_pod_sh, test_files)
+        audit_emit(
+            actor="system:sandbox-runtime",
+            action="tester_phantom_import",
+            tenant_id=inp.tenant_id,
+            work_item_id=inp.work_item_id,
+            details={"files": test_files, "message": phantom_msg[:800],
+                     "resolved": ainda is None, "cost_usd": retry_cost},
+        )
+        phantom_msg = ainda
+
     # ---- Como se roda a suíte DESTE repositório --------------------------
     # Vinha de uma escada de quatro degraus (npm → mvnw → mvn → pytest). Go,
     # Ruby, .NET, Rust, PHP e Elixir caíam todos no último, e um `pytest` que
@@ -3423,7 +3478,15 @@ def _tester_pod_sync(
     # nunca a das specs), e ausência declarada não vira veredito: repo sem
     # manifesto ou sem `typecheck` segue exatamente como antes.
     typecheck_output = ""
-    tc_cmd, tc_timeout = _pod_manifest_typecheck(manifest)
+    if phantom_msg:
+        # O veredito determinístico já existe e nomeia o pacote; rodar a suíte
+        # trocaria a mensagem acionável por um erro de resolução do runner.
+        run = _sp.CompletedProcess(
+            args=["phantom-import-scan"], returncode=1, stdout=phantom_msg, stderr=""
+        )
+        tc_cmd = None
+    else:
+        tc_cmd, tc_timeout = _pod_manifest_typecheck(manifest)
     if tc_cmd:
         # A instalação vem ANTES, e não é detalhe. Sem dependência, `npx tsc`
         # não acha o compilador local, BAIXA um pacote homônimo do npm
@@ -3441,7 +3504,7 @@ def _tester_pod_sync(
         # Falha-rápido: uma suíte inteira depois de um erro de tipo custa
         # minutos para dizer o que o compilador já disse em segundos.
         run = tc
-    else:
+    elif not phantom_msg:
         run = _run_suite()
 
     # ---- Porta 5: o alvo fixo vale apenas para alvo que produz VEREDITO ----
@@ -3540,7 +3603,10 @@ def _tester_pod_sync(
     # é deferível (o deferral cobre só `tests_failed`, o desacordo entre teste e
     # código que o L1 re-julga sobre o estado commitado).
     outcome = (
-        "typecheck_failed" if typecheck_output
+        # Fantasma não é asserção em desacordo: deferir mandaria ao L1 um
+        # import que nenhuma edição de código conserta.
+        "phantom_import" if phantom_msg
+        else "typecheck_failed" if typecheck_output
         else _suite_outcome(tests_ran=tests_ran, returncode=returncode)
     )
     # Deferral covers ONLY a plain test failure — the tests disagreeing with the
