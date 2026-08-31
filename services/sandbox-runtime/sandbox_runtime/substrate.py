@@ -267,7 +267,7 @@ class ClaudeAgentSubstrate:
     remains deterministic in the Activity (`ScopedGitSession`), identical to the
     OpenHands substrate. `setting_sources=["project"]` loads ONLY the workspace's
     `.claude/` (skills ticked in the console + skills committed in the target
-    repo — see skill_files.py); the HOST user's settings/skills stay out (the
+    repo, nativamente via setting_sources); the HOST user's settings/skills stay out (the
     session is hermetic with respect to the host).
 
     NOT exercised through a full turn in this suite (the same limitation declared
