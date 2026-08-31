@@ -576,7 +576,12 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         script = (
             "set -eu; "
             "(apt-get update >/dev/null 2>&1 && "
+            # `ca-certificates` POR NOME: é só Recommends do git, e o
+            # --no-install-recommends (de propósito) o deixava fora — em
+            # bookworm-slim o clone https morria com "CAfile: none"
+            # (wi_b95a1d0b). Temurin/alpine passavam por sorte de imagem.
             "apt-get install -y --no-install-recommends git jq openssh-client "
+            "ca-certificates "
             ">/dev/null 2>&1) || "
             "apk add --no-cache git jq openssh-client >/dev/null 2>&1 || true; "
             # depois do install: no modo token o git_env chama `git config`

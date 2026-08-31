@@ -30,7 +30,7 @@ def test_the_apt_recipe_installs_the_ca_bundle():
         "preview-wi", _LABELS, _cfg(),
         repo="acme/svc", branch="dse/wi", kind="deployable",
     )
-    apt = next(l for l in d.splitlines() if "apt-get install" in l)
+    apt = next(linha for linha in d.splitlines() if "apt-get install" in linha)
     assert "ca-certificates" in apt, (
         "slim sem bundle de CA: o clone https morre com CAfile: none"
     )
