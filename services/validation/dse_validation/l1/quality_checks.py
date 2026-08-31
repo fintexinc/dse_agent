@@ -441,7 +441,15 @@ def lint_check(
     # block is the clock that was validated against the activity's budget, and
     # the number in the message below has to be the one that actually ran.
     timeout = cfg.timeout_for("lint")
-    result = _run(executor, cfg.lint_cmd, timeout)
+    # `lint_subset` + diff conhecido: o comando roda SÓ sobre os arquivos
+    # tocados (~113s → segundos, medido no glide-path). O filtro de saída
+    # abaixo continua — subset muda o custo, nunca o veredito — e escopo
+    # desconhecido (None) mantém o comando cheio: julgar menos por economia
+    # esconderia achado real.
+    cmd = cfg.lint_cmd
+    if cfg.lint_subset_cmd and changed_files is not None and changed_files:
+        cmd = cfg.lint_subset_cmd + sorted(changed_files)
+    result = _run(executor, cmd, timeout)
     # ruff/flake8: 1 line per issue, formatted as "path:line:col: CODE msg".
     # `_output`, não `result.stdout`: ruff e várias ferramentas escrevem o
     # diagnóstico no stderr quando o stdout está tomado, e ler um stream só é
@@ -463,7 +471,7 @@ def lint_check(
     # gate answers a narrower question — did OUR change introduce any?
     passed = (result.ok or changed_files is not None) and len(issue_lines) == 0
     if result.timed_out:
-        detail = f"timed out after {timeout}s running {' '.join(cfg.lint_cmd)}"
+        detail = f"timed out after {timeout}s running {' '.join(cmd)}"
         summary = f"timed out after {timeout}s"
         status = GateStatus.ERROR
     elif (infra := _infra_failure(result)) is not None:

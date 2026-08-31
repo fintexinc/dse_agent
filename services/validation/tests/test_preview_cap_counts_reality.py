@@ -163,8 +163,14 @@ def test_the_lru_query_agrees_with_the_count(tenant_id):
     """A raiz do defeito, isolada: as duas consultas têm de enxergar o MESMO
     conjunto. Enquanto uma filtrava TTL e a outra não, a evicção mirava linhas
     que a contagem ignorava."""
-    _linha("wi-conta-viva", tenant_id, "ns-viva", ttl=3600)
-    _linha("wi-conta-expirada", tenant_id, "ns-expirada", ttl=-60)
+    # Ids DERIVADOS do tenant: o dev local roda contra o banco compartilhado, e
+    # um id fixo de rodada anterior vira squatter — o ON CONFLICT do upsert
+    # atualiza a linha VELHA (tenant antigo, que não entra no SET) e a contagem
+    # do tenant novo lê 0. Medido em 2026-08-31, linha de acme-test-6c855c5e.
+    viva = f"wi-conta-viva-{tenant_id[-8:]}"
+    expirada = f"wi-conta-expirada-{tenant_id[-8:]}"
+    _linha(viva, tenant_id, "ns-viva", ttl=3600)
+    _linha(expirada, tenant_id, "ns-expirada", ttl=-60)
 
     contadas = db.count_active_previews(tenant_id)
     candidatas = db.list_oldest_active_previews(tenant_id, limit=10)
@@ -175,4 +181,4 @@ def test_the_lru_query_agrees_with_the_count(tenant_id):
         "Uma linha expirada na lista de evicção consome a vaga sem baixar o "
         "contador — é o defeito aritmético da PR #4"
     )
-    assert all(c["work_item_id"] != "wi-conta-expirada" for c in candidatas)
+    assert all(c["work_item_id"] != expirada for c in candidatas)

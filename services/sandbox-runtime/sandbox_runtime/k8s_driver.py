@@ -115,7 +115,7 @@ class K8sSandboxConfig:
     maven_feed_id: str = os.environ.get("DSE_MAVEN_FEED_ID", "")
     maven_feed_username: str = os.environ.get("MAVEN_FEED_USERNAME", "")
     maven_feed_token: str = os.environ.get("MAVEN_FEED_TOKEN", "")
-    cpu_limit: str = os.environ.get("DSE_SANDBOX_CPU_LIMIT", "1")
+    cpu_limit: str = os.environ.get("DSE_SANDBOX_CPU_LIMIT", "3")
     mem_limit: str = os.environ.get("DSE_SANDBOX_MEM_LIMIT", "2Gi")
     # Local ephemeral storage. A clone + `npm install` fills the /workspace and
     # /tmp emptyDirs — the image sets HOME=/tmp, so the npm cache lands in the
@@ -319,6 +319,10 @@ def _service_sidecars(
         sidecars.append({
             "name": _label_value(f"svc-{name}"),
             "image": decl.image,
+            # Sem isto o k8s aplica a política default por tag — e um sidecar
+            # com tag mutável re-puxa a imagem a cada Pod, pagando registry na
+            # latência de TODA volta.
+            "imagePullPolicy": "IfNotPresent",
             # `Always` num initContainer é o que o torna SIDECAR nativo.
             "restartPolicy": "Always",
             "securityContext": sec,

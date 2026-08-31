@@ -312,8 +312,14 @@ def _exclude_declared_reports(workspace_dir: str) -> None:
 def checkpoint_workspace(req: CheckpointOpRequest) -> CheckpointOpResult:
     try:
         _ensure_safe_directory()
-        _exclude_declared_reports(req.workspace_dir)
         session = ScopedGitSession(workspace_dir=req.workspace_dir, branch=req.branch)
+        if req.phase == "turn-start":
+            # LEITURA, não fase: o único consumidor é o base_sha do turno.
+            # Commitar aqui punha sujeira herdada num commit que nenhum turno
+            # pediu (4º commit/volta, medido) — ela agora fica no working tree
+            # e entra no diff do turno que a encontrar, onde o L1 julga.
+            return CheckpointOpResult(sha=session.current_sha(), phase=req.phase)
+        _exclude_declared_reports(req.workspace_dir)
         session.ensure_identity()
         if session.has_changes():
             session.commit(f"checkpoint({req.phase}): {req.work_item_id}")

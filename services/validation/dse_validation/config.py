@@ -39,7 +39,10 @@ _COMMAND_NAMES = ("lint", "typecheck", "test", "build")
 #: fora de `disabled_stages`. Desligar o conserto sem desligar a acusação não é
 #: um estado que faça sentido, e um quinto veredito é a última coisa de que o
 #: L1 precisa.
-_EXTRA_COMMAND_NAMES = ("test_subset", "lint_fix")
+#: `lint_subset` é o mesmo lint restrito aos arquivos do diff, no molde do
+#: `test_subset`: o L1 anexa os caminhos ao argv e o filtro de saída continua.
+#: Comando, não estágio — subset é otimização de custo, nunca de veredito.
+_EXTRA_COMMAND_NAMES = ("test_subset", "lint_fix", "lint_subset")
 _ALLOWED_COMMAND_NAMES = _COMMAND_NAMES + _EXTRA_COMMAND_NAMES
 # The two scans belong to the platform, not to the repository, but they run in
 # the same activity and therefore spend the same budget. Their timeouts used to
@@ -1096,6 +1099,7 @@ class L1Config:
         install_cmd: list[str] | None = None,
         services_declared: frozenset[str] | set[str] | None = None,
         lint_fix_cmd: list[str] | None = None,
+        lint_subset_cmd: list[str] | None = None,
         junit_reports: str | None = None,
         timeout_seconds: int | None = None,
         timeouts: dict[str, int] | None = None,
@@ -1114,6 +1118,10 @@ class L1Config:
         self.test_subset_cmd = list(test_subset_cmd or [])
         #: Lido pelo LAÇO quando o gate `lint` reprova — nunca por um gate.
         self.lint_fix_cmd = list(lint_fix_cmd or [])
+        #: O lint restrito ao diff. Diferente do par test/test_subset, este é
+        #: lido pelo PRÓPRIO gate `lint`, porque anexar caminho a eslint/ruff é
+        #: seguro — o que não vale para mvn/dotnet/cargo no `test`.
+        self.lint_subset_cmd = list(lint_subset_cmd or [])
         #: Nomes dos serviços que o repo declarou. Consumido pela nota de
         #: honestidade do gate de teste (fase 5 do Tema 1): connection refused
         #: SEM serviço declarado ganha a dica "declare services", em vez de o
@@ -1371,6 +1379,7 @@ class L1Config:
             junit_reports=junit_reports,
             test_subset_cmd=parsed["test_subset"],
             lint_fix_cmd=parsed["lint_fix"],
+            lint_subset_cmd=parsed["lint_subset"],
             lint_cmd=parsed["lint"],
             typecheck_cmd=parsed["typecheck"],
             test_cmd=parsed["test"],

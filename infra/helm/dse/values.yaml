@@ -101,7 +101,10 @@ runtime:
     repository: dse/agent-runner
     tag: "0.1.0"
     digest: ""
-  sandboxCpuLimit: "1"
+  # 3 de 4 vCPU do nó: é TETO, não reserva (request continua baixo) — com "1",
+  # npm ci + tsc + jest disputavam um único core e cada volta pagava minutos
+  # de fila de CPU num nó ocioso.
+  sandboxCpuLimit: "3"
   sandboxMemLimit: "2Gi"
   # `id` do <repository> privado no POM do repo alvo. Vazio = sem feed
   # privado, e o settings.xml do sandbox sai como sempre saiu.
