@@ -15,8 +15,8 @@ Duas chaves fecham isso, e nenhuma delas é adivinhada:
   - `install` (topo do manifesto): o passo de dependência, um por repositório.
     O preview usa a MESMA chave — `preview.install` da rc.105 é dobrada aqui,
     porque dois lugares para "instale as dependências" é a complexidade que o
-    operador mandou remover. Preparo específico do preview cabe em
-    `preview.build`, que já existe e roda no Pod do preview.
+    operador mandou remover. Preparo específico do preview cabe em `prepare`
+    (topo), que o Pod do preview roda antes do install.
   - `commands.test_subset`: a suíte restrita aos arquivos que o Tester acabou
     de escrever. É um comando SEPARADO do `commands.test` de propósito: o
     `--coverage=false` não é um detalhe de sintaxe, é um fato do jest daquele

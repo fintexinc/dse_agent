@@ -7,8 +7,8 @@ complexidade que o operador mandou remover, e a segunda chega sempre
 desatualizada em relação à primeira.
 
 Então `install` sobe para o topo do manifesto, com dois consumidores: o Pod do
-sandbox (Tester) e o Pod do preview. Preparo que só o preview precisa continua
-cabendo em `preview.build`, que já existe e roda lá.
+sandbox (Tester) e o Pod do preview. Preparo que só o preview precisa cabe em
+`prepare` (topo), que o pod do preview roda antes do install.
 
 `preview.install` deixa de ser aceito de propósito: nenhum manifesto vivo o
 declara (a chave nasceu hoje e as PRs de emenda ainda não mergearam), e aceitar

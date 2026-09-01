@@ -146,6 +146,46 @@ If your repository already has a manifest without it, you do not have to write
 the amendment yourself: the DSE opens a PR proposing it the next time it works
 on the repository, and the task it was running carries on meanwhile.
 
+### `preview.ui` / `preview.deployable` — when the repository serves two apps
+
+A monorepo that ships a front end and a back end has **one** `preview` block and
+**two** processes. The DSE classifies each change as `ui` or `deployable` (from
+the paths it touched, front end winning any tie) and then serves whatever the
+single `start` said — which is the other app half the time. Measured: a change
+to a React component brought up the NestJS API, crash-looped for 17 minutes and
+degraded the preview.
+
+Declare a shallow override under the kind, and only the fields that differ:
+
+```json
+"preview": {
+  "image": "node:22-bookworm-slim",
+  "port": 3000,
+  "start": ["sh", "-c", "node apps/api/dist/main.js"],
+  "env": { "DATABASE_URL": "postgres://postgres:$DSE_SERVICE_PASSWORD@localhost:5432/postgres" },
+  "ui": {
+    "port": 8080,
+    "start": ["sh", "-c", "npm run dev -- --host 0.0.0.0 --port 8080 --allowed-hosts \"$DSE_PREVIEW_HOST\""]
+  }
+}
+```
+
+Rules, all of them short:
+
+- Valid kinds: `ui` and `deployable`. Anything else is a named error.
+- A declared field replaces the base one; `env` merges key by key (the override
+  wins a repeated name). Fields you leave out come from the base block.
+- One level only — an override inside an override is refused.
+- `install` stays at the top level: a repository installs its dependencies one
+  way.
+- **Declaring nothing changes nothing.** A repository without overrides gets
+  exactly the manifests it got before this field existed.
+
+`DSE_PREVIEW_HOST` above is the hostname the preview is reachable at, exported
+into the container by the platform. It exists because a declared `start`
+replaces the recipe's own flags, and a Vite dev server (≥ 5.4.12) refuses a Host
+it was not told about — so the command that needs it can pass it on.
+
 ## `commands.lint_fix` — o comando que conserta o que o `lint` reprova
 
 ```json
@@ -231,7 +271,7 @@ runs tests, and the preview Pod. It is memoized per Pod — declaring it costs o
 install per work item, not one per step.
 
 It is not inside `preview`. Preparation that only the preview needs belongs in
-`preview.build`, which already runs there.
+the top-level `prepare`, which the preview pod runs before `install`.
 
 ## `commands.test_subset` — the suite, restricted to given files
 

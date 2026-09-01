@@ -1411,7 +1411,8 @@ class L1Config:
         # dependências no /workspace é o turno do Tester, e o L1 depois
         # reaproveita a mesma árvore (o worktree do baseline chega a fazer
         # symlink dela). O Pod do preview lê a MESMA chave. Preparo que só o
-        # preview precisa continua em `preview.build`.
+        # preview precisa continua em `prepare` (topo) — `preview.build`
+        # nunca existiu: a whitelist do bloco recusa a chave.
         install = _validate_command("install", payload.get("install"))
         junit_reports = _parse_reports(payload, source=source)
         # Os blocos `preview` e `services` passam pela mesma porta AQUI, e não
