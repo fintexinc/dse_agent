@@ -68,7 +68,10 @@ ACTIVITY_TRIGGER_PREVIEW = "trigger_preview"
 # Preview degradado → um agente decide se uma MUDANÇA DE CÓDIGO conserta
 # (decisão de operador, 2026-08-12: o laço fecha sem humano; política —
 # tetos, no-op, gasto — continua determinística no workflow).
-ACTIVITY_TRIAGE_PREVIEW_FAILURE = "triage_preview_failure"
+#: rc.130 — the evidence a human-requested CI fix carries (names, urls, log
+#: tails). The preview triage that lived here (0/8 dispatches ever produced
+#: a `created` preview) is gone with the automatic loop it fed.
+ACTIVITY_FETCH_CI_FAILURE_EVIDENCE = "fetch_ci_failure_evidence"
 # rc.103 — o LLM decide o caminho fundo do link de preview (a plataforma
 # valida e compõe); roda antes do trigger, uma vez por rodada de evidência.
 ACTIVITY_RESOLVE_PREVIEW_DEEP_LINK = "resolve_preview_deep_link"
@@ -744,43 +747,32 @@ class PreviewRef(BaseModel):
     test_guide: dict = Field(default_factory=dict)
 
 
-class TriagePreviewFailureInput(BaseModel):
-    """Preview degradado: o agente recebe o ERRO (as palavras do pod, que a
-    rc.85 passou a capturar em `PreviewRef.detail`) e o CÓDIGO (arquivos-chave
-    lidos na branch da task) e decide se uma mudança de código conserta. A
-    decisão de DESPACHAR o fix — e todos os freios — é do workflow, em código."""
+class FetchCiFailureEvidenceInput(BaseModel):
+    """What a human-requested CI fix needs to hear. Measured on wi_f1f27266:
+    eight paid rounds whose whole instruction was "ci red: fix the pipeline"
+    changed no file — the check names and their messages never crossed."""
 
     work_item_id: str
     tenant_id: str
     repo: str
-    pr_number: int
-    branch: str  # dse/<wi> — a ref onde os arquivos-chave são lidos
-    head_sha: str | None = None
-    detail: str = ""  # PreviewRef.detail do preview degradado
-    kind: str = ""  # "ui" | "deployable" | "" (paths-filter)
-    autofix_round: int = 0  # informacional: rodada que ESTE veredito autoriza
-    autofix_cap: int = 0  # informacional: teto configurado (nota da PR/ledger)
+    ref: str  # head sha (or branch) the checks ran on
+    pr_number: int | None = None
 
 
-class PreviewTriageVerdict(BaseModel):
-    """`fixable=True` autoriza gastar UM turno de Coder com `instruction` —
-    então instruction não pode vir vazia (validador). `fixable=False` significa
-    causa de infra/plataforma: degrada como sempre, sem gastar turno."""
+class CiCheckEvidence(BaseModel):
+    name: str
+    conclusion: str = ""
+    url: str | None = None
+    #: The END of the job's log (bounded), or the check's annotations, or
+    #: nothing — `source` says which, so the instruction never implies more
+    #: than was fetched.
+    log_tail: str = ""
+    source: str = "none"  # "job_log" | "annotations" | "none"
 
+
+class CiFailureEvidence(BaseModel):
     work_item_id: str
-    fixable: bool
-    reason: str = Field(default="", max_length=1000)
-    instruction: str = Field(default="", max_length=4000)
-    cost_usd: float = 0.0
-
-    @model_validator(mode="after")
-    def _fixable_requires_instruction(self) -> "PreviewTriageVerdict":
-        if self.fixable and not self.instruction.strip():
-            raise ValueError(
-                "fixable=True sem instruction: o veredito autoriza um turno de "
-                "Coder e não diz o que fazer nele"
-            )
-        return self
+    checks: list[CiCheckEvidence] = Field(default_factory=list)
 
 
 class RunVisualDiffInput(BaseModel):

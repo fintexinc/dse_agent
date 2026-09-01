@@ -16,6 +16,7 @@ Postgres, como test_ci_wait_replay_guard.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -152,10 +153,31 @@ async def _run(time_skipping_env, gate_script: list[dict[str, Any]],
                       workflows=[WorkItemLifecycleWorkflow],
                       workflow_runner=UnsandboxedWorkflowRunner(),
                       activities=_activities(state, posted, gate_script, gate_calls)):
-        return await time_skipping_env.client.execute_workflow(
+        handle = await time_skipping_env.client.start_workflow(
             WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
             id=work_item_id, task_queue=task_queue,
         )
+        # rc.130: the poll cap PARKS the item for review instead of escalating
+        # it, so the run no longer closes by itself: the human answers once the
+        # item is at the park. Two runner facts shape the loop below — a signal
+        # sent up front is lost at the intake→implementation continue_as_new,
+        # and polling queries starve the time-skipping clock the barrier's own
+        # timers need (250 ms polls left the item `queued` for a minute), so the
+        # clock is advanced EXPLICITLY between looks. A member of a dead group
+        # escalates before ever reaching the park.
+        status = None
+        for _ in range(400):
+            try:
+                status = (await handle.query(WorkItemLifecycleWorkflow.get_state)).get("status")
+            except Exception:  # noqa: BLE001 — a run mid-continue_as_new refuses queries
+                status = None
+            if status in ("review_ready", "escalated", "failed", "done", "blocked", "cancelled"):
+                break
+            await time_skipping_env.sleep(timedelta(minutes=5))
+        if status == "review_ready":
+            await handle.signal("review_comment", {"verdict": "approved"})
+            await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        return await handle.result()
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def test_the_example_comes_from_the_subsystem_the_diff_touched(tmp_path):
     ws = _repo(tmp_path)
-    _pkg, example, existing = _tester_repo_context(
+    _pkg, example, existing, _ci = _tester_repo_context(
         str(ws),
         diff_files=["src/main/java/com/acme/service/AdvisorFeeCalculationService.java"],
     )
@@ -55,6 +55,6 @@ def test_without_a_diff_the_old_behaviour_is_preserved(tmp_path):
     """Sem diff (primeiro turno, chamada antiga) nada quebra: qualquer exemplo
     serve, e a assinatura continua compatível."""
     ws = _repo(tmp_path)
-    _pkg, example, existing = _tester_repo_context(str(ws))
+    _pkg, example, existing, _ci = _tester_repo_context(str(ws))
     assert example, "sem diff ainda há exemplo"
     assert len(existing) == 2

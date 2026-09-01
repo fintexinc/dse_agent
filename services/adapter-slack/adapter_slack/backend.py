@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from dse_contracts.surface import APPROVAL_STATUSES, HOW_TO_TEST_STATUSES
 from dse_contracts.surface import STAGE_FOR_STATUS as _STAGE_FOR_STATUS  # noqa: F401
 from dse_contracts.surface import STAGES as _STAGES  # noqa: F401
 from dse_contracts.surface import progress_line as _progress_line
@@ -59,20 +60,25 @@ def status_blocks(body: str, *, status: str = "", repo: str | None = None) -> li
         blocks.append({"type": "context",
                        "elements": [{"type": "mrkdwn", "text": progress}]})
     elements: list[dict] = []
-    if status == "awaiting_plan_approval":
-        elements += [
+    if status in APPROVAL_STATUSES:
+        elements.append(
             {"type": "button", "action_id": "dse_plan_approve", "style": "primary",
-             "text": {"type": "plain_text", "text": "Approve"}, "value": "approve"},
+             "text": {"type": "plain_text", "text": "Approve"}, "value": "approve"})
+    if status == "awaiting_plan_approval":
+        # Reject só no gate de PLANO. No review a recusa é texto (Request
+        # changes / `@dse fix …`): o padrão do dispatcher lê clique sem marcador
+        # como aprovação, e um Reject ali seria aprovação silenciosa.
+        elements.append(
             {"type": "button", "action_id": "dse_plan_reject", "style": "danger",
-             "text": {"type": "plain_text", "text": "Reject"}, "value": "reject:re_plan"},
-        ]
+             "text": {"type": "plain_text", "text": "Reject"}, "value": "reject:re_plan"})
     # Sem estilo, de propósito: quem decide tem cor, quem só mostra não —
     # cor igual convidaria o clique errado.
     elements.append({"type": "button", "action_id": "dse_plan_details",
                      "text": {"type": "plain_text", "text": "Details"}, "value": "details"})
-    if status == "pr_ready":
-        # Só na mensagem que carrega o preview: antes dela não há o que
-        # testar, e no `done` o link já foi embora com a reescrita.
+    if status in HOW_TO_TEST_STATUSES:
+        # Na mensagem que carrega o preview e nos parques em que ele ainda
+        # está de pé: antes não há o que testar, e no `done` o link já foi
+        # embora com a reescrita.
         elements.append({"type": "button", "action_id": "dse_how_to_test",
                          "text": {"type": "plain_text", "text": "How to test"},
                          "value": "how_to_test"})

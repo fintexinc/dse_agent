@@ -110,7 +110,6 @@ def test_the_review_card_offers_approve():
     from adapter_teams.card import status_card
 
     card = status_card("👀 Ready for your review", status="review_ready", work_item_id="wi_x")
-    ids = [a.get("id") or a.get("data", {}).get("action_id") for a in card["content"]["actions"]]
     textos = [a.get("title") for a in card["content"]["actions"]]
     assert "Approve" in textos and "How to test" in textos
     assert "Reject" not in textos

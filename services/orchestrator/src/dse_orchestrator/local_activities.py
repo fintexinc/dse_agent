@@ -812,6 +812,10 @@ _STATUS_BODIES = {
     "pr_open": "✅ PR opened — CI is running. Nothing to review yet; this message will update.",
     "pr_ready": "✅ PR opened with the change and evidence — ready for human review.",
     "pr_updated": "🔁 PR updated with the review fix — ready for another review.",
+    # rc.130: os parques pós-PR. O workflow sempre manda `body` aqui (o card
+    # com PR/preview/CI), mas status sem template é regra da casa.
+    "review_ready": "👀 Ready for your review.\n\n{detail}",
+    "merge_pending": "✅ Approved — waiting for a human to merge.\n\n{detail}",
     # A6: sem esta entrada o parque caía no fallback "DSE status: spec_conflict"
     # e o DOSSIÊ que o workflow escreve em `detail` (specs, Expected/Received,
     # asserções) era descartado — botões sobre um corpo vazio.

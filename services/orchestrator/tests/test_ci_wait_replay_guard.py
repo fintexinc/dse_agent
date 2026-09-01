@@ -53,7 +53,7 @@ from dse_orchestrator.local_activities import (
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
 
-from conftest import new_work_item_id
+from conftest import wait_for_status, new_work_item_id
 from fakes import FakeControlPlane, build_fake_activities
 
 _QUIET_POLL_PATCH = "ci-poll-writes-only-on-change-v1"
@@ -192,13 +192,19 @@ async def test_a_pre_patch_ci_wait_replays_only_because_of_the_two_guards(
                       workflows=[WorkItemLifecycleWorkflow],
                       workflow_runner=UnsandboxedWorkflowRunner(),
                       activities=_db_free_activities(state)):
-        result = await time_skipping_env.client.execute_workflow(
+        handle = await time_skipping_env.client.start_workflow(
             WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
             id=work_item_id, task_queue=task_queue,
         )
+        # rc.130: the cap PARKS the item for review instead of escalating it;
+        # the wait still ends on the cap, which is what this history needs.
+        await wait_for_status(handle, {WorkItemStatus.review_ready.value})
+        final = await handle.query(WorkItemLifecycleWorkflow.get_state)
+        await handle.signal("cancel", "measured")
+        result = await handle.result()
 
-    assert result.status == WorkItemStatus.escalated.value
-    assert "ci_pending_poll_cap_exhausted" in (result.detail or "")
+    assert result.status == WorkItemStatus.cancelled.value
+    assert str(final.get("ci_wait_exhausted") or "").startswith("poll_cap:")
 
     events = await _history_events(time_skipping_env.client, work_item_id)
     for patch_id in _NEW_PATCHES:
@@ -259,12 +265,16 @@ async def test_the_guard_only_reaches_runs_that_enter_the_wait_after_the_deploy(
                       workflows=[WorkItemLifecycleWorkflow],
                       workflow_runner=UnsandboxedWorkflowRunner(),
                       activities=_db_free_activities(state)):
-        result = await time_skipping_env.client.execute_workflow(
+        handle = await time_skipping_env.client.start_workflow(
             WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
             id=work_item_id, task_queue=task_queue,
         )
+        await wait_for_status(handle, {WorkItemStatus.review_ready.value})
+        final = await handle.query(WorkItemLifecycleWorkflow.get_state)
+        await handle.signal("cancel", "measured")
+        result = await handle.result()
 
-    assert result.status == WorkItemStatus.escalated.value
+    assert result.status == WorkItemStatus.cancelled.value
     events = await _history_events(time_skipping_env.client, work_item_id)
     for patch_id in _NEW_PATCHES:
         assert _patch_marker(events, patch_id) is not None, f"{patch_id} was never recorded"
@@ -277,5 +287,5 @@ async def test_the_guard_only_reaches_runs_that_enter_the_wait_after_the_deploy(
     assert started.get("continuedExecutionRunId"), "the wait never continued as new"
     assert _scheduled(events)["consume_ci_status"] < _POLL_CAP
     # ... and the counter that ends the wait crossed every hop: the cap is what
-    # escalated it, so all _POLL_CAP polls were still counted.
-    assert f"ci_pending_poll_cap_exhausted:{_POLL_CAP}" in (result.detail or "")
+    # parked it, so all _POLL_CAP polls were still counted.
+    assert str(final.get("ci_wait_exhausted") or "") == f"poll_cap:{_POLL_CAP}"

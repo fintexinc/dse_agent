@@ -776,7 +776,15 @@ async def test_pre_patch_history_replays_only_because_of_the_guard(
     events = await _history_events(time_skipping_env.client, work_item_id)
     # The two properties that make this a genuine pre-patch history.
     assert _patch_marker(events, _GATE_PATCH_ID) is None
-    assert _timers_started(events) == []
+    # No timer BEFORE the human answered the gate: that is the pre-patch park.
+    # (rc.130: the REVIEW park that follows has a clock of its own — a 24 h
+    # reminder timer after `plan_approval` is the current code, not the gate.)
+    plan_answer = next(
+        int(e["eventId"]) for e in events
+        if e.get("eventType") == "EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED"
+        and (e.get("workflowExecutionSignaledEventAttributes") or {}).get("signalName") == "plan_approval"
+    )
+    assert [t for t in _timers_started(events) if int(t["eventId"]) < plan_answer] == []
     history = WorkflowHistory.from_json(work_item_id, {"events": events})
 
     monkeypatch.setattr(temporalio.workflow, "patched", real_patched)

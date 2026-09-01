@@ -19,14 +19,19 @@ são observados em milissegundos pelo time-skipping.
 """
 from __future__ import annotations
 
+import json
 import uuid
+from datetime import timedelta
 from typing import Any
+from pathlib import Path
+from temporalio.client import WorkflowHistory
+from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.worker import Replayer
 
 import pytest
 from temporalio import activity
 from temporalio.worker import Worker
 
-from dse_contracts import ACTIVITY_TRIAGE_PREVIEW_FAILURE
 from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
 
@@ -60,6 +65,10 @@ def _post_pr_activities(ledger: _Ledger) -> list[Any]:
         ledger.audit.append(("fake_evidence_recorded", dict(payload)))
         return {"persisted": False}
 
+    async def record_run_episode(payload: dict[str, Any]) -> dict[str, Any]:
+        ledger.audit.append(("fake_run_episode", dict(payload)))
+        return {"persisted": False}
+
     async def fetch_ci_failure_evidence(payload: dict[str, Any]) -> dict[str, Any]:
         ledger.audit.append(("fake_ci_evidence_fetched", dict(payload)))
         return {
@@ -72,6 +81,7 @@ def _post_pr_activities(ledger: _Ledger) -> list[Any]:
         }
     return [
         activity.defn(name="record_evidence_state")(record_evidence_state),
+        activity.defn(name="record_run_episode")(record_run_episode),
         activity.defn(name="fetch_ci_failure_evidence")(fetch_ci_failure_evidence),
     ]
 
@@ -146,7 +156,7 @@ async def test_a_degraded_preview_parks_for_review_with_the_containers_words_and
         await handle.signal("cancel", "test over")
         await handle.result()
 
-    assert ACTIVITY_TRIAGE_PREVIEW_FAILURE not in _scheduled(events), (
+    assert "triage_preview_failure" not in _scheduled(events), (
         "34/34 degradações são plataforma: a triage nunca teve alvo"
     )
     assert "preview_autofix_dispatched" not in ledger.audit_actions
@@ -179,17 +189,21 @@ async def test_the_no_ci_case_is_one_card_not_two(time_skipping_env):
     wi = new_work_item_id("no-ci-one-card")
     state = FakeControlPlane(ci_sequence=["no_ci"] * 50)
     ledger = _Ledger()
-    worker, handle = await _run(
-        time_skipping_env, ledger, state, wi, ci_poll_interval_seconds=0.01,
-    )
+    worker, handle = await _run(time_skipping_env, ledger, state, wi)
     async with worker:
+        # a janela de 90 s do no-CI (rc.104) só passa com o relógio andando
+        await wait_for_status(handle, {"ci_pending", "review_ready"})
+        await time_skipping_env.sleep(timedelta(seconds=140))
         await wait_for_status(handle, {"review_ready"})
         await _wait_for_comment(ledger, "review_ready")
         await handle.signal("cancel", "test over")
         await handle.result()
 
-    assert "pr_ready" not in ledger.comment_statuses, "o aviso separado de no-CI morreu"
-    assert "no ci" in _card(ledger, "review_ready").lower()
+    # O card do preview (pr_ready) continua existindo — o que morreu é o
+    # aviso SEPARADO de no-CI: a frase só aparece no card do parque.
+    assert {s for s, b in ledger.comments if "has no ci" in b.lower()} == {"review_ready"}, (
+        "o aviso separado de no-CI morreu: uma frase, um card"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +220,8 @@ async def test_review_reminder_keeps_the_status_and_reposts_the_card(time_skippi
         review_reminder_hours=0.01, review_timeout_hours=100.0,
     )
     async with worker:
+        await wait_for_status(handle, {"review_ready"})
+        await time_skipping_env.sleep(timedelta(hours=0.015))  # passa o lembrete, não o prazo
         await _wait_for_audit(ledger, "review_reminder_sent")
         await handle.signal("cancel", "test over")
         await handle.result()
@@ -227,6 +243,8 @@ async def test_review_deadline_never_escalates_and_the_merge_still_completes_the
         review_reminder_hours=0.01, review_timeout_hours=0.02,
     )
     async with worker:
+        await wait_for_status(handle, {"review_ready"})
+        await time_skipping_env.sleep(timedelta(hours=0.03))  # passa lembrete E prazo
         await _wait_for_audit(ledger, "review_deadline_elapsed")
         assert "escalated" not in ledger.audit_actions
         assert state.teardown_calls == 1, "o prazo libera o único recurso que custa"
@@ -329,3 +347,66 @@ async def test_escalation_after_the_pr_names_the_pr_the_preview_and_the_ci(time_
     assert "PR #" in card
     assert "unit (API)" in card
     assert "preview" in card.lower()
+
+
+# ---------------------------------------------------------------------------
+# 11: a história do parque novo, gravada e replayada — o cadeado para o futuro
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIR = Path(__file__).parent / "histories"
+_PARK_FIXTURE = _FIXTURE_DIR / "review_park_rc130.json"
+
+
+def _events_json(history) -> dict:
+    from google.protobuf.json_format import MessageToDict
+    return {"events": [MessageToDict(e) for e in history.events]}
+
+
+@pytest.mark.asyncio
+async def test_the_review_park_history_replays_and_is_locked_as_a_fixture(time_skipping_env):
+    """Um item que passa por TUDO que a rc.130 acrescentou — parque, lembrete,
+    prazo (sandbox liberado), fix humano depois do prazo (Pod reconstruído),
+    novo parque, aprovação, merge → done — replayado contra a definição atual
+    e gravado como fixture. A próxima mudança do laço de review replaya ESTA
+    história como a forma anterior (spec §5)."""
+    wi = new_work_item_id("park-replay")
+    state = FakeControlPlane(ci_sequence=["green"] * 3)
+    ledger = _Ledger()
+    worker, handle = await _run(
+        time_skipping_env, ledger, state, wi,
+        review_reminder_hours=0.01, review_timeout_hours=0.02,
+    )
+    async with worker:
+        await wait_for_status(handle, {"review_ready"})
+        await time_skipping_env.sleep(timedelta(hours=0.03))
+        await _wait_for_audit(ledger, "review_deadline_elapsed")
+        await handle.signal("review_comment", {
+            "verdict": "changes_requested", "comment": "@dse fix ci", "fix_target": "ci",
+        })
+        await _wait_for_audit(ledger, "pr_refinalized")
+        await wait_for_status(handle, {"review_ready"})
+        await handle.signal("review_comment", {"verdict": "approved"})
+        await wait_for_status(handle, {"merge_pending"})
+        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
+        result = await handle.result()
+        history = await handle.fetch_history()
+
+    assert result.status == WorkItemStatus.done.value
+    assert "sandbox_rebuilt_for_review_fix" in ledger.audit_actions, (
+        "o fix depois do prazo reconstrói o Pod do checkpoint"
+    )
+    events = _events_json(history)
+    replayer = Replayer(workflows=[WorkItemLifecycleWorkflow], data_converter=pydantic_data_converter)
+    await replayer.replay_workflow(WorkflowHistory.from_json(wi, events))
+    _FIXTURE_DIR.mkdir(exist_ok=True)
+    if not _PARK_FIXTURE.exists():
+        _PARK_FIXTURE.write_text(json.dumps(events, indent=2, sort_keys=True))
+
+
+@pytest.mark.asyncio
+async def test_the_committed_review_park_history_still_replays(time_skipping_env):
+    if not _PARK_FIXTURE.exists():
+        pytest.skip("fixture do parque ainda não gravada (rode o teste acima)")
+    events = json.loads(_PARK_FIXTURE.read_text())
+    replayer = Replayer(workflows=[WorkItemLifecycleWorkflow], data_converter=pydantic_data_converter)
+    await replayer.replay_workflow(WorkflowHistory.from_json("park-fixture", events))

@@ -14,9 +14,8 @@ Três bypasses do manifesto, todos medidos, todos no mesmo arquivo:
      próprio manifesto — migração pré-condição do deploy da rc.101 (eles têm
      que continuar funcionando).
 
-E a triage de preview passa a ver os manifestos de build de qualquer
-ecossistema — hoje um preview Java quebrado é triado a partir de
-`angular.json`.
+(A triage de preview que também lia os manifestos de build morreu na rc.130
+com o laço de autofix — 0/8 despachos viraram preview `created`.)
 """
 from __future__ import annotations
 
@@ -117,18 +116,3 @@ def test_a_declared_env_still_reaches_the_pod():
         "declarado no manifesto do REPO os nomes valem — é assim que o BMO "
         "continua funcionando"
     )
-
-
-# ---------------------------------------------------------------------------
-# 4. A triage vê o manifesto de build do ecossistema do repo
-# ---------------------------------------------------------------------------
-
-def test_triage_key_files_cover_the_ecosystems_we_run():
-    from dse_validation.preview import triage
-
-    for f in ("pom.xml", "build.gradle", "go.mod", "requirements.txt",
-              "package.json", ".dse/validation.json"):
-        assert f in triage._KEY_FILES, (
-            f"{f} fora dos KEY_FILES — um preview desse ecossistema é triado "
-            "sem ver o próprio manifesto de build"
-        )

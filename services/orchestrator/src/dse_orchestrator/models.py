@@ -316,15 +316,31 @@ class WorkItemLifecycleInput:
     # "stale".
     evidence_refresh_cap: int = 5
     evidence_refreshes: int = 0
-    # Preview autofix (decisão de operador, 2026-08-12): preview degradado por
-    # causa de APP volta ao coding sozinho — um agente classifica (conteúdo),
-    # o workflow decide (política). Teto DEDICADO além dos existentes; o
-    # evidence_refresh_cap continua valendo por cima do re-preview.
-    preview_autofix_cap: int = 2
-    preview_autofix_rounds: int = 0
-    # Freio de no-op: dois fixes seguidos sem files_changed param o laço
-    # (espelho do _noop_coder_turns do laço de implementação).
-    preview_autofix_noop_turns: int = 0
+    # rc.130 — depois da PR o DSE REPORTA, não luta. Os dois laços automáticos
+    # pós-PR (autofix de preview, fix de CI vermelho) tiveram 0% de sucesso na
+    # vida inteira da plataforma (0/8 e 0/3, medidos no audit_log) e custaram
+    # US$ 19 num único item. O que ficou no lugar deles é INFORMAÇÃO: as
+    # palavras do container do app quando o preview degrada, os checks
+    # vermelhos com nome e link, e o motivo de um CI que nunca terminou — tudo
+    # no card do parque de review, e dentro da instrução do único ciclo de fix
+    # que ainda existe, o que um humano pede.
+    preview_detail: str | None = None
+    ci_failing_checks: list[dict] = field(default_factory=list)
+    #: "poll_cap:N" | "wall_clock:elapsed_s=N" — o CI não terminou; é fato da
+    #: plataforma do cliente, não falha do DSE, então vira parque, não escalação.
+    ci_wait_exhausted: str | None = None
+    #: O parque de review tem o MESMO relógio do gate de plano (lembrete e
+    #: prazo) e NENHUMA das suas escalações: no prazo o DSE libera o sandbox e
+    #: continua esperando. Execução fechada não recebe `merged_by_human`, e
+    #: `done` era o número que estava em zero. <= 0 desliga o relógio.
+    review_reminder_hours: float = 24.0
+    review_timeout_hours: float = 72.0
+    review_park_started_at_epoch: float | None = None
+    review_reminder_sent: bool = False
+    review_deadline_elapsed: bool = False
+    #: A última tentativa de fix, quando não passou no L1 — fica no card até o
+    #: próximo ciclo, para o humano saber por que a PR não mudou.
+    last_fix_outcome: str | None = None
 
     # Evidence pipeline state (also projected into work_item_evidence,
     # migration 0014, via the local Activity record_evidence_state).

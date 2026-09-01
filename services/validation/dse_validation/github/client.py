@@ -50,6 +50,18 @@ class GitHubClient(Protocol):
 
     def list_check_runs(self, repo: str, ref: str) -> list[dict]: ...
 
+    def get_job_log_tail(self, repo: str, job_id: int, *, max_lines: int = 80) -> str | None:
+        """The END of one Actions job's log (`GET /repos/{repo}/actions/jobs/{id}/logs`,
+        which answers a 302 to a blob). Needs `actions:read` on the App — an
+        OPTIONAL permission: 403/404 raise, and the caller treats that as "no
+        log", never as a failure."""
+        ...
+
+    def list_check_run_annotations(self, repo: str, check_run_id: int) -> list[dict]:
+        """`GET /repos/{repo}/check-runs/{id}/annotations` — what a check chose to
+        say about the code (`checks:read`, which the App already holds)."""
+        ...
+
     def get_tree_paths(self, repo: str, ref: str, *, limit: int = 300) -> list[str]: ...
 
     def get_pr_files(self, repo: str, pr_number: int) -> list[dict]: ...
@@ -366,6 +378,25 @@ class RealGitHubClient:
         resp.raise_for_status()
         return resp.json().get("check_runs", [])
 
+    def get_job_log_tail(self, repo: str, job_id: int, *, max_lines: int = 80) -> str | None:
+        resp = httpx.get(
+            f"{self._cfg.api_base_url}/repos/{repo}/actions/jobs/{job_id}/logs",
+            headers=self._headers(),
+            timeout=20.0,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        return "\n".join(resp.text.splitlines()[-max_lines:])
+
+    def list_check_run_annotations(self, repo: str, check_run_id: int) -> list[dict]:
+        resp = httpx.get(
+            f"{self._cfg.api_base_url}/repos/{repo}/check-runs/{check_run_id}/annotations",
+            headers=self._headers(),
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        return list(resp.json() or [])
+
     def get_combined_status(self, repo: str, ref: str) -> dict:
         empty: dict = {"state": "pending", "statuses": [], "total_count": 0}
         try:
@@ -447,6 +478,10 @@ class FakeGitHubClient:
     _files: dict[tuple[str, str, str], str] = field(default_factory=dict)
     _check_runs: dict[tuple[str, str], list[dict]] = field(default_factory=dict)
     _combined: dict[tuple[str, str], dict] = field(default_factory=dict)
+    _job_logs: dict[tuple[str, int], str] = field(default_factory=dict)
+    _annotations: dict[tuple[str, int], list[dict]] = field(default_factory=dict)
+    #: Simula o App sem `actions:read`: o log responde 403.
+    job_logs_forbidden: bool = False
     _comment_id_seq: itertools.count = field(default_factory=lambda: itertools.count(1))
     _pr_number_seq: itertools.count = field(default_factory=lambda: itertools.count(100))
     create_pr_calls: int = 0
@@ -508,6 +543,25 @@ class FakeGitHubClient:
     def set_check_runs(self, repo: str, ref: str, runs: list[dict]) -> None:
         """Test-only — populates the check-runs "reported by CI"."""
         self._check_runs[(repo, ref)] = runs
+
+    def set_job_log(self, repo: str, job_id: int, text: str) -> None:
+        """Test-only — the log an Actions job would answer with."""
+        self._job_logs[(repo, job_id)] = text
+
+    def set_check_run_annotations(self, repo: str, check_run_id: int, annotations: list[dict]) -> None:
+        """Test-only — what a check run annotated."""
+        self._annotations[(repo, check_run_id)] = annotations
+
+    def get_job_log_tail(self, repo: str, job_id: int, *, max_lines: int = 80) -> str | None:
+        if self.job_logs_forbidden:
+            raise PermissionError("403: Resource not accessible by integration (actions:read)")
+        log = self._job_logs.get((repo, job_id))
+        if log is None:
+            raise KeyError(f"404: no log for job {job_id}")
+        return "\n".join(log.splitlines()[-max_lines:])
+
+    def list_check_run_annotations(self, repo: str, check_run_id: int) -> list[dict]:
+        return list(self._annotations.get((repo, check_run_id), []))
 
     def get_combined_status(self, repo: str, ref: str) -> dict:
         # The default mimics GitHub's real answer for a commit nothing has

@@ -168,6 +168,58 @@ Order (each step is idempotent):
    `x-access-token`; the Coder edits; a PR is opened. Only then does the release promote
    `pilotReadiness.sandboxIsolationVerified`.
 
+## After the PR — what the operator reads (rc.130)
+
+The loop before the PR converges (the last four items opened a clean PR in
+24-35 min). Everything after the PR is now **information for a human**, never a
+fight: the automatic preview autofix and the CI-red fix cycle are gone (0/8 and
+0/3 successes in the platform's whole history; US$ 19 on one item in a day).
+
+**The review park.** After the PR the item sits in `review_ready` with ONE card
+that names the PR, the preview (`created — <url>` | `degraded — <what the app
+container said>` | `skipped`) and the CI (`green` | `red — \`check\` (failure)
+<url>; …` | `this repository has no CI` | `still pending when the DSE stopped
+waiting`). A CI that never finishes parks the item too — `ci_wait_exhausted`
+stays greppable in the audit, and nothing escalates. Reminder at 24 h; at 72 h
+the DSE releases the sandbox and **keeps waiting** in `review_ready` (a closed
+execution cannot receive `merged_by_human`). Approve on Slack/Teams works at the
+park; a rejection is text: GitHub *Request changes*, or `@dse fix ci` /
+`@dse fix preview` in the PR or the thread — ONE fix cycle per request, with the
+failing checks' log tails (needs `actions:read` on the App; without it the
+check-run annotations) or the container's words inside the instruction. A fix
+after the 72 h rebuilds the Pod from the checkpoint.
+
+**`cancelled` is a status now** (migration 0048). Never write it by hand: the
+panel's Cancel writes the row itself when the workflow is already gone, and the
+stranded sweep knows it as terminal. Rows written by SQL before rc.130 were
+re-escalated by the sweep every 6 h — 33 of the 70 "stranded" escalations.
+
+**A gate that ERRORED says what it ran.** `validation_runs.findings[*].detail`
+starts with `ran: <argv> | exit=<rc> | stdout=<n> bytes, stderr=<m> bytes`
+(the `lint exit=2` ghost cost an hour because "wrote nothing" and "output lost"
+were the same sentence). Forensics, on the VPS:
+
+```sql
+SELECT run_at, passed, f->>'check' AS gate, left(f->>'detail', 400) AS detail
+FROM validation_runs, jsonb_array_elements(findings) f
+WHERE work_item_id = '<wi_…>' AND (f->>'passed')::boolean = false
+ORDER BY run_at DESC;
+```
+
+(Never in `audit_log`: it is append-only and inexpurgable, and the stderr of a
+client's tool does not belong there — `test_what_the_gate_saw_never_reaches_the_ledger`.)
+
+**`done` is still zero until the GitHub App delivers merges.** In 185 items the
+DSE never saw a merge. Review comments DO arrive (`signal_recorded
+kind=review_comment channel=<repo>` in the audit — 2026-09-01, PR #193), so the
+tunnel and the secret work; what never arrived is `pull_request` `closed` with
+`merged=true`, which is the only event that turns `merge_pending` into `done`
+(`POST /github/webhook` → `merged_by_human`). On the GitHub App, *Subscribe to
+events* must include `pull_request` (not only `pull_request_review` /
+`issue_comment`); *Advanced → Recent Deliveries* shows what GitHub tried for the
+last merged PR and the response it got. Until then, every reviewed PR that gets
+merged by hand stays `merge_pending` forever.
+
 ### Fast-follow (does not block the public POC)
 - PRIVATE repo: token injection in the egress-proxy (proxy.py) + read-only lock
   (`git-receive-pack`→403); token = `contents:read`; repo derived server-side

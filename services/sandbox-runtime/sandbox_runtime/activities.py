@@ -2047,7 +2047,7 @@ CRITICAL RULES:
 
 ## EXISTING test from the repo (IMITATE this style/runner)
 {example_test}
-
+{ci_test_setup}
 ## Coder's change (diff)
 {diff}
 """
@@ -2067,6 +2067,53 @@ _PRUNED_DIRS = (
     ".pytest_cache", ".tox", "dist", "build", "target", "vendor", "coverage",
     ".angular", ".next", ".nuxt", ".gradle", ".cache",
 )
+#: rc.130 — read-first closes the sandbox × CI gap that failed the glide-path
+#: twice (unit lane DB-free and AUTH-free; leak lane injects DATABASE_URL via
+#: testcontainers, never AUTH_*). None of that is in package.json or in the
+#: example test; it is in the workflows and the runner config. One bounded
+#: read, the same shape on the Pod and locally.
+_CI_SETUP_CHARS = 1500
+_CI_SETUP_LINE_RE = r'^[[:space:]]*(-[[:space:]]*)?(run|working-directory|env|services|image|container):'
+_CI_RUNNER_CONFIGS = (
+    "vitest.config.ts", "vitest.config.mts", "vitest.config.js", "vitest.workspace.ts",
+    "jest.config.ts", "jest.config.js", "jest.config.cjs", "jest.config.mjs",
+    "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini",
+)
+_CI_SETUP_SCRIPT = (
+    "for f in .github/workflows/*.yml .github/workflows/*.yaml; do "
+    '[ -f "$f" ] || continue; echo "# $f"; '
+    f"grep -nE '{_CI_SETUP_LINE_RE}' \"$f\" | head -40; done 2>/dev/null; "
+    "for c in " + " ".join(_CI_RUNNER_CONFIGS) + "; do "
+    '[ -f "$c" ] || continue; echo "# $c"; head -c 600 "$c"; echo; break; done 2>/dev/null'
+)
+
+
+def _ci_test_setup_local(workspace_dir: str) -> str:
+    """The Docker-path twin of `_CI_SETUP_SCRIPT`: same lines, same bound."""
+    import glob
+    import re as _re
+
+    linha = _re.compile(r"^\s*(-\s*)?(run|working-directory|env|services|image|container):")
+    partes: list[str] = []
+    for wf in sorted(glob.glob(os.path.join(workspace_dir, ".github", "workflows", "*.y*ml"))):
+        try:
+            with open(wf, encoding="utf-8", errors="replace") as fh:
+                achadas = [f"{n}:{ln.rstrip()}" for n, ln in enumerate(fh, 1) if linha.match(ln)][:40]
+        except OSError:
+            continue
+        partes.append("# " + os.path.relpath(wf, workspace_dir) + "\n" + "\n".join(achadas))
+    for c in _CI_RUNNER_CONFIGS:
+        caminho = os.path.join(workspace_dir, c)
+        if os.path.isfile(caminho):
+            try:
+                with open(caminho, encoding="utf-8", errors="replace") as fh:
+                    partes.append(f"# {c}\n{fh.read(600)}")
+            except OSError:
+                pass
+            break
+    return "\n".join(partes)[:_CI_SETUP_CHARS]
+
+
 _FIND_TESTS_SCRIPT = (
     "find . \\( "
     + " -o ".join(f"-name {d}" for d in _PRUNED_DIRS)
@@ -2153,11 +2200,11 @@ def _example_candidates(existing: set[str], diff_files: list[str]) -> list[str]:
 
 def _tester_repo_context(
     workspace_dir: str, diff_files: list[str] | None = None
-) -> tuple[str, str, set[str]]:
+) -> tuple[str, str, set[str], str]:
     """Deterministic context so authoring imitates the REAL repo (found in the
     real run: the model wrote Jest in a node:test repo with no deps and also
     overwrote the original test — nothing ever ran). Returns
-    (package_json, example_test, existing_test_paths)."""
+    (package_json, example_test, existing_test_paths, ci_test_setup)."""
     from dse_contracts.paths import is_test_path
 
     pkg = ""
@@ -2210,7 +2257,8 @@ def _tester_repo_context(
         except OSError:
             continue
     example = "\n\n".join(exemplos)
-    return pkg, example or "(no existing tests — use the ecosystem's default runner)", existing
+    return (pkg, example or "(no existing tests — use the ecosystem's default runner)",
+            existing, _ci_test_setup_local(workspace_dir))
 
 
 class _TesterContextUnavailable(RuntimeError):
@@ -2242,6 +2290,11 @@ class _TesterContext(NamedTuple):
     #: The local copy of the repository, when one exists. `None` on K8s, where
     #: the repository lives only in the Pod.
     workspace_dir: str | None = None
+    #: rc.130 — how the repository's CI runs its tests: the `run:` /
+    #: `working-directory:` / `env:` / `services:` lines of the workflows plus
+    #: the head of the runner config, bounded at the source (≤ 1.5 kB). Empty
+    #: when there is nothing to mirror — then the prompt has no section either.
+    ci_test_setup: str = ""
 
 
 _PHANTOM_SCAN_SOURCE = r"""
@@ -2476,6 +2529,7 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
     # the --stat summary. The two paths must show the model the same thing.
     diff = _read("git show --stat -p HEAD | tail -c $((%d))" % _TESTER_DIFF_CHARS,
                  _TESTER_DIFF_CHARS)
+    ci_test_setup = _read(_CI_SETUP_SCRIPT, _CI_SETUP_CHARS).strip()
     # `workspace_dir` fica None aqui — no K8s o repositório vive só no Pod, e o
     # worker não tem onde rodar `git`. Isso era uma limitação enquanto havia
     # oráculo de autoria a consultar; desde 2026-08-10 não há posse de teste a
@@ -2485,6 +2539,7 @@ def _pod_tester_context(pod_sh) -> _TesterContext:
         example_test=example or "(no existing tests — use the ecosystem's default runner)",
         existing_tests=existing,
         diff=diff,
+        ci_test_setup=ci_test_setup,
     )
 
 
@@ -2506,7 +2561,7 @@ def _local_tester_context(workspace_dir: str) -> _TesterContext:
         changed = [ln.strip() for ln in names.stdout.splitlines() if ln.strip()]
     except Exception:  # noqa: BLE001 — proximidade é melhoria, nunca requisito
         pass
-    package_json, example_test, existing_tests = _tester_repo_context(
+    package_json, example_test, existing_tests, ci_test_setup = _tester_repo_context(
         workspace_dir, diff_files=changed
     )
     return _TesterContext(
@@ -2515,6 +2570,7 @@ def _local_tester_context(workspace_dir: str) -> _TesterContext:
         existing_tests=existing_tests,
         diff=diff,
         workspace_dir=workspace_dir,
+        ci_test_setup=ci_test_setup,
     )
 
 
@@ -2552,6 +2608,15 @@ def _model_authored_test_script(
         example_test=ctx.example_test,
         existing_tests=", ".join(sorted(ctx.existing_tests)) or "(none)",
         diff=ctx.diff or "(diff unavailable)",
+        # Only when there is something to mirror: an empty header would teach
+        # the model to look for what is not there.
+        ci_test_setup=(
+            "\n## How the repository's CI runs its tests — mirror it\n"
+            "(lanes differ: what one lane injects — a database, a token — another "
+            "does not; a test must pass in the lane that will run it)\n"
+            f"{getattr(ctx, 'ci_test_setup', '')}\n"
+            if getattr(ctx, "ci_test_setup", "") else ""
+        ),
         error_feedback=(
             f"\n## ERROR FROM THE PREVIOUS ATTEMPT (fix it!)\n{error_feedback}\n" if error_feedback else ""
         ),

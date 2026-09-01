@@ -40,6 +40,7 @@ from ingest_gateway import (
 )
 from pydantic import BaseModel
 
+from dse_contracts.surface import APPROVAL_STATUSES
 from .backend import (
     SlackCommentBackend,
     status_blocks,
@@ -854,9 +855,12 @@ def upsert_status_comment(req: StatusCommentRequest) -> dict:
     # de status_blocks.
     surface_ref["blocks"] = status_blocks(req.body, status=req.status or "",
                                           repo=item_repo)
-    if req.status == "awaiting_plan_approval":
+    if req.status in APPROVAL_STATUSES:
         # Item 3: renderizar os botões RE-ARMA a decisão deste stage — um
         # re-render legítimo (novo gate no mesmo item) é uma decisão nova.
+        # rc.130: vale também para o parque de review — sem isto um item que
+        # passou pelo gate high teria o clique de review engolido como
+        # `already_resolved` (o consumo one-shot é chaveado pelo action_id).
         _rearm_verdict(req.work_item_id, "awaiting_plan_approval")
     elif req.status == "awaiting_repo_selection":
         # Ambiguous repo: offer a static_select with the tenant's repos. With < 2

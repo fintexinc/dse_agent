@@ -35,7 +35,26 @@ STAGE_FOR_STATUS = {
     "pr_updated": "PR",
     "pr_ready": "Review",
     "review_feedback": "Review",
+    # rc.130: os parques pós-PR EXISTEM na superfície. Nenhum call site postava
+    # card em review_ready/ci_pending/merge_pending e o mapa não os conhecia — o
+    # card congelava em "PR opened — CI is running" enquanto o item esperava um
+    # humano que nunca foi chamado.
+    "ci_pending": "PR",
+    "review_ready": "Review",
+    "merge_pending": "Review",
 }
+
+#: Onde cada superfície oferece o gesto de APROVAR. Uma fonte, dois adapters —
+#: o Slack decidia por literal, o Teams por outro (`STATUS_GATE`), e nenhum
+#: dos dois conhecia o parque de review: o clique de Approve era descartado
+#: pelo dispatcher em `review_ready` (medido: zero itens `done` na vida).
+#: Recusa no review NÃO é botão: é texto (Request changes no GitHub ou
+#: `@dse fix ci` / `@dse fix preview`) — um clique de reject num card de
+#: review seria lido como aprovação pelo padrão do dispatcher.
+APPROVAL_STATUSES = ("awaiting_plan_approval", "review_ready")
+#: Onde "How to test" faz sentido: a mensagem que carrega o preview e os
+#: parques em que ele ainda está de pé.
+HOW_TO_TEST_STATUSES = ("pr_ready", "review_ready", "merge_pending")
 
 #: Toda forma de recusa que uma superfície pode emitir. Um token novo que
 #: escape desta lista aprova em silêncio — o padrão do dispatcher é `approved`

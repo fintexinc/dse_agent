@@ -69,36 +69,6 @@ async def test_changes_requested_cycles_back_to_coder_same_pr(time_skipping_env)
 
 
 @pytest.mark.asyncio
-async def test_ci_red_triggers_fix_before_waking_human(time_skipping_env):
-    work_item_id = new_work_item_id("cired")
-    insert_work_item(work_item_id)
-    task_queue = f"tq-{uuid.uuid4().hex[:8]}"
-    state = FakeControlPlane(ci_sequence=["red", "green"])
-    activities = list(LOCAL_ACTIVITIES) + build_fake_activities(state)
-
-    async with Worker(
-        time_skipping_env.client, task_queue=task_queue,
-        workflows=[WorkItemLifecycleWorkflow], activities=activities,
-    ):
-        wf_input = WorkItemLifecycleInput(
-            work_item_id=work_item_id, tenant_id="test-tenant", requester="usr_test",
-            repo="acme/repo", base_branch="main", acceptance_criteria="crit",
-        )
-        handle = await time_skipping_env.client.start_workflow(
-            WorkItemLifecycleWorkflow.run, wf_input, id=work_item_id, task_queue=task_queue,
-        )
-        await wait_for_status(handle, {"review_ready"})
-        await handle.signal("review_comment", {"verdict": "approved"})
-        await handle.signal("merged_by_human", {"merged_by": "usr_test", "pr_number": 1000})
-        result = await handle.result()
-
-    assert result.status == WorkItemStatus.done.value
-    actions = read_audit_actions(work_item_id)
-    assert "ci_red_retrying" in actions
-    assert state.coder_turn_calls == 2  # 1 initial + 1 after CI red
-
-
-@pytest.mark.asyncio
 async def test_approved_waits_for_explicit_merge_signal(time_skipping_env):
     """Proves that `approved` alone is NOT enough — the workflow only finishes
     after `merged_by_human` (P3: no agent session merges its own work; only a

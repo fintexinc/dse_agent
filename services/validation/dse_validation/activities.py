@@ -41,17 +41,16 @@ from dse_contracts.activities import (
     ACTIVITY_PUBLISH_ARTIFACT,
     ACTIVITY_RUN_DEMO_EVIDENCE,
     ACTIVITY_RUN_VISUAL_DIFF,
-    ACTIVITY_TRIAGE_PREVIEW_FAILURE,
+    ACTIVITY_FETCH_CI_FAILURE_EVIDENCE,
     ACTIVITY_TRIGGER_PREVIEW,
     ACTIVITY_UPDATE_BASE_BRANCH,
     ArtifactRef,
     DemoEvidenceResult,
     PreviewRef,
-    PreviewTriageVerdict,
     PublishArtifactInput,
     RunDemoEvidenceInput,
     RunVisualDiffInput,
-    TriagePreviewFailureInput,
+    FetchCiFailureEvidenceInput,
     TriggerPreviewInput,
     UpdateBaseBranchInput,
     UpdateBaseBranchResult,
@@ -545,13 +544,16 @@ def _update_base_branch(inp: UpdateBaseBranchInput) -> UpdateBaseBranchResult:
             _shutil.rmtree(ws.workspace_dir, ignore_errors=True)
 
 
-def _triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerdict:
-    """Preview degradado → o agente decide se mudança de código conserta
-    (conteúdo); o workflow decide o que fazer com o veredito (política)."""
-    from dse_validation.preview.triage import triage_preview_failure_core
+def _fetch_ci_failure_evidence(payload: dict) -> dict:
+    """rc.130 — o que o CI disse, para o fix que um humano pediu."""
+    from dse_validation.github.ci_evidence import fetch_ci_failure_evidence_core
+    from dse_validation.github.client import GitHubConfig, build_github_client
 
-    return triage_preview_failure_core(inp)
-
+    inp = FetchCiFailureEvidenceInput(**payload)
+    client = build_github_client(GitHubConfig())
+    return fetch_ci_failure_evidence_core(
+        github_client=client, work_item_id=inp.work_item_id, repo=inp.repo, ref=inp.ref,
+    ).model_dump()
 
 def _resolve_preview_deep_link(payload: dict) -> dict:
     """rc.103 — o LLM decide o caminho fundo do preview; o portão determinístico
@@ -894,9 +896,9 @@ if _HAS_TEMPORAL:
     async def wse_record_review_episode(inp: RecordReviewEpisodeInput) -> dict | None:
         return await asyncio.to_thread(_record_review_episode, inp)
 
-    @activity.defn(name=ACTIVITY_TRIAGE_PREVIEW_FAILURE)
-    async def triage_preview_failure(inp: TriagePreviewFailureInput) -> PreviewTriageVerdict:
-        return await asyncio.to_thread(_triage_preview_failure, inp)
+    @activity.defn(name=ACTIVITY_FETCH_CI_FAILURE_EVIDENCE)
+    async def fetch_ci_failure_evidence(payload: dict) -> dict:
+        return await asyncio.to_thread(_fetch_ci_failure_evidence, payload)
 
     @activity.defn(name="resolve_preview_deep_link")
     async def resolve_preview_deep_link(payload: dict) -> dict:
@@ -923,8 +925,8 @@ if _HAS_TEMPORAL:
         # Phase 4
         update_base_branch,
         wse_record_review_episode,
-        # Preview autofix (2026-08-12)
-        triage_preview_failure,
+        # rc.130 — a evidência do CI para o fix pedido por humano
+        fetch_ci_failure_evidence,
         # Deep link do preview (rc.103) — fora desta lista o worker não
         # registra (a lição e28f955, pinada em teste).
         resolve_preview_deep_link,

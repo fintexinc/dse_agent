@@ -363,9 +363,10 @@ async def test_continue_as_new_at_the_threshold_carries_the_whole_wait(time_skip
     work_item_id = new_work_item_id("cican")
     insert_work_item(work_item_id)
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
-    # red first: it costs a Coder retry and a review round, so the assertions
-    # below cover state that a naive continue_as_new would reset.
-    state = FakeControlPlane(ci_sequence=["red"] + ["pending"] * 10 + ["green"])
+    # rc.130: a red CI PARKS the item (no automatic fix cycle), so it can no
+    # longer precede the wait; the counters below are the ones the wait itself
+    # carries across the chain.
+    state = FakeControlPlane(ci_sequence=["pending"] * 10 + ["green"])
 
     async with Worker(
         time_skipping_env.client, task_queue=task_queue,
@@ -402,8 +403,8 @@ async def test_continue_as_new_at_the_threshold_carries_the_whole_wait(time_skip
     # ... and nothing the loop needs was left behind in instance state.
     assert final["ci_pending_polls"] == 10
     assert final["ci_wait_started_at_epoch"] == epoch
-    assert final["coder_retry_count"] == 1
-    assert final["review_round"] == 1
+    assert final["coder_retry_count"] == 0
+    assert final["review_round"] == 0
     assert final["ci_last_audited_status"] == "green"
 
 

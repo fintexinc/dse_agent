@@ -21,6 +21,8 @@ from typing import Any
 
 from dse_contracts.surface import (
     ACTION_APPROVE,
+    APPROVAL_STATUSES,
+    HOW_TO_TEST_STATUSES,
     ACTION_DETAILS,
     ACTION_HOW_TO_TEST,
     ACTION_REJECT,
@@ -37,7 +39,6 @@ _SCHEMA_VERSION = "1.4"
 #: outra extensão instalada no tenant entraria como veredito.
 MARKER = "dse"
 
-STATUS_GATE = "awaiting_plan_approval"
 
 
 def _texto(text: str, *, pequeno: bool = False, wrap: bool = True) -> dict[str, Any]:
@@ -83,16 +84,18 @@ def status_card(body: str, *, status: str = "", repo: str | None = None,
         corpo.append(_texto(barra, pequeno=True, wrap=False))
 
     acoes: list[dict[str, Any]] = []
-    if status == STATUS_GATE:
+    if status in APPROVAL_STATUSES:
         acoes.append(_acao(ACTION_APPROVE, "Approve", "approve", estilo="positive"))
+    if status == "awaiting_plan_approval":
+        # Reject só no gate de plano — paridade com o Slack e a mesma razão.
         acoes.append(_acao(ACTION_REJECT, "Reject", f"reject:{DEFAULT_REJECT_ROUTE}",
                            estilo="destructive"))
     # Sem estilo, de propósito: quem decide tem cor, quem só mostra não — cor
     # igual convidaria o clique errado.
     acoes.append(_acao(ACTION_DETAILS, "Details", "details",
                        dialogo=True, work_item_id=work_item_id))
-    if status == "pr_ready":
-        # Só no card que carrega o preview — paridade com o Slack.
+    if status in HOW_TO_TEST_STATUSES:
+        # No card que carrega o preview e nos parques — paridade com o Slack.
         acoes.append(_acao(ACTION_HOW_TO_TEST, "How to test", "how_to_test",
                            dialogo=True, work_item_id=work_item_id))
 

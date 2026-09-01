@@ -35,7 +35,7 @@ from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
 
-from conftest import new_work_item_id
+from conftest import wait_for_status, new_work_item_id
 from fakes import FakeControlPlane
 from test_ci_wait_replay_guard import _db_free_activities
 
@@ -125,13 +125,19 @@ async def test_a_run_whose_input_carries_an_unknown_field_reaches_a_terminal_sta
     async with Worker(time_skipping_env.client, task_queue=task_queue,
                       workflows=[WorkItemLifecycleWorkflow],
                       activities=_db_free_activities(state)):
-        result = await asyncio.wait_for(
-            time_skipping_env.client.execute_workflow(
-                WorkItemLifecycleWorkflow.run, _raw(work_item_id),
-                id=work_item_id, task_queue=task_queue,
-            ),
+        handle = await time_skipping_env.client.start_workflow(
+            WorkItemLifecycleWorkflow.run, _raw(work_item_id),
+            id=work_item_id, task_queue=task_queue,
+        )
+        # rc.130: the cap PARKS the item for review instead of escalating it.
+        # The run still reaches a stable state on the cap the dict carried.
+        await asyncio.wait_for(
+            wait_for_status(handle, {WorkItemStatus.review_ready.value}),
             timeout=_RUN_DEADLINE_S,
         )
+        final = await handle.query(WorkItemLifecycleWorkflow.get_state)
+        await handle.signal("cancel", "measured")
+        result = await asyncio.wait_for(handle.result(), timeout=_RUN_DEADLINE_S)
 
-    assert result.status == WorkItemStatus.escalated.value
-    assert f"ci_pending_poll_cap_exhausted:{_POLL_CAP}" in (result.detail or "")
+    assert result.status == WorkItemStatus.cancelled.value
+    assert str(final.get("ci_wait_exhausted") or "") == f"poll_cap:{_POLL_CAP}"

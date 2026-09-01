@@ -61,7 +61,18 @@ _STATUS_AWAITING_PLAN_APPROVAL = "awaiting_plan_approval"
 _STATUS_PR_READY = "pr_ready"
 # States in which an approval on the PR is still a legitimate review signal
 # (the reviewer may approve after having previously requested changes).
-_APPROVAL_REVIEW_STATES = {_STATUS_PR_READY, "review_feedback"}
+# rc.130: `review_ready` — the state the fine-pr-*-v1 markers actually park
+# in — was missing, so every Approve click from Slack/Teams at the review park
+# fell into `unexpected_status`. Zero items reached `done` in the platform's
+# whole history.
+_APPROVAL_REVIEW_STATES = {_STATUS_PR_READY, "review_feedback", "review_ready"}
+_STATUS_REVIEW_READY = "review_ready"
+_STATUS_MERGE_PENDING = "merge_pending"
+#: `@dse fix ci` / `@dse fix preview` — the one human gesture that buys a fix
+#: cycle after the PR, with the evidence attached by the workflow. Anchored on
+#: the mention so a review that merely says "fix the ci config" is not a
+#: command.
+_RE_FIX_REQUEST = re.compile(r"@dse\s+fix\s+(ci|preview)\b", re.IGNORECASE)
 
 
 class DispatchOutcome:
@@ -170,6 +181,18 @@ def _route_signal(status: str | None, kind: str, raw_payload: dict[str, Any]) ->
             "merged_by_human",
         )
 
+    fix = _RE_FIX_REQUEST.search(content or "")
+    if fix and status == _STATUS_REVIEW_READY and kind in ("clarification_answer", "review_comment", "steering"):
+        # rc.130: a reply in the Slack thread arrives as clarification_answer, a
+        # PR comment as review_comment without a review_state — both are the
+        # same request at the review park. No new signal: it rides the review
+        # route as changes_requested, and the workflow attaches the evidence.
+        return SignalRoute(
+            SIGNAL_REVIEW_COMMENT,
+            {"verdict": "changes_requested", "comment": content, "fix_target": fix.group(1).lower()},
+            "fix_request",
+        )
+
     if kind == "clarification_answer":  # PRESERVES Phase 1 + C4 (report 07)
         payload = {"text": content, "acceptance_criteria": content}
         # C4: Slack/Jira tasks are born without a repo — the clarification
@@ -196,7 +219,18 @@ def _route_signal(status: str | None, kind: str, raw_payload: dict[str, Any]) ->
         if status == _STATUS_AWAITING_PLAN_APPROVAL:
             return SignalRoute(SIGNAL_PLAN_APPROVAL, _plan_approval_payload(raw_payload, content), "plan_approval")
         if status in _APPROVAL_REVIEW_STATES:
+            # rc.130: a REJECTION at the review park is never read as an
+            # approval. Before, any approval-kind event here became `approved`,
+            # verdict included — with an Approve button on the review card that
+            # is a silent approval one mis-click away. Rejection is text: GitHub
+            # "Request changes", or `@dse fix ci` / `@dse fix preview`.
+            if str(raw_payload.get("approval_verdict", "approved")).lower() == "rejected":
+                return SignalRoute(None, None, "review_rejection_needs_text")
             return SignalRoute(SIGNAL_REVIEW_COMMENT, {"verdict": "approved", "comment": content}, "approval_as_review")
+        if status == _STATUS_MERGE_PENDING:
+            # Already approved; the workflow only listens for the merge here. A
+            # click that "worked" and did nothing is the A1 case — say so.
+            return SignalRoute(None, None, "already_approved_merge_on_github")
         # unexpected status -> does NOT guess (P6). Consumed with an audit row.
         return SignalRoute(None, None, "unexpected_status")
 
@@ -278,6 +312,18 @@ async def _dispatch_row(
     route = _route_signal(status, kind, payload)
 
     if route.signal_name is None:
+        if route.reason == "review_rejection_needs_text":
+            _notify_undeliverable(
+                work_item_id,
+                "a rejection at review needs words: use GitHub's *Request changes*, or "
+                "reply `@dse fix ci` / `@dse fix preview` for one fix cycle",
+            )
+            return DispatchOutcome.DECLINED_UNEXPECTED_STATUS, {"status": status, "reason": route.reason}
+        if route.reason == "already_approved_merge_on_github":
+            _notify_undeliverable(
+                work_item_id, "already approved — merge the PR on GitHub to finish the task",
+            )
+            return DispatchOutcome.DECLINED_UNEXPECTED_STATUS, {"status": status, "reason": route.reason}
         if route.reason == "unexpected_status":
             # P6 decline-never-truncate: clean boundary, leaves evidence — e,
             # desde o item 4, também AVISO no canal: o decline mudo foi

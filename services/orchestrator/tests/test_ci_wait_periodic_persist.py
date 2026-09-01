@@ -29,7 +29,7 @@ from dse_contracts.work_item import WorkItemStatus
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
 
-from conftest import new_work_item_id
+from conftest import wait_for_status, new_work_item_id
 from fakes import FakeControlPlane
 from test_ci_wait_replay_guard import _db_free_activities
 
@@ -62,7 +62,7 @@ async def _writes_by_poll_number(env, *, polls: int, every: int) -> list[tuple[s
                       workflows=[WorkItemLifecycleWorkflow],
                       workflow_runner=UnsandboxedWorkflowRunner(),
                       activities=_db_free_activities(state)):
-        result = await env.client.execute_workflow(
+        handle = await env.client.start_workflow(
             WorkItemLifecycleWorkflow.run,
             WorkItemLifecycleInput(
                 work_item_id=work_item_id, tenant_id="test-tenant",
@@ -77,8 +77,14 @@ async def _writes_by_poll_number(env, *, polls: int, every: int) -> list[tuple[s
             ),
             id=work_item_id, task_queue=task_queue,
         )
-    assert result.status == WorkItemStatus.escalated.value
-    assert f"ci_pending_poll_cap_exhausted:{polls}" in (result.detail or "")
+        # rc.130: the cap PARKS the item for review instead of escalating it —
+        # the wait still ends on the cap, which is what this file measures.
+        await wait_for_status(handle, {WorkItemStatus.review_ready.value})
+        final = await handle.query(WorkItemLifecycleWorkflow.get_state)
+        await handle.signal("cancel", "measured")
+        result = await handle.result()
+    assert result.status == WorkItemStatus.cancelled.value
+    assert str(final.get("ci_wait_exhausted") or "").startswith(f"poll_cap:{polls}")
 
     handle = env.client.get_workflow_handle(work_item_id)
     shape: list[tuple[str, int]] = []

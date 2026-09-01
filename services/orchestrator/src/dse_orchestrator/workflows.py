@@ -55,7 +55,7 @@ with workflow.unsafe.imports_passed_through():
         ACTIVITY_RUN_TESTER_TURN,
         ACTIVITY_RUN_VISUAL_DIFF,
         ACTIVITY_TEARDOWN_SANDBOX,
-        ACTIVITY_TRIAGE_PREVIEW_FAILURE,
+        ACTIVITY_FETCH_CI_FAILURE_EVIDENCE,
         ACTIVITY_TRIGGER_PREVIEW,
         ACTIVITY_UPDATE_BASE_BRANCH,
         ACTIVITY_VERIFY_MERGE_STATE,
@@ -68,7 +68,7 @@ with workflow.unsafe.imports_passed_through():
         GateStatus,
         MergeVerification,
         PreviewRef,
-        PreviewTriageVerdict,
+        CiFailureEvidence,
         PrRef,
         SandboxHandle,
         TesterTurnResult,
@@ -327,6 +327,14 @@ _COUNTED_BLOCK_MARK = re.compile(r"^--- the \d+ line\(s\) this gate counted ---$
 #: custo no repo que realmente não tem CI, contra uma mentira publicada no
 #: repo que tem.
 _NO_CI_GRACE_SECONDS = 90.0
+#: rc.130 — the one sentence that closes the sandbox × CI gap from the Coder's
+#: side (the Tester gets the workflows' lines in its context).
+_READ_THE_CI_FIRST = (
+    "Before writing or changing any test, read how this repository's CI runs its "
+    "tests — .github/workflows/*.yml and the runner configs they name "
+    "(working-directory, env, services) — and mirror that setup: a test must pass "
+    "in the lane that will run it, with only what that lane provides."
+)
 
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
@@ -1093,6 +1101,13 @@ class WorkItemLifecycleWorkflow:
         for note in input.clarification_notes:
             if note and note.strip():
                 parts.append(f"Clarification: {note.strip()}")
+        # rc.130: read-first. Twice on the glide-path the tests were green in
+        # the sandbox and red in the repository's CI lanes; the difference lived
+        # in `.github/workflows` (what each lane injects) and nowhere the agent
+        # was told to look. Constant text (P1), placed with the task — BEFORE
+        # objections and the retry's failure note, which stay last so the
+        # original instruction survives verbatim inside every retry.
+        parts.append(_READ_THE_CI_FIRST)
         if include_objections:
             for obj in getattr(input, "l2_objections", []) or []:
                 if obj and str(obj).strip():
@@ -1463,13 +1478,19 @@ class WorkItemLifecycleWorkflow:
         if workflow.patched("teardown-on-escalation-v1"):
             await self._teardown_sandbox_best_effort(f"escalated:{reason[:64]}")
         detail = f"escalated: {reason}"
+        if self._input.pr_number is not None:
+            # rc.130: an escalation AFTER the PR names what exists — the PR, the
+            # preview and the CI — not just the brake that fired. The card used
+            # to say `ci_red_after_retry_cap_exhausted` and nothing else.
+            detail = f"{detail}\n\n{self._pr_card_text()}"
         self._input.terminal_detail = detail
         await self._set_status(
             WorkItemStatus.escalated,
             audit_action="escalated",
             details={"reason": reason},
         )
-        await self._post_status_comment("escalated", detail=reason)
+        # rc.130: `detail`, not `reason` — after a PR it carries the card.
+        await self._post_status_comment("escalated", detail=detail)
         # Phase 4 — if a PR had already been finalized, this escalation is a
         # terminal PR boundary: emit the quality metric (pilot gate) so we do
         # not lose data on PRs that never merge. Pre-PR escalations (e.g.
@@ -1915,6 +1936,19 @@ class WorkItemLifecycleWorkflow:
             return
         self._retry_from_checkpoint_requested = False
         await self._audit("retry_from_checkpoint_applied", {})
+        await self._rebuild_from_checkpoint()
+
+    async def _ensure_sandbox_for_fix(self) -> None:
+        """rc.130 — the review park releases its sandbox at the deadline and
+        keeps waiting; a fix a human asks for after that rebuilds the Pod from
+        the implementation checkpoint. Same body the operator panel's retry
+        uses, on a path a reviewer opens."""
+        if self._input.sandbox_id or not self._input.last_checkpoint_ref:
+            return
+        await self._audit("sandbox_rebuilt_for_review_fix", {})
+        await self._rebuild_from_checkpoint()
+
+    async def _rebuild_from_checkpoint(self) -> None:
         # Boundary fix (post-S7 audit): RebuildSandboxInput requires tenant_id +
         # checkpoint_ref — the old {work_item_id, sandbox_id} payload failed to
         # decode. With no prior checkpoint in this phase, escalate cleanly (P6)
@@ -3606,7 +3640,7 @@ class WorkItemLifecycleWorkflow:
         no Block Kit and the Approve/Reject buttons, the ONLY way a Slack approver
         can answer, were replaced by plain text. The reminder made the task
         unanswerable. Real status + `body` override (the shape
-        `_post_preview_link` already uses) keeps the buttons and still changes
+        `_post_pr_card` already uses) keeps the buttons and still changes
         what the human reads.
 
         HONEST LIMIT — THIS DOES NOT NOTIFY ANYBODY. Every outbound path the
@@ -4199,55 +4233,40 @@ class WorkItemLifecycleWorkflow:
                     await self._persist_status()
                 elif persist_every > 0 and input.ci_pending_polls % persist_every == 0:
                     await self._persist_status()
+                exhausted = ""
                 if input.ci_pending_polls >= input.ci_pending_poll_cap:
-                    if ci_deadline:
-                        await self._exhaust_ci_wait("poll_cap")
-                    raise _EscalateNow(
-                        f"ci_pending_poll_cap_exhausted:{input.ci_pending_polls}"
-                    )
-                if ci_deadline and input.ci_wait_deadline_hours > 0:
+                    exhausted = f"poll_cap:{input.ci_pending_polls}"
+                    await self._exhaust_ci_wait("poll_cap")
+                elif ci_deadline and input.ci_wait_deadline_hours > 0:
                     elapsed = workflow.now().timestamp() - input.ci_wait_started_at_epoch
                     if elapsed >= input.ci_wait_deadline_hours * 3600:
+                        exhausted = f"wall_clock:elapsed_s={int(elapsed)}"
                         await self._exhaust_ci_wait("wall_clock", elapsed_seconds=elapsed)
-                        raise _EscalateNow(
-                            f"ci_wait_deadline_exhausted:elapsed_s={int(elapsed)}"
-                        )
-                await workflow.sleep(timedelta(seconds=max(0.01, input.ci_poll_interval_seconds)))
-                continue
+                if not exhausted:
+                    await workflow.sleep(timedelta(seconds=max(0.01, input.ci_poll_interval_seconds)))
+                    continue
+                # rc.130: "the CI did not finish" is a fact about the client's
+                # platform, not a failure of the DSE — it used to escalate here
+                # (terminal, red card, PR and evidence thrown away). Now it
+                # PARKS for review with the fact on the card. The audit line
+                # above stays greppable, exactly as before.
+                input.ci_wait_exhausted = exhausted
 
             if ci.status == "red":
-                # CI red before waking a human: back to the Coder on the SAME
-                # branch/PR (same retry-cap discipline).
-                input.coder_retry_count += 1
-                if input.coder_retry_count > self._input.coder_retry_cap:
-                    raise _EscalateNow("ci_red_after_retry_cap_exhausted")
-                self._bump_review_round()
-                await self._set_status(WorkItemStatus.review_feedback, audit_action="ci_red_retrying")
-                fix_result = await self._apply_coder_fix_cycle(["ci red: fix the pipeline"])
-                input.ci_pending_polls = 0
-                # A new head_sha starts a NEW wait; without this reset the fix
-                # cycle inherits the previous commit's elapsed time and blows the
-                # deadline on its first pending poll.
-                input.ci_wait_started_at_epoch = None
-                # ADR-26: fix cycle = new commit that changes behavior -> 1 refresh
-                input.last_files_changed = list(fix_result.files_changed)
-                # NÃO acumula: os dois `fix_cycle` seguem classificando pelo
-                # diff do turno. Provavelmente têm o mesmo defeito do preview
-                # inicial — mas isso não foi MEDIDO em run nenhum, e acumular
-                # aqui muta `cumulative_files_changed`, que alimenta o aviso de
-                # edição de teste no corpo da PR. Mudar o corpo da PR de
-                # carona, sem teste, não é o que este item pediu. Registrado
-                # como item aberto no run-state.
-                # Diff ACUMULADO, como o human_request já faz: o paths-filter
-                # classifica a PR inteira, não o último turno (wi_a8b760de).
-                files_ci = (
-                    list(input.cumulative_files_changed or fix_result.files_changed)
-                    if workflow.patched("fix-cycle-cumulative-diff-v1")
-                    else fix_result.files_changed
-                )
-                await self._run_evidence_pipeline(files_ci,
-                                                  reason="fix_cycle_ci_red")
-                continue
+                # rc.130: CI red is INFORMATION for the human, not a fight. The
+                # automatic fix cycle that lived here went 0/3 in the platform's
+                # history and burned US$ 19 on one item in eight rounds whose
+                # whole instruction was "ci red: fix the pipeline" — every one
+                # with `files_changed: []`. The checks travel by name and link
+                # to the card; a human who wants a fix says `@dse fix ci`, and
+                # THAT cycle carries the log tail (`_fix_evidence_for`).
+                input.ci_failing_checks = [c.model_dump() for c in ci.failing_checks]
+                await self._audit("ci_red_reported", {
+                    "pr_number": input.pr_number, "head_sha": input.head_sha,
+                    "checks": [c.name for c in ci.failing_checks],
+                })
+            else:
+                input.ci_failing_checks = []
 
             if ci.status == "no_ci":
                 # The repo reported NOTHING — no check run and no commit status
@@ -4276,30 +4295,11 @@ class WorkItemLifecycleWorkflow:
                         if input.ci_wait_started_at_epoch else 0
                     ),
                 })
-                # Body override on the real status, the shape the plan-approval
-                # reminder already uses: the reviewer must not read the ordinary
-                # "ready for human review" line and assume something verified
-                # this commit.
-                try:
-                    await workflow.execute_activity(
-                        ACTIVITY_POST_TRACKING_COMMENT,
-                        {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
-                         "status": "pr_ready",
-                         "body": (
-                             "✅ PR opened with the change and evidence — ready for human "
-                             "review.\n\n"
-                             "⚠️ **This repository has no CI**: no check run and no commit "
-                             "status was reported for this commit. Nothing automated verified "
-                             "this change beyond the DSE's own L1/L2 gates. You are the only "
-                             "gate."
-                         )},
-                        start_to_close_timeout=timedelta(seconds=60),
-                        retry_policy=RetryPolicy(maximum_attempts=5),
-                    )
-                except ActivityError:
-                    logger.warning("best-effort no_ci notice failed; the item still proceeds")
+                # The fact reaches the reviewer as the CI line of the park card
+                # (`_pr_card_text`): one card, one renderer.
 
-            if fine_states and ci.status not in ("green", "no_ci"):
+            if (fine_states and ci.status not in ("green", "no_ci", "red")
+                    and not input.ci_wait_exhausted):
                 raise _EscalateNow(f"unknown_ci_status:{ci.status!r}")
 
             # IMPORTANT: we do not reset `_review_received` here before
@@ -4312,10 +4312,18 @@ class WorkItemLifecycleWorkflow:
             ready_status = WorkItemStatus.review_ready if fine_states else WorkItemStatus.pr_ready
             await self._set_status(ready_status, audit_action="awaiting_human_review",
                                    details={"ci_status": ci.status, "head_sha": input.head_sha})
-            await workflow.wait_condition(
-                lambda: self._review_received or self._refresh_evidence_requested
-                or self._cancelled or self._operator_escalate_requested
-            )
+            if fine_states:
+                # rc.130: the park is VISIBLE (no call site posted a card in
+                # review_ready before — the message froze on "PR opened — CI is
+                # running" while the item waited for a human nobody called) and
+                # it has the plan gate's clock, with none of its escalation.
+                await self._post_pr_card(ready_status.value, "👀 **Ready for your review**")
+                await self._wait_at_the_review_park()
+            else:
+                await workflow.wait_condition(
+                    lambda: self._review_received or self._refresh_evidence_requested
+                    or self._cancelled or self._operator_escalate_requested
+                )
             if self._cancelled:
                 raise _CancelledByOperator()
             if self._operator_escalate_requested:
@@ -4379,12 +4387,19 @@ class WorkItemLifecycleWorkflow:
                          if c.get("verdict") == "changes_requested"]
                 await self._set_status(WorkItemStatus.review_feedback, audit_action="changes_requested",
                                         details={"comments": texts, "batched": len(comments)})
+                # rc.130: `@dse fix ci` / `@dse fix preview` ride this route
+                # with a `fix_target`; the evidence goes INTO the instruction.
+                texts += await self._fix_evidence_for(comments)
                 # Phase 4 (WSE-E6-T16) — merge-base BEFORE re-running the Coder:
                 # the human already reviewed (first_human_review_done=True), so
                 # the base drift comes in via merge-base-into-branch, never a
                 # rebase (preserves the review threads). Conflict -> escalate.
                 await self._update_base_branch_before_review_fix()
                 fix_result = await self._apply_coder_fix_cycle(texts)
+                if fix_result is None:
+                    # rc.130: the fix did not pass L1 — reported on the card,
+                    # nothing pushed; back to the park for the next request.
+                    continue
                 # ADR-26: 1 batch of comments -> 1 fix cycle -> at most 1
                 # evidence refresh (the refresh is triggered by the fix COMMIT,
                 # never by the comments themselves).
@@ -4408,6 +4423,10 @@ class WorkItemLifecycleWorkflow:
                     WorkItemStatus.merge_pending if fine_states else WorkItemStatus.pr_ready
                 )
                 await self._set_status(merge_status, audit_action="approved_awaiting_merge")
+                if fine_states:
+                    await self._post_pr_card(
+                        merge_status.value, "✅ **Approved** — waiting for a human to merge",
+                    )
                 # (no reset of `_merged` here for the same reason as above — it
                 # starts False in __init__ and only this branch consumes it,
                 # once per run)
@@ -4480,7 +4499,7 @@ class WorkItemLifecycleWorkflow:
             # unknown verdict: never guess (P6) — escalate.
             raise _EscalateNow(f"unknown_review_verdict:{verdicts!r}")
 
-    async def _apply_coder_fix_cycle(self, comments: list[str]) -> CoderTurnResult:
+    async def _apply_coder_fix_cycle(self, comments: list[str]) -> CoderTurnResult | None:
         """`changes_requested` (human, possibly a debounced BATCH) or CI red:
         back to the Coder on the SAME branch/PR, re-validate L1, re-finalize the
         SAME PR (idempotent). Returns the Coder result — the caller uses
@@ -4489,6 +4508,12 @@ class WorkItemLifecycleWorkflow:
         await self._boundary_gate()
         await self._budget_boundary("review_fix_coder")
         await self._maybe_retry_from_checkpoint()
+        await self._ensure_sandbox_for_fix()
+        # A fix is a new park: new clock, and the last outcome is history.
+        input.last_fix_outcome = None
+        input.review_park_started_at_epoch = None
+        input.review_reminder_sent = False
+        input.review_deadline_elapsed = False
 
         review_notes = "\n".join(f"- {c.strip()}" for c in comments if c and c.strip())
         fix_instruction = self._agent_instruction(include_objections=True)
@@ -4551,11 +4576,24 @@ class WorkItemLifecycleWorkflow:
             else l1_result.passed
         )
         if not l1_passed:
-            input.coder_retry_count += 1
-            if input.coder_retry_count > self._input.coder_retry_cap:
-                raise _EscalateNow("l1_revalidation_failed_after_retry_cap")
-            # try again recursively up to the cap (stays on the same branch/PR)
-            return await self._apply_coder_fix_cycle(comments)
+            # rc.130: ONE cycle per human request — never a recursion up to
+            # `coder_retry_cap`, which is the IMPLEMENTATION loop's counter and
+            # was arriving here already spent (it never reset), so the first
+            # failed revalidation escalated the item. The outcome goes on the
+            # card; `review_round_cap` (20) is still the brake, and every round
+            # of it is an explicit request.
+            gates = ", ".join(
+                str(getattr(f, "check", "?")) for f in (getattr(l1_result, "findings", None) or [])
+                if not getattr(f, "passed", True)
+            )
+            input.last_fix_outcome = f"the fix attempt did not pass L1 ({gates or 'see the run'})"
+            await self._audit("review_fix_l1_failed",
+                              {"gates": gates, "round": input.review_round})
+            await self._post_pr_card(
+                WorkItemStatus.review_ready.value,
+                "⚠️ **The fix attempt did not pass L1** — the PR is unchanged",
+            )
+            return None
 
         await self._boundary_gate()
         finalize_payload = {
@@ -4634,109 +4672,6 @@ class WorkItemLifecycleWorkflow:
     # Failure mode 9: a degraded preview/demo NEVER blocks the PR — degraded
     # evidence is recorded (audit + projection 0014) and the flow moves on to
     # human review.
-    async def _maybe_autofix_degraded_preview(
-        self, *, reason: str, detail: str, kind: str = ""
-    ) -> None:
-        """Preview degradado → agente decide → (talvez) volta ao coding.
-
-        Decisão de operador (2026-08-12, caso do wi_a8b760de/PR #6): o laço
-        fecha sem humano. O AGENTE (activity de triage) recebe o erro — as
-        palavras do pod, que a rc.85 passou a capturar — e os arquivos-chave do
-        repo, e decide SÓ conteúdo: {fixable, reason, instruction}. Toda
-        política é código, aqui, ANTES do modelo: teto dedicado, no-op duplo,
-        gasto. Veredito infra (cluster, quota, TLS) não compra turno — a lição
-        dos US$ 18,90 do L1: gastar turno exige separar defeito do app de infra
-        que não respondeu.
-
-        Nunca bloqueia (failure mode 9): qualquer declínio ou falha da triage
-        degrada exatamente como hoje, auditado. O re-preview passa pelo
-        `evidence_refresh_cap` de sempre, então a recursão morre no teto dele
-        mesmo se este cap for mal configurado."""
-        input = self._input
-        if not workflow.patched("preview-autofix-v1"):
-            return
-        if input.pr_number is None or not input.repo or not input.branch:
-            return
-        if input.preview_autofix_rounds >= input.preview_autofix_cap:
-            await self._audit(
-                "preview_autofix_declined_cap",
-                {"rounds": input.preview_autofix_rounds,
-                 "cap": input.preview_autofix_cap, "reason": reason},
-            )
-            return
-        if input.preview_autofix_noop_turns >= 2:
-            await self._audit(
-                "preview_autofix_declined_noop",
-                {"noop_turns": input.preview_autofix_noop_turns, "reason": reason},
-            )
-            return
-        cap_usd = input.budget_max_usd
-        if cap_usd is not None and input.spent_usd >= cap_usd:
-            # Declínio SUAVE de propósito: _budget_boundary falharia o item, e
-            # preview nunca derruba item — sem verba, só não se tenta o fix.
-            await self._audit(
-                "preview_autofix_declined_budget",
-                {"spent_usd": round(input.spent_usd, 6), "cap": cap_usd},
-            )
-            return
-        try:
-            triage: PreviewTriageVerdict = await workflow.execute_activity(
-                ACTIVITY_TRIAGE_PREVIEW_FAILURE,
-                {
-                    "work_item_id": input.work_item_id,
-                    "tenant_id": input.tenant_id,
-                    "repo": input.repo,
-                    "pr_number": input.pr_number,
-                    "branch": input.branch,
-                    "head_sha": input.head_sha,
-                    "detail": (detail or "")[:2000],
-                    "kind": kind,
-                    "autofix_round": input.preview_autofix_rounds + 1,
-                    "autofix_cap": input.preview_autofix_cap,
-                },
-                result_type=PreviewTriageVerdict,
-                start_to_close_timeout=timedelta(seconds=180),
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-        except ActivityError as exc:
-            # A triage é um bônus sobre o caminho degradado — falha dela deixa
-            # rastro e o item segue como sempre. Sem o rastro, "não tentou" e
-            # "tentou e quebrou" seriam o mesmo silêncio.
-            await self._audit(
-                "preview_triage_failed",
-                {"error": str(exc.cause or exc)[:300], "reason": reason},
-            )
-            return
-        await self._consume_cost(triage.cost_usd, source="preview_triage")
-        await self._audit(
-            "preview_triage_verdict",
-            {"fixable": triage.fixable, "reason": triage.reason[:300],
-             "round": input.preview_autofix_rounds + 1},
-        )
-        if not triage.fixable:
-            return
-        input.preview_autofix_rounds += 1
-        await self._audit(
-            "preview_autofix_dispatched",
-            {"round": input.preview_autofix_rounds,
-             "instruction": triage.instruction[:300]},
-        )
-        # A MESMA máquina do changes_requested: coder no mesmo branch/PR,
-        # re-valida L1, re-finaliza. Sem merge-base antes: não houve janela
-        # humana para drift, e o push do finalizer já recusa clobber.
-        fix_result = await self._apply_coder_fix_cycle(
-            [f"preview degraded: {triage.instruction}"]
-        )
-        files = list(getattr(fix_result, "files_changed", None) or [])
-        input.preview_autofix_noop_turns = (
-            0 if files else input.preview_autofix_noop_turns + 1
-        )
-        if files:
-            input.last_files_changed = files
-        await self._run_evidence_pipeline(
-            list(input.cumulative_files_changed or files), reason="preview_autofix"
-        )
-
     # ------------------------------------------------------------------
     async def _run_evidence_pipeline(self, files_changed: list[str], *, reason: str) -> None:
         input = self._input
@@ -4875,9 +4810,7 @@ class WorkItemLifecycleWorkflow:
                  "error": str(exc.cause or exc)[:300]},
             )
             await self._record_evidence(reason=reason, detail="trigger_preview_failed")
-            await self._maybe_autofix_degraded_preview(
-                reason=reason, detail=str(exc.cause or exc)[:2000]
-            )
+            input.preview_detail = f"trigger_preview failed: {str(exc.cause or exc)[:600]}"
             return
 
         input.preview_status = preview.status
@@ -4918,21 +4851,19 @@ class WorkItemLifecycleWorkflow:
                  "status": preview.status, "detail": (preview.detail or "")[:300]},
             )
             await self._record_evidence(reason=reason, detail=(preview.detail or "")[:300])
-            await self._maybe_autofix_degraded_preview(
-                reason=reason, detail=preview.detail or "",
-                kind=getattr(preview, "kind", ""),
-            )
+            # The words of the APP container (rc.129) — what the reviewer reads
+            # on the card and what `@dse fix preview` puts in the instruction.
+            input.preview_detail = (preview.detail or preview.status or "degraded")[:600]
             return
 
         # Plan 08 §D (D1) — the user's goal: the preview LINK shows up on the
         # PR for the human to open and decide. Posted as soon as the preview
         # exists (independent of demo/visual, which degrade without blocking).
         # Best-effort and patch-guarded (old histories did not post) — never blocks.
+        input.preview_detail = None
         if preview.url and workflow.patched("preview-link-in-pr-v1"):
-            await self._post_preview_link(
-                preview.url, preview.kind,
-                deep_path=deep_path, deep_note=deep_note,
-            )
+            await self._post_pr_card("pr_ready", "🔗 **Preview ready** — open it and decide")
+            await self._audit("preview_link_posted", {"url": preview.url, "kind": preview.kind})
 
         try:
             demo: DemoEvidenceResult = await workflow.execute_activity(
@@ -5002,37 +4933,183 @@ class WorkItemLifecycleWorkflow:
                 )
         await self._record_evidence(reason=reason, detail="ok")
 
-    async def _post_preview_link(
-        self, url: str, kind: str, *,
-        deep_path: str | None = None, deep_note: str | None = None,
-    ) -> None:
-        """Plan 08 §D (D1) — posts/edits the originating surface's tracking
-        comment with the clickable preview LINK. Reuses the MutableCommentWriter
-        (C3) via post_tracking_comment (custom body). Best-effort — it never
-        blocks (the audit ledger is the truth; the comment is convenience)."""
+    # ------------------------------------------------------------------
+    # rc.130 — the PR card: one renderer for everything a human needs after
+    # the PR exists. Posted at the preview, at the park, at the reminder, at
+    # the deadline, at merge_pending and as the suffix of an escalation.
+    # ------------------------------------------------------------------
+    def _pr_card_text(self) -> str:
         input = self._input
-        label = "frontend (UI)" if kind == "ui" else "service" if kind == "deployable" else "app"
-        # rc.103: o link cai NA mudança (url+deep_path) com a nota de 1 linha.
-        # Sem caminho, corpo byte-idêntico ao de sempre.
-        alvo = f"{url}{deep_path}" if deep_path else url
-        nota = f"→ {deep_note}\n\n" if deep_path and deep_note else ""
-        body = (
-            f"🔗 **Preview ({label}) ready** — open it and decide:\n\n{alvo}\n\n"
-            + nota +
-            "_Ephemeral per-PR environment (Argo CD, TTL). Merging remains a "
-            "human decision (P1)._"
+        lines: list[str] = []
+        pr = f"PR #{input.pr_number}" if input.pr_number is not None else "PR not opened"
+        if input.pr_url:
+            pr += f" — {input.pr_url}"
+        lines.append(pr)
+        if input.preview_status == "created" and input.preview_url:
+            preview = f"Preview: created — {input.preview_url}"
+            if input.preview_deep_note:
+                preview += f"\n  → {input.preview_deep_note}"
+        elif input.preview_status == "degraded" or input.preview_detail:
+            preview = f"Preview: degraded — {(input.preview_detail or 'no detail')[:300]}"
+        elif input.preview_status in ("skipped_backend_only", "skipped_disabled"):
+            preview = f"Preview: skipped ({input.preview_status.removeprefix('skipped_')})"
+        elif input.preview_status:
+            preview = f"Preview: {input.preview_status}"
+        else:
+            preview = "Preview: not attempted"
+        lines.append(preview)
+        if input.ci_failing_checks:
+            named = "; ".join(
+                f"`{c.get('name')}` ({c.get('conclusion') or 'failure'})"
+                + (f" {c.get('url')}" if c.get("url") else "")
+                for c in input.ci_failing_checks[:8]
+            )
+            ci = f"CI: red — {named}"
+        elif input.ci_wait_exhausted:
+            ci = (f"CI: still pending when the DSE stopped waiting "
+                  f"({input.ci_wait_exhausted}) — check it on GitHub")
+        elif input.ci_status == "green":
+            ci = "CI: green"
+        elif input.ci_status == "no_ci":
+            ci = ("CI: this repository has no CI — no check run and no commit status "
+                  "was reported for this commit. Nothing automated verified it beyond "
+                  "the DSE's own L1/L2 gates; you are the only gate")
+        elif input.ci_status:
+            ci = f"CI: {input.ci_status}"
+        else:
+            ci = "CI: not checked yet"
+        lines.append(ci)
+        if input.last_fix_outcome:
+            lines.append(f"Last fix: {input.last_fix_outcome}")
+        lines.append("")
+        lines.append(
+            "Approve here or on GitHub. For one fix cycle: GitHub *Request changes*, "
+            "or reply `@dse fix ci` / `@dse fix preview`. Merging is yours."
         )
+        return "\n".join(lines)
+
+    async def _post_pr_card(self, status: str, headline: str) -> None:
+        """Edits the originating surface's single tracking comment with the
+        card. `status` is what the adapters key the buttons off (Approve at
+        APPROVAL_STATUSES, How to test at HOW_TO_TEST_STATUSES). Best-effort —
+        the audit ledger is the truth; the comment is convenience."""
+        input = self._input
         try:
             await workflow.execute_activity(
                 ACTIVITY_POST_TRACKING_COMMENT,
                 {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
-                 "status": "pr_ready", "body": body},
+                 "pr_number": input.pr_number,
+                 "status": status, "body": f"{headline}\n\n{self._pr_card_text()}"},
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=5),
             )
-            await self._audit("preview_link_posted", {"url": url, "kind": kind})
         except ActivityError:
-            logger.warning("best-effort post_preview_link failed (url=%s)", url)
+            logger.warning("best-effort pr card failed (status=%s)", status)
+
+    async def _wait_at_the_review_park(self) -> None:
+        """The plan gate's clock (`plan_approval_reminder_hours` /
+        `_timeout_hours`) on the review park — and NONE of its escalation.
+
+        Before rc.130 this was a bare `wait_condition`: no reminder, no
+        deadline, a sandbox held for as long as the human took. At the deadline
+        the DSE now releases the one resource that costs and KEEPS WAITING in
+        `review_ready`: a closed execution cannot receive `merged_by_human`,
+        and `done` was the number sitting at zero. A fix requested after the
+        deadline rebuilds the Pod from the checkpoint (`_ensure_sandbox_for_fix`).
+
+        Same honest limit as the plan reminder: editing the tracking comment
+        notifies nobody — it pays off for a human who comes back to the thread."""
+        input = self._input
+
+        def _woken() -> bool:
+            return bool(self._review_received or self._refresh_evidence_requested
+                        or self._cancelled or self._operator_escalate_requested)
+
+        if input.review_park_started_at_epoch is None:
+            input.review_park_started_at_epoch = workflow.now().timestamp()
+        while not _woken():
+            elapsed = workflow.now().timestamp() - input.review_park_started_at_epoch
+            reminder_due = not input.review_reminder_sent and input.review_reminder_hours > 0
+            deadline_due = not input.review_deadline_elapsed and input.review_timeout_hours > 0
+            if reminder_due:
+                timeout = max(0.0, input.review_reminder_hours * 3600 - elapsed)
+            elif deadline_due:
+                timeout = max(0.0, input.review_timeout_hours * 3600 - elapsed)
+            else:
+                await workflow.wait_condition(_woken)
+                return
+            try:
+                await workflow.wait_condition(_woken, timeout=timedelta(seconds=timeout))
+                return
+            except asyncio.TimeoutError:
+                pass
+            if reminder_due:
+                input.review_reminder_sent = True
+                await self._audit("review_reminder_sent", {
+                    "hours": input.review_reminder_hours, "pr_number": input.pr_number,
+                })
+                await self._post_pr_card(
+                    WorkItemStatus.review_ready.value,
+                    "⏰ **Reminder** — still awaiting your review",
+                )
+            elif deadline_due:
+                input.review_deadline_elapsed = True
+                await self._audit("review_deadline_elapsed", {
+                    "hours": input.review_timeout_hours, "pr_number": input.pr_number,
+                    "sandbox_released": bool(input.sandbox_id),
+                })
+                await self._teardown_sandbox_best_effort("review_deadline")
+                input.sandbox_id = None
+                await self._post_pr_card(
+                    WorkItemStatus.review_ready.value,
+                    "⏳ **Still awaiting your review** — the DSE released its sandbox; "
+                    "the PR stays yours",
+                )
+
+    async def _fix_evidence_for(self, comments: list[dict[str, Any]]) -> list[str]:
+        """What the one human-requested fix cycle needs to hear. `preview`: the
+        app container's words, already in the input. `ci`: the checks' log
+        tails via `fetch_ci_failure_evidence` — best-effort (the App may lack
+        `actions:read`); with nothing readable, at least the names and links
+        the poll carried. This is what was missing from the eight rounds."""
+        input = self._input
+        targets = {str(c.get("fix_target") or "") for c in comments}
+        lines: list[str] = []
+        if "preview" in targets and input.preview_detail:
+            lines.append(
+                "The preview did not come up. The app container said:\n"
+                + input.preview_detail[:2000]
+            )
+        if "ci" in targets and input.repo and (input.head_sha or input.branch):
+            evidence: CiFailureEvidence | None = None
+            try:
+                evidence = await workflow.execute_activity(
+                    ACTIVITY_FETCH_CI_FAILURE_EVIDENCE,
+                    {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
+                     "repo": input.repo, "ref": input.head_sha or input.branch,
+                     "pr_number": input.pr_number},
+                    result_type=CiFailureEvidence,
+                    start_to_close_timeout=timedelta(seconds=120),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+            except ActivityError as exc:
+                await self._audit("ci_evidence_unavailable",
+                                  {"error": str(exc.cause or exc)[:300]})
+            checks = list(evidence.checks) if evidence else []
+            if checks:
+                for c in checks:
+                    head = f"CI check `{c.name}` ({c.conclusion})" + (f" — {c.url}" if c.url else "")
+                    if c.log_tail:
+                        lines.append(f"{head}\nLast lines of its log ({c.source}):\n{c.log_tail}")
+                    else:
+                        lines.append(f"{head}\n(no log or annotations were readable — open the link)")
+            else:
+                for c in input.ci_failing_checks:
+                    lines.append(
+                        f"CI check `{c.get('name')}` ({c.get('conclusion') or 'failure'})"
+                        + (f" — {c.get('url')}" if c.get("url") else "")
+                    )
+        return lines
 
     async def _record_evidence(self, *, reason: str, detail: str) -> None:
         """Durable projection of the evidence state (migration 0014) —

@@ -36,7 +36,7 @@ from dse_orchestrator.local_activities import (
 from dse_orchestrator.models import WorkItemLifecycleInput
 from dse_orchestrator.workflows import WorkItemLifecycleWorkflow
 
-from conftest import new_work_item_id
+from conftest import new_work_item_id, wait_for_status
 from fakes import FakeControlPlane, build_fake_activities
 
 _POLL_CAP = 4
@@ -141,18 +141,22 @@ async def test_entering_validation_is_surfaced_on_the_thread(time_skipping_env):
     work_item_id = new_work_item_id("valsurf")
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
     posted: list[str] = []
-    # CI nunca fica verde: o wait fecha sozinho no cap, sem sinal humano —
-    # o caminho até lá já atravessou coder -> L1, que é o que interessa.
+    # CI nunca fica verde: o wait fecha no cap e (rc.130) PARA no parque de
+    # review — o caminho até lá já atravessou coder -> L1, que é o que
+    # interessa; o teste cancela de lá.
     state = FakeControlPlane(ci_sequence=["pending"] * (_POLL_CAP + 2))
 
     async with Worker(time_skipping_env.client, task_queue=task_queue,
                       workflows=[WorkItemLifecycleWorkflow],
                       workflow_runner=UnsandboxedWorkflowRunner(),
                       activities=_recording_activities(state, posted)):
-        await time_skipping_env.client.execute_workflow(
+        handle = await time_skipping_env.client.start_workflow(
             WorkItemLifecycleWorkflow.run, _wf_input(work_item_id),
             id=work_item_id, task_queue=task_queue,
         )
+        await wait_for_status(handle, {"review_ready"})
+        await handle.signal("cancel", "measured")
+        await handle.result()
 
     assert "implementing" in posted, (
         f"pré-condição quebrada: nem o post de implementing saiu — {posted}"
