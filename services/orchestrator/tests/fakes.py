@@ -554,7 +554,8 @@ def build_fake_activities(state: FakeControlPlane) -> list[Any]:
         inp = ConsumeCiStatusInput(**payload)  # REAL decode (requires tenant/repo/ref)
         status = state.ci_sequence.pop(0) if state.ci_sequence else "green"
         return CiStatusResult(
-            work_item_id=inp.work_item_id, pr_number=inp.pr_number, status=status
+            work_item_id=inp.work_item_id, pr_number=inp.pr_number, status=status,
+            failing_checks=list(getattr(state, "ci_failing_checks", None) or []) if status == "red" else [],
         )
 
     # ------------------------------------------------------------------

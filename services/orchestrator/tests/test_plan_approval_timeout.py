@@ -639,7 +639,7 @@ async def test_timeout_zero_disables_the_deadline(time_skipping_env):
         await handle.signal("cancel", "end of test")
         result = await handle.result()
 
-    assert result.status == WorkItemStatus.failed.value  # cancelled, not escalated
+    assert result.status == WorkItemStatus.cancelled.value  # cancelled, not escalated
     assert state.coder_turn_calls == 0
     # The disabled branch must issue the SAME commands the pre-timeout code did:
     # no timer at all. This is the shape an in-flight history has.

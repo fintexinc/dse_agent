@@ -185,7 +185,7 @@ async def test_migrations_path_forces_high_even_when_planner_says_low(time_skipp
 
 
 @pytest.mark.asyncio
-async def test_rejection_cancel_is_terminal_failed_and_audited(time_skipping_env):
+async def test_rejection_cancel_is_terminal_cancelled_and_audited(time_skipping_env):
     work_item_id = new_work_item_id("rejcancel")
     insert_work_item(work_item_id)
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
@@ -208,7 +208,7 @@ async def test_rejection_cancel_is_terminal_failed_and_audited(time_skipping_env
         })
         result = await handle.result()
 
-    assert result.status == WorkItemStatus.failed.value
+    assert result.status == WorkItemStatus.cancelled.value
     assert state.coder_turn_calls == 0  # a rejection never starts implementation
     actions = read_audit_actions(work_item_id)
     assert "plan_rejected" in actions
@@ -302,4 +302,4 @@ async def test_rejection_re_clarify_returns_to_clarification_gate(time_skipping_
         # close cleanly via an operator cancel (not the focus of this test)
         await handle.signal("cancel", "end of test")
         result = await handle.result()
-    assert result.status in (WorkItemStatus.failed.value, WorkItemStatus.escalated.value)
+    assert result.status in (WorkItemStatus.cancelled.value, WorkItemStatus.escalated.value)

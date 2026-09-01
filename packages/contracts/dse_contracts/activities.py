@@ -447,6 +447,21 @@ class L2Verdict(BaseModel):
         return self
 
 
+class FailingCheck(BaseModel):
+    """One red check, as the human (and a fix instruction) needs to see it.
+
+    rc.130. The ledger always knew the names (`wse_ci_status`, the
+    `ci_status_consumed` audit row) — the workflow only ever received the
+    string "red". Measured on wi_f1f27266: eight paid fix rounds whose whole
+    instruction was "ci red: fix the pipeline", every one of them changing no
+    file, until the retry cap escalated with a card that named nothing.
+    """
+
+    name: str
+    conclusion: str = ""
+    url: str | None = None
+
+
 class CiStatusResult(BaseModel):
     work_item_id: str
     pr_number: int
@@ -456,6 +471,9 @@ class CiStatusResult(BaseModel):
     # `pending`: collapsing the two is what made every PR wait forever.
     status: str
     head_sha: str | None = None
+    # Additive: a historical payload without the key decodes to [] — this model
+    # has no extra="forbid", and producer and consumer share one image.
+    failing_checks: list[FailingCheck] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

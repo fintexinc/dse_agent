@@ -18,6 +18,7 @@ from __future__ import annotations
 from dse_audit import emit
 
 from .. import kill_switches
+from .api import _get_connection
 from .signals import (
     SIGNAL_CANCEL,
     SIGNAL_ESCALATE,
@@ -29,6 +30,51 @@ from .signals import (
     SIGNAL_RETRY_FROM_CHECKPOINT,
     SignalSender,
 )
+
+
+#: A signal nobody can receive. Same two shapes `ingest_gateway.dispatcher`
+#: treats as permanent (B8): the execution finished, or never existed here.
+def _is_permanent_signal_failure(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "already completed" in msg or "not found" in msg
+
+
+#: Terminal statuses the cancel must never overwrite — a finished item stays
+#: finished. Mirrors `stranded.STRANDED_TERMINAL_STATUSES`; kept as literals
+#: because this package does not import the gateway.
+_TERMINAL_STATUSES = ("done", "failed", "blocked", "escalated", "cancelled")
+
+
+def mark_cancelled(*, work_item_id: str, tenant_id: str, reason: str | None, actor: str) -> bool:
+    """status -> `cancelled` for an item whose workflow is gone, plus one audit
+    row. Returns True when this call changed the row; False when the item was
+    already terminal (nothing to do, nothing written)."""
+    conn = _get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE work_items
+                SET status = 'cancelled',
+                    last_transition_at = now(),
+                    state_version = state_version + 1
+                WHERE id = %s AND tenant_id = %s AND status <> ALL(%s)
+                """,
+                (work_item_id, tenant_id, list(_TERMINAL_STATUSES)),
+            )
+            changed = cur.rowcount == 1
+        conn.commit()
+    finally:
+        conn.close()
+    if changed:
+        emit(
+            actor=actor,
+            action="cancelled_by_operator",
+            tenant_id=tenant_id,
+            work_item_id=work_item_id,
+            details={"reason": reason, "operator": actor, "workflow": "not_reachable"},
+        )
+    return changed
 
 
 class OperatorConsole:
@@ -68,7 +114,23 @@ class OperatorConsole:
 
     def cancel(self, work_item_id: str, tenant_id: str, *, reason: str | None = None) -> None:
         self._audit_action("cancel", work_item_id, tenant_id, {"reason": reason})
-        self._signal(work_item_id, SIGNAL_CANCEL, reason)
+        try:
+            self._signal(work_item_id, SIGNAL_CANCEL, reason)
+        except Exception as exc:  # noqa: BLE001 — só a classe permanente é tratada
+            if not _is_permanent_signal_failure(exc):
+                raise
+            # rc.130. The workflow is gone (terminated, purged, stranded) and
+            # nobody will ever consume the signal — this is exactly the case
+            # that used to send an operator to psql to write `cancelled` by
+            # hand: 33 rows in production carried a value the enum did not
+            # have, and the stranded sweep re-escalated each of them. The
+            # cancel is the operator's decision either way; the row records
+            # it, with the same terminal-status guard `stranded.escalate_stranded`
+            # uses, and one audit row — the effect, after the intent above.
+            mark_cancelled(
+                work_item_id=work_item_id, tenant_id=tenant_id,
+                reason=reason, actor=self._operator,
+            )
 
     def retry_from_checkpoint(self, work_item_id: str, tenant_id: str, *, reason: str | None = None) -> None:
         self._audit_action("retry_from_checkpoint", work_item_id, tenant_id, {"reason": reason})

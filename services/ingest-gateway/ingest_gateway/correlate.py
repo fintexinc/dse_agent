@@ -40,7 +40,13 @@ from dse_contracts import ConversationEvent, WorkItemStatus
 
 CorrelationKind = Literal["new_task", "signal"]
 
-_TERMINAL_STATUSES = {WorkItemStatus.done.value, WorkItemStatus.failed.value}
+_TERMINAL_STATUSES = {
+    WorkItemStatus.done.value,
+    WorkItemStatus.failed.value,
+    # rc.130: a cancelled item has no workflow to signal — a reply in its
+    # thread is a new task with provenance, exactly like done/failed.
+    WorkItemStatus.cancelled.value,
+}
 
 
 class CorrelationResult(NamedTuple):

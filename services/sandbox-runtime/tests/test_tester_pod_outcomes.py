@@ -178,14 +178,6 @@ def test_an_infrastructure_ending_is_never_deferred(monkeypatch, audits):
         assert result.tests_passed is False, f"rc={rc} reported as passing"
 
 
-def test_the_gate_can_be_turned_back_on(monkeypatch, audits):
-    """A repository that wants the Tester to gate its own suite says so."""
-    monkeypatch.setenv("DSE_TESTER_SUITE_IS_A_GATE", "1")
-    result = _run_bridge(monkeypatch, suite=_done([], 1, stdout="AssertionError\n"))
-    assert result.suite_deferred is False
-    assert result.status is GateStatus.FAIL
-
-
 def test_a_passing_suite_stays_a_pass(monkeypatch, audits):
     result = _run_bridge(monkeypatch, suite=_done([], 0, stdout="1 passed\n"))
 

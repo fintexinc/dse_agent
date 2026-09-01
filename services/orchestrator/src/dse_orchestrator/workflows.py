@@ -112,17 +112,20 @@ with workflow.unsafe.imports_passed_through():
 
 logger = logging.getLogger("dse_orchestrator.workflow")
 
-# The states a work item never leaves. Operator cancellation is deliberately not
-# a fifth member: `_finish_cancelled` resolves to `failed`, so this set is the
-# whole terminal surface. It gates the diário write in `_set_status`; a new
-# terminal state added to WorkItemStatus must be added here too, or its runs are
-# silently never journalled.
+# The states a work item never leaves. `cancelled` is the fifth member since
+# rc.130: a human decision is not a failure, and 33 rows in production already
+# carried the value by hand while the enum did not — the stranded sweep, which
+# did not know it as terminal, re-escalated each of them six hours later. This
+# set gates the diário write in `_set_status`; a new terminal state added to
+# WorkItemStatus must be added here too, or its runs are silently never
+# journalled.
 _TERMINAL_STATUSES = frozenset(
     {
         WorkItemStatus.done,
         WorkItemStatus.failed,
         WorkItemStatus.escalated,
         WorkItemStatus.blocked,
+        WorkItemStatus.cancelled,
     }
 )
 
@@ -1287,14 +1290,14 @@ class WorkItemLifecycleWorkflow:
         detail = f"cancelled_by_operator: {self._cancel_reason or 'no reason given'}"
         self._input.terminal_detail = detail
         await self._set_status(
-            WorkItemStatus.failed,
+            WorkItemStatus.cancelled,
             audit_action="cancelled_by_operator",
             details={"reason": self._cancel_reason},
         )
-        await self._post_status_comment("failed", detail=detail)
+        await self._post_status_comment("cancelled", detail=detail)
         return WorkItemLifecycleResult(
             work_item_id=self._input.work_item_id,
-            status=WorkItemStatus.failed.value,
+            status=WorkItemStatus.cancelled.value,
             detail=detail,
             pr_number=self._input.pr_number,
         )
@@ -3778,14 +3781,16 @@ class WorkItemLifecycleWorkflow:
     async def _handle_plan_rejection(self, exc: "_PlanRejected") -> WorkItemLifecycleResult:
         input = self._input
         if exc.route == "cancel":
+            # A human rejected the plan and chose to cancel: the same human
+            # decision `_finish_cancelled` records — `cancelled`, not `failed`.
             detail = f"plan_rejected_cancel: {exc.justification}"
             input.terminal_detail = detail
             await self._set_status(
-                WorkItemStatus.failed, audit_action="plan_rejected_cancelled",
+                WorkItemStatus.cancelled, audit_action="plan_rejected_cancelled",
                 details={"decided_by": exc.actor, "justification": exc.justification},
             )
             return WorkItemLifecycleResult(
-                work_item_id=input.work_item_id, status=WorkItemStatus.failed.value,
+                work_item_id=input.work_item_id, status=WorkItemStatus.cancelled.value,
                 detail=detail, pr_number=input.pr_number,
             )
 

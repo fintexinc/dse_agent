@@ -12,7 +12,7 @@ way to end.
 """
 from __future__ import annotations
 
-from dse_contracts import CiStatusResult
+from dse_contracts import CiStatusResult, FailingCheck
 
 from dse_validation import db
 from dse_validation.github.client import GitHubClient
@@ -135,4 +135,28 @@ def consume_ci_status_core(
                      "check_runs": summary, "combined_status": combined_summary},
         )
 
-    return CiStatusResult(work_item_id=work_item_id, pr_number=pr_number, status=status)
+    # The names travel with the verdict (rc.130). `html_url` is GitHub's own
+    # page for the run; `details_url` is what an external CI points at. The
+    # legacy commit statuses carry the same two facts under other names.
+    failing = [
+        FailingCheck(
+            name=str(r.get("name") or "?"),
+            conclusion=str(r.get("conclusion") or ""),
+            url=r.get("html_url") or r.get("details_url"),
+        )
+        for r in check_runs
+        if r.get("status") == "completed" and r.get("conclusion") in _TERMINAL_FAILURE_CONCLUSIONS
+    ]
+    if combined is not None:
+        failing += [
+            FailingCheck(
+                name=str(s.get("context") or "?"),
+                conclusion=str(s.get("state") or ""),
+                url=s.get("target_url"),
+            )
+            for s in (combined.get("statuses") or [])
+            if s.get("state") in ("failure", "error")
+        ]
+    return CiStatusResult(
+        work_item_id=work_item_id, pr_number=pr_number, status=status, failing_checks=failing,
+    )

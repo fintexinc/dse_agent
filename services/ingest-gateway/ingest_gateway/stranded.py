@@ -56,7 +56,7 @@ from dse_audit import emit as audit_emit
 # exported from this package next to that one is an invitation to import the
 # wrong answer; the prefix says which question this tuple settles ("is anybody
 # still supposed to be working on it?").
-STRANDED_TERMINAL_STATUSES = ("done", "failed", "blocked", "escalated")
+STRANDED_TERMINAL_STATUSES = ("done", "failed", "blocked", "escalated", "cancelled")
 
 # Non-terminal, and audit-SILENT BY DESIGN: a live workflow is parked here on a
 # `workflow.wait_condition` waiting for a person, and writes nothing to the

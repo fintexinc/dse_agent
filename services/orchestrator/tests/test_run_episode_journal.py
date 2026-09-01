@@ -37,10 +37,14 @@ def test_every_field_the_journal_reads_exists_on_the_input():
 
 
 def test_terminal_set_matches_what_the_schema_accepts():
-    """migrations/0036 CHECKs these four. A terminal state added to the enum but
-    not to `_TERMINAL_STATUSES` is a run that is silently never journalled; one
-    added here but not to the CHECK is a write that fails at 3am."""
-    assert {s.value for s in _TERMINAL_STATUSES} == {"done", "failed", "escalated", "blocked"}
+    """migrations/0036 CHECKed four; 0048 admits `cancelled` (rc.130). A
+    terminal state added to the enum but not to `_TERMINAL_STATUSES` is a run
+    that is silently never journalled; one added here but not to the CHECK is
+    a write that fails at 3am — which is exactly what this pin caught when
+    `cancelled` entered the enum before the migration existed."""
+    assert {s.value for s in _TERMINAL_STATUSES} == {
+        "done", "failed", "escalated", "blocked", "cancelled",
+    }
 
 
 def test_digest_is_deterministic():

@@ -36,6 +36,26 @@ def _tail(text: str, max_lines: int = _MAX_DETAIL_LINES) -> str:
     return "\n".join(lines[-max_lines:]) + f"\n... ({omitted} earlier line(s) omitted)"
 
 
+def _exec_facts(result: ExecResult) -> str:
+    """What RAN, with what exit, and how much each stream wrote.
+
+    rc.130. An ERROR finding used to carry only a headline plus the tail of
+    the output — and when the tail was empty, "the tool printed nothing" and
+    "the output was lost" (a dead `kubectl exec` answers rc −1/127 with the
+    kubectl's own stderr, not the gate's) read exactly the same. The `lint
+    exit=2` ghost on the revalidation path cost an hour of forensics for want
+    of these five facts. They go where `detail` already goes —
+    `validation_runs` — never the append-only ledger."""
+    argv = " ".join(str(a) for a in (result.argv or []))
+    facts = (
+        f"ran: {argv} | exit={result.returncode} | "
+        f"stdout={len(result.stdout or '')} bytes, stderr={len(result.stderr or '')} bytes"
+    )
+    if getattr(result, "timed_out", False):
+        facts += " | timed out"
+    return facts
+
+
 def _output(result: ExecResult) -> str:
     """Both streams, because the diagnosis is rarely on the one `or` picks.
 
@@ -74,6 +94,12 @@ def _detail_with(summary: str, attributed: list[str], result: ExecResult) -> str
     a loop at all.
     """
     parts = [summary]
+    # The execution facts, whenever the tool did not simply succeed (rc.130):
+    # what ran, the exit code, bytes per stream. `test` and `build` build their
+    # detail here, so this is where their ERROR/FAIL findings get the header
+    # the other gates prepend by hand.
+    if result.returncode != 0 or getattr(result, "timed_out", False):
+        parts.append(_exec_facts(result))
     if attributed:
         shown = attributed[:_MAX_ATTRIBUTED_LINES]
         parts.append(f"--- the {len(attributed)} line(s) this gate counted ---")
@@ -471,16 +497,16 @@ def lint_check(
     # gate answers a narrower question — did OUR change introduce any?
     passed = (result.ok or changed_files is not None) and len(issue_lines) == 0
     if result.timed_out:
-        detail = f"timed out after {timeout}s running {' '.join(cmd)}"
+        detail = f"timed out after {timeout}s\n{_exec_facts(result)}"
         summary = f"timed out after {timeout}s"
         status = GateStatus.ERROR
     elif (infra := _infra_failure(result)) is not None:
-        detail = f"lint: {infra}\n" + _tail(_output(result))
+        detail = f"lint: {infra}\n{_exec_facts(result)}\n" + _tail(_output(result))
         summary = f"lint could not run: {infra}"
         passed = False
         status = GateStatus.ERROR
     elif result.returncode == 127:
-        detail = f"lint command not found: {' '.join(cfg.lint_cmd)} ({result.stderr.strip()})"
+        detail = f"lint command not found: {' '.join(cfg.lint_cmd)} ({result.stderr.strip()})\n{_exec_facts(result)}"
         # Neither the argv nor the stderr belongs in `summary`. Both come from
         # the customer's own manifest: a repo can declare `lint: ["./ci/lint.sh"]`
         # and have that script dump the sandbox's environment to stderr before
@@ -505,7 +531,7 @@ def lint_check(
         detail = (
             f"lint exited {result.returncode} and printed no diagnostic in the "
             f"'path:line:col: CODE msg' format this gate parses — no verdict on "
-            f"the change was possible\n" + _tail(_output(result))
+            f"the change was possible\n{_exec_facts(result)}\n" + _tail(_output(result))
             + egress_denial_note(egress_denials)
         )
         summary = (
@@ -576,7 +602,7 @@ def typecheck_check(
             check="typecheck",
             passed=False,
             status=GateStatus.ERROR,
-            detail=f"typecheck: {infra}\n" + _tail(_output(result)),
+            detail=f"typecheck: {infra}\n{_exec_facts(result)}\n" + _tail(_output(result)),
             summary=f"typecheck could not run: {infra}",
         )
     if result.returncode == 127:
@@ -584,7 +610,7 @@ def typecheck_check(
             check="typecheck",
             passed=False,
             status=GateStatus.ERROR,
-            detail=f"typecheck command not found: {' '.join(cfg.typecheck_cmd)}",
+            detail=f"typecheck command not found: {' '.join(cfg.typecheck_cmd)}\n{_exec_facts(result)}",
             summary="typecheck command not found (exit 127)",
         )
     all_errors = len(error_lines)
@@ -598,7 +624,7 @@ def typecheck_check(
             detail=(
                 f"typecheck exited {result.returncode} and printed no diagnostic "
                 f"this gate parses (mypy's ': error:' or tsc's 'path(l,c): error') "
-                f"— no verdict on the change was possible\n" + _tail(_output(result))
+                f"— no verdict on the change was possible\n{_exec_facts(result)}\n" + _tail(_output(result))
             ),
             summary=(
                 f"typecheck could not be read (exit={result.returncode}): no "
@@ -979,7 +1005,7 @@ def test_check(
             check="test",
             passed=False,
             status=GateStatus.ERROR,
-            detail=f"test: {infra}\n" + _tail(_output(result)),
+            detail=f"test: {infra}\n{_exec_facts(result)}\n" + _tail(_output(result)),
             summary=f"the test suite could not run: {infra}",
         )
     if result.returncode == 127:
@@ -987,7 +1013,7 @@ def test_check(
             check="test",
             passed=False,
             status=GateStatus.ERROR,
-            detail=f"test command not found: {' '.join(cfg.test_cmd)}",
+            detail=f"test command not found: {' '.join(cfg.test_cmd)}\n{_exec_facts(result)}",
             summary="test command not found (exit 127)",
         )
     output = _output(result)
@@ -1155,7 +1181,7 @@ def build_check(
             check="build",
             passed=False,
             status=GateStatus.ERROR,
-            detail=f"build command not found: {' '.join(cfg.build_cmd)}",
+            detail=f"build command not found: {' '.join(cfg.build_cmd)}\n{_exec_facts(result)}",
             summary="build command not found (exit 127)",
         )
     passed = result.ok

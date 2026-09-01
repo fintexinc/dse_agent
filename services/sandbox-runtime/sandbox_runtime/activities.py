@@ -2107,19 +2107,6 @@ def _sh_quote(path: str) -> str:
     return "'" + path.replace("'", "'\\''") + "'"
 
 
-def _suite_verdict_deferred() -> bool:
-    """Whether the Tester's suite run is informational rather than a gate.
-
-    On by default. It is a flag rather than a deletion because the Tester's own
-    run is still the only thing that can tell a hung suite from a slow one
-    (`suite_hung`, rc=124) before L1's much longer clock — so a repository where
-    that matters can turn the gate back on with
-    `DSE_TESTER_SUITE_IS_A_GATE=1`."""
-    return os.environ.get("DSE_TESTER_SUITE_IS_A_GATE", "").strip().lower() not in {
-        "1", "true", "yes",
-    }
-
-
 def _example_candidates(existing: set[str], diff_files: list[str]) -> list[str]:
     """Os testes existentes em ordem de PROXIMIDADE do diff (D1).
 
@@ -3055,6 +3042,14 @@ def _pod_manifest(_pod_sh) -> dict:
     return manifest if isinstance(manifest, dict) else {}
 
 
+def _disabled_stages(manifest: dict) -> set[str]:
+    """The L1 stages the repository turned off (`disabled_stages`). The real
+    parser (`L1Config`) already refused anything but the four gate names; here
+    the list is only read, never judged."""
+    raw = manifest.get("disabled_stages") if isinstance(manifest, dict) else None
+    return {str(x) for x in raw} if isinstance(raw, list) else set()
+
+
 def _argv_from(manifest: dict, *path: str) -> list[str]:
     """Um argv declarado, ou vazio. O parser de verdade (`L1Config`) já recusou
     string de shell e argumento não-string quando o manifesto entrou; aqui só
@@ -3617,7 +3612,16 @@ def _tester_pod_sync(
     # died, and the Tester's clock is the only one that catches a hang before
     # L1's much longer one. Those still escalate, and `tests_passed` still
     # reads False, because writing True there would put a lie in the ledger.
-    suite_deferred = _suite_verdict_deferred() and outcome == "tests_failed"
+    #
+    # rc.130 — deferred ONLY when L1 is going to judge. With `disabled_stages:
+    # ["test"]` the L1 gate answers PASS without running (`_not_applicable`),
+    # so a deferred red verdict evaporated: it became PASS in the contract and
+    # the PR was born with nobody's suite behind it. Measured twice on the
+    # glide-path: tests that "passed" here failed the repository's own CI
+    # lanes. The gate the repo turned off leaves this run as the only judge,
+    # and then its verdict stands. (The old `DSE_TESTER_SUITE_IS_A_GATE` flag
+    # had no reference in any deployment — a rule nobody ever turned.)
+    suite_deferred = outcome == "tests_failed" and "test" not in _disabled_stages(manifest)
     tests_passed = tests_ran and (suite_deferred or returncode == 0)
     suite_hung = outcome == "suite_hung"
     # Kept, not just logged. The workflow feeds this back to the Coder on the

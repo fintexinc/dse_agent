@@ -40,6 +40,12 @@ class WorkItemStatus(str, Enum):
     blocked = "blocked"
     failed = "failed"
     escalated = "escalated"
+    # rc.130. A human decision, not a failure: `_finish_cancelled` used to
+    # resolve to `failed`, and an operator cancelling a workflow that no
+    # longer existed wrote this value by hand — 33 rows in production carried
+    # it while the enum did not, and the stranded sweep, which did not know it
+    # as terminal, re-escalated every one of them six hours later.
+    cancelled = "cancelled"
 
 
 # Single map from internal state -> coarse public state (WSA-E1-T4). Adding a
@@ -67,6 +73,7 @@ _PUBLIC_STATUS_MAP: dict[WorkItemStatus, PublicStatus] = {
     WorkItemStatus.blocked: "blocked",
     WorkItemStatus.failed: "failed",
     WorkItemStatus.escalated: "blocked",
+    WorkItemStatus.cancelled: "failed",
 }
 
 

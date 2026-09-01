@@ -174,7 +174,7 @@ def get_tenant_budget(tenant_id: str, conn=None) -> TenantBudget:
             cur.execute(
                 """
                 SELECT COUNT(*) FROM work_items
-                WHERE tenant_id = %s AND status NOT IN ('done','failed','escalated','blocked')
+                WHERE tenant_id = %s AND status NOT IN ('done','failed','escalated','blocked','cancelled')
                 """,
                 (tenant_id,),
             )

@@ -35,6 +35,7 @@ STATUS_MAP: dict[str, tuple[str, str | None]] = {
     "blocked": ("blocked", "no approver"),
     "failed": ("failed", None),
     "escalated": ("blocked", "escalated"),
+    "cancelled": ("failed", "cancelled"),
 }
 
 # audit_log.action -> console TimelineEvent.type. Actions outside the map become

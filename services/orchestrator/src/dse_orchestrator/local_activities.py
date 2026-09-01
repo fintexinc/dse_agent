@@ -821,6 +821,7 @@ _STATUS_BODIES = {
     ),
     "done": "🎉 Merged by a human. Task completed.",
     "failed": "❌ The task failed and stopped: {detail}",
+    "cancelled": "⏹️ Cancelled by a human: {detail}",
     "escalated": (
         "⚠️ The DSE escalated this task for human review and stopped.\n\n"
         "**Reason:** {detail}\n\n"
