@@ -107,11 +107,17 @@ def pod_failure_detail(cfg: PreviewConfig, namespace: str, reason: str) -> str:
     # caso em que ela seria mais útil, porque só o pod que ESTÁ reiniciando tem
     # algo a dizer. Medido na PR #5: a linha chegou à PR com o timeout pelado,
     # sem log e sem o sufixo de "log vazio", que é a assinatura da exceção.
-    base = ["logs", "-n", namespace, "-l", "app=preview", "--tail=40",
-            "--all-containers=true"]
+    # O container do APP primeiro, sidecars depois. Com `--all-containers` as
+    # 40 linhas de um pod com Postgres são do banco ("database system is
+    # ready", nove vezes) e a causa — que estava no `web` — fica de fora.
+    # Medido duas vezes: a triage recebeu log do sidecar e chutou, e o autofix
+    # editou o manifesto do cliente com base no chute.
+    logs = ["logs", "-n", namespace, "-l", "app=preview", "--tail=40"]
+    app = [*logs, "-c", "web"]
+    todos = [*logs, "--all-containers=true"]
     log = ""
     respondeu = False
-    for args in (base, [*base, "--previous"]):
+    for args in (app, [*app, "--previous"], todos, [*todos, "--previous"]):
         try:
             proc = _kubectl(cfg, args, timeout=25)
         except Exception as exc:  # noqa: BLE001 — bônus, nunca piora
@@ -783,6 +789,16 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
         cred_volume = ""
         cred_mount = ""
     services_yaml = _service_sidecars_yaml(servicos)
+    # O nome pelo qual o preview é acessado de fora. Existe porque um `start`
+    # declarado descarta as flags da receita (`--host/--port/--allowed-hosts`),
+    # e o dev server do vite ≥5.4.12 RECUSA Host desconhecido — sem isto, um
+    # repo que declara `start` trocaria o crash por uma tela "Blocked request".
+    # A plataforma sabe o hostname; ela o entrega como DADO, e o comando
+    # declarado faz o que quiser com ele (`--allowed-hosts "$DSE_PREVIEW_HOST"`).
+    hostname = cfg.external_hostname_for(namespace)
+    if hostname:
+        env_yaml += (f"            - name: DSE_PREVIEW_HOST\n"
+                     f"              value: {json.dumps(hostname)}\n")
     if servicos:
         # A ÚNICA variável que a plataforma dá ao repo — e PRIMEIRA da lista,
         # porque a expansão $(VAR) do kubelet só enxerga o que veio antes.
@@ -1398,6 +1414,25 @@ def _http_status_probe(base_url: str):
     return probe
 
 
+def _ready_timeout(cfg: PreviewConfig, decl: "RepoPreviewDeclaration | None") -> int:
+    """Quanto o DSE espera o preview ficar Available.
+
+    `preview.ready_timeout_s` só mexia no `failureThreshold` da probe — quem
+    desiste é o `kubectl wait`, e ele ignorava a declaração. Um preview de UI
+    instala, compila e sobe dois processos: declarar 1050s (o teto que o parser
+    já aplica) e ser abandonado aos 900 é degradar um preview que ia subir.
+
+    Só ESTICA. Encurtar trocaria preview lento por preview degradado, e esta
+    espera cobre o sync do Argo, não só o boot do app.
+    """
+    base = (
+        max(cfg.sync_timeout_s, cfg.source_ready_timeout_s)
+        if cfg.mode == "source" else cfg.sync_timeout_s
+    )
+    declarado = getattr(decl, "ready_timeout_s", None) if decl else None
+    return max(base, declarado) if declarado else base
+
+
 def _announce_preview_provisioning(
     inp: TriggerPreviewInput, url: str, *, actor: str
 ) -> None:
@@ -1750,10 +1785,7 @@ def _trigger_preview(
     # is what the preview container clones, so it has to match the convention
     # `finalize_pr` uses — the PR head branch, not the SHA.
     branch = f"dse/{inp.work_item_id}"
-    ready_timeout = (
-        max(cfg.sync_timeout_s, cfg.source_ready_timeout_s)
-        if cfg.mode == "source" else cfg.sync_timeout_s
-    )
+    ready_timeout = _ready_timeout(cfg, None)
 
     # G-3 degrau 2: se este item tem um irmão de group_id com preview VIVO, o
     # proxy /api do FE aponta para o backend dele (svc in-cluster). Só para
@@ -1775,6 +1807,12 @@ def _trigger_preview(
     # existir. Best-effort pelo mesmo motivo da triage: manifesto ilegível não
     # pode derrubar o preview — sem declaração, tudo segue como antes.
     repo_preview = read_repo_preview(inp.repo, branch)
+    if repo_preview is not None:
+        # A declaração deste kind (o override do monorepo full-stack) vale para
+        # TUDO daqui para baixo, inclusive o relógio da espera. `for_kind` é
+        # idempotente — build_manifests o chama de novo e recebe o mesmo objeto.
+        repo_preview = repo_preview.for_kind(kind)
+        ready_timeout = _ready_timeout(cfg, repo_preview)
     # Fase A3: o build parseado pelo validador do L1 — o jq de índice fixo do
     # script fica só como fallback de leitura falhada.
     repo_build_cmd = read_repo_build_cmd(inp.repo, branch)
