@@ -414,6 +414,13 @@ class L1ManifestError(ValueError):
 #: (`imagen:`) tem que ser erro explicado, não default silencioso.
 _PREVIEW_FIELDS = ("image", "artifact_glob", "env", "port", "ready_timeout_s",
                    "start")
+#: Os kinds que o paths-filter produz (`paths_filter.py`), aceitos DENTRO do
+#: bloco `preview` como override raso. Existem porque um repositório pode ter
+#: mais de um app: no monorepo full-stack medido (wi_83ca26c9) o `start` do
+#: manifesto descrevia a API e um diff de FE — classificado `ui`, corretamente —
+#: subiu o processo errado. Nem só o processo diverge: o dev server do SPA
+#: escuta outra porta, e a porta que o Service publica sai da mesma declaração.
+_PREVIEW_KIND_FIELDS = ("ui", "deployable")
 #: Teto do timeout que o repo pode pedir. A activity do trigger_preview morre
 #: em 1200s (workflows.py, patch preview-trigger-timeout-headroom-v1) e a folga
 #: paga captura de log, escrita no banco e comentário na PR — pedir mais que
@@ -443,6 +450,36 @@ class RepoPreviewDeclaration:
     #: por isso que ela só sabia subir dois ecossistemas.
     start: list[str] | None = None
     install: list[str] | None = None
+    #: Overrides por kind (`ui`/`deployable`), vazio na esmagadora maioria dos
+    #: repos. Quem não declara nada não percebe diferença — ver `for_kind`.
+    by_kind: dict[str, "RepoPreviewDeclaration"] = dataclasses.field(default_factory=dict)
+
+    def for_kind(self, kind: str) -> "RepoPreviewDeclaration":
+        """A declaração que vale para ESTE kind.
+
+        Sem override, devolve O MESMO OBJETO — identidade, não cópia igual: é
+        o que garante que o manifest gerado para um repo que não declarou nada
+        continua byte-idêntico ao de antes desta chave existir.
+
+        Com override: escalar declarado substitui, `env` funde por chave (o
+        override vence a repetida — a mesma semântica aditiva que `preview.env`
+        já tem sobre o env base da receita). `install` NÃO participa: é chave de
+        topo, um repositório instala de um jeito só.
+        """
+        override = self.by_kind.get(kind)
+        if override is None:
+            return self
+        return dataclasses.replace(
+            self,
+            image=override.image or self.image,
+            artifact_glob=override.artifact_glob or self.artifact_glob,
+            port=override.port or self.port,
+            ready_timeout_s=override.ready_timeout_s or self.ready_timeout_s,
+            start=override.start or self.start,
+            env={**self.env, **override.env},
+            # Já resolvido: o resultado do merge não carrega override nenhum.
+            by_kind={},
+        )
 
 
 #: Limites do bloco `forbidden_paths`. O manifesto vem do base SHA (revisado
@@ -570,6 +607,117 @@ def _parse_reports(payload: Any, *, source: str) -> str | None:
     return _validate_report_glob(raw.get("junit"), source=source)
 
 
+def _parse_preview_block(
+    raw: Any, *, source: str, path: str, allow_kinds: bool
+) -> RepoPreviewDeclaration:
+    """Um bloco de preview — o base ou um override de kind, MESMA porta.
+
+    `path` só existe para a mensagem de erro apontar o lugar certo
+    (`preview.ui.imagen`, não `preview.imagen`). `allow_kinds` é o que impede
+    `preview.ui.ui`: o aninhamento é de UM nível, e um manifesto que ninguém
+    consegue ler não é uma declaração.
+    """
+    if not isinstance(raw, dict):
+        raise L1ManifestError(GateStatus.ERROR,
+                              f"manifest {source} {path} must be an object",
+                              summary=f"{path} must be an object")
+    campos = _PREVIEW_FIELDS + (_PREVIEW_KIND_FIELDS if allow_kinds else ())
+    unknown = sorted(set(raw) - set(campos))
+    if "install" in unknown:
+        # Nomear o destino, não só recusar: "unknown field" faz o autor do
+        # manifesto chutar outro nome. A chave existiu por uma hora na rc.105 e
+        # foi dobrada na de topo, que o sandbox lê também.
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source}: {path}.install moved to the top-level "
+            "`install` — one repository installs its dependencies one way, and "
+            "the sandbox reads the same key",
+            summary=f"{path}.install moved to the top-level `install`",
+        )
+    if unknown:
+        raise L1ManifestError(
+            GateStatus.ERROR,
+            f"manifest {source} {path} has unknown fields: {unknown}",
+            summary=(
+                f"{path} block has {len(unknown)} unknown field(s) "
+                f"(valid fields: {sorted(campos)})"
+            ),
+        )
+
+    def _str(field: str) -> str | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} {path}.{field} must be a non-empty string",
+                summary=f"{path}.{field} must be a non-empty string",
+            )
+        return value.strip()
+
+    def _argv(field: str) -> list[str] | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        # `_validate_command` é a MESMA porta dos `commands.*`: argv, no máximo
+        # 128 argumentos, cada um string não-vazia sem NUL. Reusar a validação
+        # é o que impede duas gramáticas de comando no mesmo arquivo.
+        cmd = _validate_command(f"{path}.{field}", value)
+        if not cmd:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} {path}.{field} must be a non-empty argv array",
+                summary=f"{path}.{field} must be a non-empty argv array",
+            )
+        return cmd
+
+    env_raw = raw.get("env") or {}
+    if not isinstance(env_raw, dict):
+        raise L1ManifestError(GateStatus.ERROR,
+                              f"manifest {source} {path}.env must be an object",
+                              summary=f"{path}.env must be an object")
+    env: dict[str, str] = {}
+    for key, value in env_raw.items():
+        if not isinstance(key, str) or not key.strip():
+            raise L1ManifestError(GateStatus.ERROR,
+                                  f"manifest {source} {path}.env has an empty name",
+                                  summary=f"{path}.env has an empty variable name")
+        # Valor vira string: o YAML do Deployment exige string, e um `true`
+        # de JSON viraria `True` do Python no manifesto gerado.
+        env[key.strip()] = str(value)
+
+    def _positive_int(field: str, ceiling: int | None = None) -> int | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise L1ManifestError(
+                GateStatus.ERROR,
+                f"manifest {source} {path}.{field} must be a positive integer",
+                summary=f"{path}.{field} must be a positive integer",
+            )
+        return min(value, ceiling) if ceiling else value
+
+    by_kind = {
+        kind: _parse_preview_block(raw[kind], source=source,
+                                   path=f"{path}.{kind}", allow_kinds=False)
+        for kind in _PREVIEW_KIND_FIELDS
+        if allow_kinds and kind in raw
+    }
+
+    return RepoPreviewDeclaration(
+        image=_str("image"),
+        artifact_glob=_str("artifact_glob"),
+        env=env,
+        port=_positive_int("port"),
+        # Clampado, não recusado — mesma disciplina de `timeout_seconds`.
+        ready_timeout_s=_positive_int("ready_timeout_s", _PREVIEW_MAX_READY_TIMEOUT_S),
+        start=_argv("start"),
+        by_kind=by_kind,
+    )
+
+
 def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreviewDeclaration:
     """Lê o bloco `preview` de um manifesto já decodificado. Bloco ausente =
     declaração vazia (todos os defaults de hoje)."""
@@ -583,95 +731,8 @@ def parse_repo_preview(payload: Any, *, source: str = "manifest") -> RepoPreview
     raw = payload.get("preview")
     if raw is None:
         return RepoPreviewDeclaration(install=install)
-    if not isinstance(raw, dict):
-        raise L1ManifestError(GateStatus.ERROR, f"manifest {source} preview must be an object")
-    unknown = sorted(set(raw) - set(_PREVIEW_FIELDS))
-    if "install" in unknown:
-        # Nomear o destino, não só recusar: "unknown field" faz o autor do
-        # manifesto chutar outro nome. A chave existiu por uma hora na rc.105 e
-        # foi dobrada na de topo, que o sandbox lê também.
-        raise L1ManifestError(
-            GateStatus.ERROR,
-            f"manifest {source}: preview.install moved to the top-level "
-            "`install` — one repository installs its dependencies one way, and "
-            "the sandbox reads the same key",
-            summary="preview.install moved to the top-level `install`",
-        )
-    if unknown:
-        raise L1ManifestError(
-            GateStatus.ERROR,
-            f"manifest {source} preview has unknown fields: {unknown}",
-            summary=(
-                f"preview block has {len(unknown)} unknown field(s) "
-                f"(valid fields: {sorted(_PREVIEW_FIELDS)})"
-            ),
-        )
-
-    def _str(field: str) -> str | None:
-        value = raw.get(field)
-        if value is None:
-            return None
-        if not isinstance(value, str) or not value.strip():
-            raise L1ManifestError(
-                GateStatus.ERROR,
-                f"manifest {source} preview.{field} must be a non-empty string",
-                summary=f"preview.{field} must be a non-empty string",
-            )
-        return value.strip()
-
-    def _argv(field: str) -> list[str] | None:
-        value = raw.get(field)
-        if value is None:
-            return None
-        # `_validate_command` é a MESMA porta dos `commands.*`: argv, no máximo
-        # 128 argumentos, cada um string não-vazia sem NUL. Reusar a validação
-        # é o que impede duas gramáticas de comando no mesmo arquivo.
-        cmd = _validate_command(f"preview.{field}", value)
-        if not cmd:
-            raise L1ManifestError(
-                GateStatus.ERROR,
-                f"manifest {source} preview.{field} must be a non-empty argv array",
-                summary=f"preview.{field} must be a non-empty argv array",
-            )
-        return cmd
-
-    env_raw = raw.get("env") or {}
-    if not isinstance(env_raw, dict):
-        raise L1ManifestError(GateStatus.ERROR,
-                              f"manifest {source} preview.env must be an object",
-                              summary="preview.env must be an object")
-    env: dict[str, str] = {}
-    for key, value in env_raw.items():
-        if not isinstance(key, str) or not key.strip():
-            raise L1ManifestError(GateStatus.ERROR,
-                                  f"manifest {source} preview.env has an empty name",
-                                  summary="preview.env has an empty variable name")
-        # Valor vira string: o YAML do Deployment exige string, e um `true`
-        # de JSON viraria `True` do Python no manifesto gerado.
-        env[key.strip()] = str(value)
-
-    def _positive_int(field: str, ceiling: int | None = None) -> int | None:
-        value = raw.get(field)
-        if value is None:
-            return None
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise L1ManifestError(
-                GateStatus.ERROR,
-                f"manifest {source} preview.{field} must be a positive integer",
-                summary=f"preview.{field} must be a positive integer",
-            )
-        return min(value, ceiling) if ceiling else value
-
-    return RepoPreviewDeclaration(
-        image=_str("image"),
-        artifact_glob=_str("artifact_glob"),
-        env=env,
-        port=_positive_int("port"),
-        # Clampado, não recusado — mesma disciplina de `timeout_seconds`.
-        ready_timeout_s=_positive_int("ready_timeout_s", _PREVIEW_MAX_READY_TIMEOUT_S),
-        start=_argv("start"),
-        install=install,
-    )
+    decl = _parse_preview_block(raw, source=source, path="preview", allow_kinds=True)
+    return dataclasses.replace(decl, install=install)
 
 
 # ---------------------------------------------------------------------------

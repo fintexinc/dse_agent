@@ -93,9 +93,10 @@ def test_an_unknown_field_inside_the_override_is_named():
 def test_an_unknown_kind_is_refused_naming_the_valid_ones():
     with pytest.raises(L1ManifestError) as err:
         _decl(mobile={"start": _UI_START})
-    texto = str(err.value)
-    assert "mobile" in texto
-    assert "ui" in texto and "deployable" in texto, (
+    assert "mobile" in str(err.value), "o detail nomeia a chave recusada"
+    # A lista do que vale é texto da PLATAFORMA, então mora no `summary` — o
+    # campo que o audit_log append-only recebe (config.py:404-410).
+    assert "ui" in err.value.summary and "deployable" in err.value.summary, (
         "recusar sem dizer quais valem faz o autor do manifesto chutar de novo"
     )
 

@@ -938,6 +938,12 @@ def build_manifests(namespace: str, work_item_id: str, tenant_id: str,
     the INGRESS (D3) with the hostname derived from the template — the PR link
     becomes clickable from the outside (local Traefik / tunnel / VPS, same
     mechanism)."""
+    # A declaração que vale é a DESTE kind: um monorepo full-stack declara um
+    # override (`preview.ui`) e o resto do caminho — script, containerPort,
+    # targetPort do Service, probe — passa a ver o app certo. Repo sem override
+    # recebe o MESMO objeto de volta, e os manifests saem byte-idênticos.
+    if repo_preview is not None:
+        repo_preview = repo_preview.for_kind(kind)
     image = image or cfg.preview_image
     port = app_port or cfg.app_port
     # A k8s label VALUE is capped at 63 chars (finding from the real run: the
