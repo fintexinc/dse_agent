@@ -722,6 +722,13 @@ def _source_deployment(namespace: str, labels: str, cfg: PreviewConfig, *,
             start = "exec " + _shlex.join(decl.start)
         script = (
             "set -eu; "
+            # apt PRIMEIRO com ca-certificates POR NOME, apk como degrau — o
+            # espelho exato da receita deployable (rc.126): em bookworm-slim o
+            # apk não existe, o `|| true` engolia, e o boot morria em
+            # "git: not found" (wi_83ca26c9, primeiro repo debian de kind=ui).
+            "(apt-get update >/dev/null 2>&1 && "
+            "apt-get install -y --no-install-recommends git ca-certificates "
+            "openssh-client >/dev/null 2>&1) || "
             "apk add --no-cache git openssh-client >/dev/null 2>&1 || true; "
             + git_env +
             f"git clone --depth 1 --branch '{branch}' '{clone_url}' /srv/app; "
