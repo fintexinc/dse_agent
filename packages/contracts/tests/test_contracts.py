@@ -95,3 +95,24 @@ def test_the_public_projection_of_cancelled_is_failed():
     carregavam o valor por SQL de operador, e o sweep de encalhados — que não o
     reconhecia como terminal — re-escalava cada uma 6 h depois."""
     assert to_public_status(WorkItemStatus.cancelled) == "failed"
+
+
+# ---------------------------------------------------------------------------
+# rc.131 — o preview provado FORA de um item (o smoke): sem PR, com branch e
+# kind explícitos. Aditivo: o payload de sempre decodifica igual.
+# ---------------------------------------------------------------------------
+
+def test_a_preview_can_be_triggered_without_a_pr_for_the_smoke():
+    from dse_contracts.activities import PreviewRef, TriggerPreviewInput
+
+    inp = TriggerPreviewInput(
+        work_item_id="wi_smoke", tenant_id="t", repo="acme/app",
+        pr_number=None, branch="main", kind="ui", ttl_seconds=1800,
+    )
+    assert inp.pr_number is None and inp.branch == "main" and inp.kind == "ui"
+    assert inp.ttl_seconds == 1800
+    # o payload de um item de verdade não muda de forma
+    velho = TriggerPreviewInput(work_item_id="wi_x", tenant_id="t", repo="acme/app", pr_number=7)
+    assert velho.branch is None and velho.kind is None and velho.ttl_seconds is None
+    ref = PreviewRef(work_item_id="wi_smoke", pr_number=None, status="created", url="https://p.example")
+    assert ref.pr_number is None
