@@ -34,3 +34,20 @@ def test_the_apt_recipe_installs_the_ca_bundle():
     assert "ca-certificates" in apt, (
         "slim sem bundle de CA: o clone https morre com CAfile: none"
     )
+
+
+def test_the_ui_recipe_reaches_git_on_debian_too():
+    """Irmão do caso apt (wi_83ca26c9, 2026-09-01): a receita de UI só tinha
+    `apk add` com `|| true` — em node:22-bookworm-slim (debian) o apk não
+    existe, o erro é engolido e o boot morre em `git: not found`. Os previews
+    de UI anteriores eram alpine; o primeiro repo debian de kind=ui achou o
+    buraco. O degrau apt vem com ca-certificates pelo mesmo motivo do
+    deployable (CAfile: none)."""
+    d = argocd._source_deployment(
+        "preview-wi", _LABELS, _cfg(),
+        repo="acme/app", branch="dse/wi", kind="ui",
+    )
+    apt = [linha for linha in d.splitlines() if "apt-get install" in linha]
+    assert apt, "receita ui sem degrau apt: debian fica sem git"
+    assert "ca-certificates" in apt[0]
+    assert "git" in apt[0]
