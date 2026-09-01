@@ -102,3 +102,15 @@ def test_the_repo_and_status_reach_the_card():
         _ref(card=status_card("corpo", status="validating", repo="acme/svc")), "corpo")
     conteudo = json.dumps(_card_de(cli.postados[0]), ensure_ascii=False)
     assert "acme/svc" in conteudo and "⏳ Validate" in conteudo
+
+
+def test_the_review_card_offers_approve():
+    """rc.130: paridade com o Slack — o parque de review tem gesto de
+    aprovação; a recusa é texto (Request changes no GitHub / `@dse fix …`)."""
+    from adapter_teams.card import status_card
+
+    card = status_card("👀 Ready for your review", status="review_ready", work_item_id="wi_x")
+    ids = [a.get("id") or a.get("data", {}).get("action_id") for a in card["content"]["actions"]]
+    textos = [a.get("title") for a in card["content"]["actions"]]
+    assert "Approve" in textos and "How to test" in textos
+    assert "Reject" not in textos

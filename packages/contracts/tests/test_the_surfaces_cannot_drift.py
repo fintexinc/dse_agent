@@ -101,3 +101,35 @@ def test_the_slack_adapter_reads_from_the_shared_source():
     for status in list(STAGE_FOR_STATUS) + ["done", "inexistente"]:
         assert _progress_line(status) == progress_line(status), status
     assert parse_slack_approval("dse_plan_reject", "reject:re_scope") == ("rejected", "re_scope")
+
+
+# ---------------------------------------------------------------------------
+# rc.130 — o parque pós-PR existe na superfície.
+#
+# Medido: nenhum call site postava card em `review_ready`/`ci_pending`/
+# `merge_pending`, e `STAGE_FOR_STATUS` não os conhecia — o card congelava em
+# "PR opened — CI is running" enquanto o item esperava um humano que nunca foi
+# chamado. Os dois adapters decidiam por literal próprio onde mostrar Approve
+# e How to test; agora a fonte é uma.
+# ---------------------------------------------------------------------------
+
+def test_the_post_pr_parks_have_a_stage():
+    assert STAGE_FOR_STATUS["ci_pending"] == "PR"
+    assert STAGE_FOR_STATUS["review_ready"] == "Review"
+    assert STAGE_FOR_STATUS["merge_pending"] == "Review"
+
+
+def test_the_gestures_have_one_shared_source():
+    from dse_contracts.surface import APPROVAL_STATUSES, HOW_TO_TEST_STATUSES
+
+    assert set(APPROVAL_STATUSES) == {"awaiting_plan_approval", "review_ready"}
+    assert set(HOW_TO_TEST_STATUSES) == {"pr_ready", "review_ready", "merge_pending"}
+
+
+def test_the_slack_review_card_offers_approve_and_how_to_test():
+    from adapter_slack.backend import status_blocks
+
+    blocks = status_blocks("👀 Ready for your review", status="review_ready")
+    acoes = [e["action_id"] for b in blocks if b["type"] == "actions" for e in b["elements"]]
+    assert "dse_plan_approve" in acoes and "dse_how_to_test" in acoes
+    assert "dse_plan_reject" not in acoes, "recusa no review é texto, não botão"

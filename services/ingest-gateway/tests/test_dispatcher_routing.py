@@ -311,3 +311,58 @@ def test_notify_undeliverable_posts_to_the_slack_adapter(tenant_id, monkeypatch)
 # `park_verdict`. O terceiro do bloco — o Approve de plano chegando a um item
 # parqueado continuar `unexpected_status` — perdeu o cenário mas não o
 # invariante, e ele segue pinado pelos testes de aprovação de plano acima.
+
+
+# ---------------------------------------------------------------------------
+# rc.130 — o caminho humano de aprovação passa a funcionar, e a recusa nunca
+# vira aprovação.
+#
+# Medido em produção: `_APPROVAL_REVIEW_STATES` só conhecia `pr_ready` e
+# `review_feedback` — o estado real do parque, `review_ready` (markers
+# `fine-pr-*-v1`), caía em `unexpected_status`. O clique de Approve no Slack
+# e no Teams era descartado; só review formal do GitHub chegava. Zero itens
+# `done` na vida inteira.
+# ---------------------------------------------------------------------------
+
+def test_approval_with_review_ready_routes_to_review_comment():
+    route = _route_signal("review_ready", "approval", _payload())
+    assert route.signal_name == SIGNAL_REVIEW_COMMENT
+    assert route.payload["verdict"] == "approved"
+
+
+def test_a_rejection_at_review_is_never_read_as_approval():
+    """Segurança: com botão no card de review, mapear `rejected` para `approved`
+    (o que 198-199 fazia para qualquer approval) seria aprovar em silêncio."""
+    route = _route_signal("review_ready", "approval", _payload(approval_verdict="rejected"))
+    assert route.signal_name is None
+    assert route.reason == "review_rejection_needs_text"
+
+
+def test_approval_at_merge_pending_declines_with_the_merge_hint():
+    route = _route_signal("merge_pending", "approval", _payload())
+    assert route.signal_name is None
+    assert route.reason == "already_approved_merge_on_github"
+
+
+def test_a_fix_request_on_the_pr_becomes_changes_requested_with_the_target():
+    """Comentário `@dse fix ci` na PR chega como review_comment SEM
+    review_state — hoje `review_comment_no_verdict`, ignorado."""
+    p = _payload("@dse fix ci")
+    route = _route_signal("review_ready", "review_comment", p)
+    assert route.signal_name == SIGNAL_REVIEW_COMMENT
+    assert route.payload["verdict"] == "changes_requested"
+    assert route.payload["fix_target"] == "ci"
+
+
+def test_a_fix_request_in_the_slack_thread_at_review_ready_is_routed_as_review():
+    """Reply na thread do Slack chega como clarification_answer; em
+    review_ready com o marcador, é um pedido de fix — sem sinal novo."""
+    route = _route_signal("review_ready", "clarification_answer", _payload("@dse fix preview"))
+    assert route.signal_name == SIGNAL_REVIEW_COMMENT
+    assert route.payload["verdict"] == "changes_requested"
+    assert route.payload["fix_target"] == "preview"
+
+
+def test_a_plain_thread_reply_at_review_ready_is_still_a_clarification():
+    route = _route_signal("review_ready", "clarification_answer", _payload("thanks, looks good"))
+    assert route.signal_name == SIGNAL_CLARIFICATION_ANSWER
