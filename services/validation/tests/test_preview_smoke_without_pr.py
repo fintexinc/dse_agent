@@ -14,8 +14,6 @@ kind explícitos vencem os defaults do item.
 """
 from __future__ import annotations
 
-import pytest
-
 from dse_contracts.activities import TriggerPreviewInput
 
 from dse_validation import db

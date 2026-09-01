@@ -209,6 +209,15 @@ ORDER BY run_at DESC;
 (Never in `audit_log`: it is append-only and inexpurgable, and the stderr of a
 client's tool does not belong there — `test_what_the_gate_saw_never_reaches_the_ledger`.)
 
+**Canary after every `helm upgrade` (rc.131).** In the DSE channel, send
+`preview check ui repo=<canary repo> branch=main` (or `deployable`). It is a
+degenerate item — no Planner, no sandbox, no Coder, no PR — that runs only
+`trigger_preview` and answers `done` "Preview smoke passed — <url>" (expected
+in ≤ 15 min) or `failed` with the app container's words. It is how the 34/34
+platform-side preview failures (CA in the slim image, apk×apt, wrong kind, OOM,
+RBAC) get found BEFORE an item pays for them. It counts on the tenant's preview
+cap (3) and may evict the oldest preview; TTL 30 min.
+
 **`done` is still zero until the GitHub App delivers merges.** In 185 items the
 DSE never saw a merge. Review comments DO arrive (`signal_recorded
 kind=review_comment channel=<repo>` in the audit — 2026-09-01, PR #193), so the

@@ -507,7 +507,7 @@ def upsert_preview(
     *,
     work_item_id: str,
     tenant_id: str,
-    pr_number: int,
+    pr_number: int | None,
     repo: str,
     status: str,
     namespace: str | None = None,

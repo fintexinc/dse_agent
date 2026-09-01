@@ -338,6 +338,23 @@ _READ_THE_CI_FIRST = (
 
 _RAW_TAIL_MARK = "--- raw output (tail) ---"
 
+#: rc.131 — the preview smoke: `preview check ui|deployable [repo=… branch=…]`,
+#: the WHOLE message (a task that merely mentions a preview never matches).
+_PREVIEW_SMOKE_RE = re.compile(
+    r"^\s*(?:<@[^>]+>\s*|@dse\s+)?preview\s+check\s+(?P<kind>ui|deployable)"
+    r"(?:\s+(?:repo=(?P<repo>\S+)|branch=(?P<branch>\S+)))*\s*$",
+    re.IGNORECASE,
+)
+_PREVIEW_SMOKE_TTL_SECONDS = 1800
+
+
+def parse_preview_smoke(text: str | None) -> dict[str, Any] | None:
+    """Pure (P1). Returns {kind, repo, branch} or None."""
+    m = _PREVIEW_SMOKE_RE.match(text or "")
+    if not m:
+        return None
+    return {"kind": m.group("kind").lower(), "repo": m.group("repo"), "branch": m.group("branch")}
+
 
 def _l1_infra_gates(findings) -> list[str]:
     """Os gates do L1 que NÃO CONSEGUIRAM RODAR — não os que reprovaram.
@@ -1969,6 +1986,75 @@ class WorkItemLifecycleWorkflow:
         except ActivityError:
             raise _EscalateNow("retry_from_checkpoint_failed")
 
+    async def _run_preview_smoke(self, smoke: dict[str, Any]) -> WorkItemLifecycleResult:
+        """rc.131 — `preview check ui|deployable [repo=… branch=…]`.
+
+        One Activity, one attempt, the card back through the same machine:
+        `done` "Preview smoke passed — <url>" or `failed` with the app
+        container's words. Namespace `preview-<work_item_id>` as always, the
+        row in `wse_previews` keyed by this item (pr_number NULL, migration
+        0049); it counts on the tenant's preview cap and may evict the oldest
+        (`preview_evicted_lru` names whom). TTL 30 min."""
+        input = self._input
+        repo = smoke.get("repo") or input.repo
+        if not repo:
+            return await self._finish_failed(
+                "preview_smoke_needs_repo: say `preview check ui repo=<owner/name>`",
+                audit_action="preview_smoke_failed",
+            )
+        branch = smoke.get("branch") or input.base_branch or "main"
+        kind = str(smoke["kind"])
+        await self._set_status(
+            WorkItemStatus.validating, audit_action="preview_smoke_started",
+            details={"repo": repo, "branch": branch, "kind": kind},
+        )
+        payload = {
+            "work_item_id": input.work_item_id, "tenant_id": input.tenant_id, "repo": repo,
+            "pr_number": None, "files_changed": [], "preview_enabled": True,
+            "branch": branch, "kind": kind, "ttl_seconds": _PREVIEW_SMOKE_TTL_SECONDS,
+        }
+        try:
+            preview: PreviewRef = await workflow.execute_activity(
+                ACTIVITY_TRIGGER_PREVIEW, payload, result_type=PreviewRef,
+                start_to_close_timeout=timedelta(seconds=1200),
+                heartbeat_timeout=timedelta(seconds=120),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except ActivityError as exc:
+            return await self._finish_failed(
+                f"preview_smoke_failed: {str(exc.cause or exc)[:600]}",
+                audit_action="preview_smoke_failed",
+            )
+        if preview.status != "created":
+            return await self._finish_failed(
+                f"preview_smoke_failed: {preview.status} — {(preview.detail or '')[:600]}",
+                audit_action="preview_smoke_failed",
+            )
+        input.preview_status = preview.status
+        input.preview_url = preview.url
+        detail = f"Preview smoke passed — {preview.url}"
+        input.terminal_detail = detail
+        await self._set_status(
+            WorkItemStatus.done, audit_action="preview_smoke_passed",
+            details={"url": preview.url, "namespace": preview.namespace,
+                     "kind": preview.kind, "repo": repo, "branch": branch},
+        )
+        try:
+            await workflow.execute_activity(
+                ACTIVITY_POST_TRACKING_COMMENT,
+                {"work_item_id": input.work_item_id, "tenant_id": input.tenant_id,
+                 "status": "done",
+                 "body": (f"✅ **{detail}**\n\n{kind} · {repo}@{branch} · namespace "
+                          f"`{preview.namespace}` · TTL 30 min")},
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=5),
+            )
+        except ActivityError:
+            logger.warning("best-effort smoke card failed (%s)", input.work_item_id)
+        return WorkItemLifecycleResult(
+            work_item_id=input.work_item_id, status=WorkItemStatus.done.value, detail=detail,
+        )
+
     # ------------------------------------------------------------------
     # Phase 1 — intake / clarification gate (WSB-E3-T1)
     # ------------------------------------------------------------------
@@ -1977,6 +2063,15 @@ class WorkItemLifecycleWorkflow:
 
         if input.status == WorkItemStatus.new.value:
             await self._audit("intake_started")
+
+        # rc.131 — the preview smoke is a DEGENERATE item: no router, no
+        # Planner, no sandbox, no Coder, no PR — only `trigger_preview`, which
+        # is exactly what 34/34 degraded previews needed proved before an item
+        # paid for it. Read here, before routing and the completeness loop:
+        # the phrase carries its own repo, or the item's.
+        smoke = parse_preview_smoke(input.task_content)
+        if smoke is not None and workflow.patched("preview-smoke-v1"):
+            return await self._run_preview_smoke(smoke)
 
         # Which repositories does this request actually need?
         #

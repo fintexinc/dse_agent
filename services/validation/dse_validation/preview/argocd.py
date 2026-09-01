@@ -1349,6 +1349,12 @@ def _put_preview_in_pr_body(
     cliente falso com um `logger.warning`, então quando a escrita falhava nem o
     ledger sabia — e o sintoma era indistinguível de "o preview nunca rodou".
     """
+    if inp.pr_number is None:
+        # rc.131: the smoke has no PR BY DESIGN — nothing to write, nothing
+        # failed. (A PR that exists and could not be written still leaves a
+        # trace below.)
+        logger.info("preview line: no PR to write to by design (%s)", inp.work_item_id)
+        return
     if line is None:
         return
     if not inp.pr_number or not inp.repo:
@@ -1573,6 +1579,23 @@ def _reconcile_previews_with_cluster(
 # ---------------------------------------------------------------------------
 # trigger_preview — core of the contract's Activity
 # ---------------------------------------------------------------------------
+def preview_branch(inp: TriggerPreviewInput) -> str:
+    """rc.131 — the smoke names its branch; an item's preview is its PR head
+    branch, the convention `finalize_pr` uses (never the SHA)."""
+    return getattr(inp, "branch", None) or f"dse/{inp.work_item_id}"
+
+
+def preview_kind(inp: TriggerPreviewInput) -> str:
+    """rc.131 — an explicit kind (the smoke) wins; otherwise the deterministic
+    paths-filter of FR-20. NEVER a synthetic files_changed to force a kind —
+    it would be a lie in `preview_created.files`."""
+    explicit = getattr(inp, "kind", None)
+    if explicit in ("ui", "deployable"):
+        return explicit
+    kind, _matched = preview_decision(inp.files_changed, inp.ui_path_globs, inp.deployable_globs)
+    return kind
+
+
 def trigger_preview_core(
     inp: TriggerPreviewInput,
     *,
@@ -1592,6 +1615,8 @@ def trigger_preview_core(
     ela vira frase antes de subir, porque para quem revisa a PR "estourou" e
     "nunca rodou" são o mesmo silêncio.
     """
+    # rc.131: the smoke declares its TTL; an item keeps the config default.
+    ttl_seconds = getattr(inp, "ttl_seconds", None) or ttl_seconds
     try:
         ref = _trigger_preview(inp, cfg=cfg, ttl_seconds=ttl_seconds, actor=actor)
     except Exception as exc:  # noqa: BLE001 — fala e depois deixa subir
@@ -1648,7 +1673,9 @@ def _trigger_preview(
     # worth it if the change touches UI (front end) OR a deployable service
     # (back end). Only docs/tests → skipped_backend_only, which counts as
     # SUCCESS and NEVER blocks.
-    kind, matched = preview_decision(inp.files_changed, inp.ui_path_globs, inp.deployable_globs)
+    kind = preview_kind(inp)
+    matched = [] if getattr(inp, "kind", None) else preview_decision(
+        inp.files_changed, inp.ui_path_globs, inp.deployable_globs)[1]
     if kind == "none":
         db.upsert_preview(
             work_item_id=inp.work_item_id, tenant_id=inp.tenant_id,
@@ -1771,7 +1798,7 @@ def _trigger_preview(
     # The branch the finalizer pushed for this work item. In `source` mode this
     # is what the preview container clones, so it has to match the convention
     # `finalize_pr` uses — the PR head branch, not the SHA.
-    branch = f"dse/{inp.work_item_id}"
+    branch = preview_branch(inp)
     ready_timeout = _ready_timeout(cfg, None)
 
     # G-3 degrau 2: se este item tem um irmão de group_id com preview VIVO, o

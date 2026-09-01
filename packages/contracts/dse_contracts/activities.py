@@ -689,10 +689,17 @@ class TriggerPreviewInput(BaseModel):
     work_item_id: str
     tenant_id: str
     repo: str
-    pr_number: int
+    #: rc.131 — `None` for the smoke (`preview check ui|deployable`): a preview
+    #: proved OUTSIDE an item, with no PR to write to.
+    pr_number: int | None = None
     files_changed: list[str] = Field(default_factory=list)
     head_sha: str | None = None
     preview_enabled: bool = True
+    #: rc.131 — explicit branch/kind/TTL for the smoke. An item's preview keeps
+    #: the conventions (`dse/<work_item_id>`, paths-filter, config default).
+    branch: str | None = None
+    kind: str | None = None  # "ui" | "deployable" — never a synthetic files_changed
+    ttl_seconds: int | None = None
     #: rc.103 — o caminho fundo decidido pelo LLM (validado pela plataforma) e
     #: a nota de 1 linha. Opcionais e aditivos: payload antigo decodifica igual.
     deep_path: str | None = None
@@ -731,7 +738,7 @@ class TriggerPreviewInput(BaseModel):
 
 class PreviewRef(BaseModel):
     work_item_id: str
-    pr_number: int
+    pr_number: int | None = None
     status: str  # "created" | "skipped_backend_only" | "skipped_disabled" | "degraded"
     namespace: str | None = None
     url: str | None = None
