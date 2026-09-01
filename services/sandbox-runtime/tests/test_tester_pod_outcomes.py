@@ -35,10 +35,13 @@ def _done(argv, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
 
 
-def _fake_cluster(*, suite, reused=("tests/test_dse.py",), listing=None, seen=None):
+def _fake_cluster(*, suite, reused=("tests/test_dse.py",), listing=None, seen=None,
+                  manifest=None):
     """Stands in for every `kubectl` the bridge shells out to. `suite` is what
     the suite run returns (a CompletedProcess) or raises (an exception);
-    `listing` does the same for the `find` that proves /workspace is readable."""
+    `listing` does the same for the `find` that proves /workspace is readable;
+    `manifest` is the `.dse/validation.json` text the Pod answers with (None =
+    o repo não tem manifesto)."""
 
     def fake_run(argv, **kwargs):
         if seen is not None:
@@ -46,6 +49,10 @@ def _fake_cluster(*, suite, reused=("tests/test_dse.py",), listing=None, seen=No
             # overrun is named `exec_timeout` or `suite_hung`.
             seen.append((argv, kwargs))
         joined = " ".join(argv)
+        if ".dse/validation.json" in joined:
+            if manifest is None:
+                return _done(argv, 1, stdout="")
+            return _done(argv, 0, stdout=manifest)
         # The authoring context is READ from the Pod now — five bounded commands
         # instead of a copy of the tree.
         if "head -c" in joined:
@@ -443,3 +450,49 @@ def test_the_tester_writes_where_it_asked_and_never_stacks_copies():
     assert '{"tool": "write_file", "path": path' in src, (
         "o caminho escrito tem que ser o caminho que o Tester pediu"
     )
+
+
+# ---------------------------------------------------------------------------
+# rc.130 — um juiz para os testes quando o repo desligou o gate `test` do L1
+#
+# O deferral existe porque o L1 re-julga a suíte sobre o estado commitado.
+# Com `disabled_stages: ["test"]` o L1 devolve PASS sem rodar
+# (`quality_checks._not_applicable`) — e o veredito do Tester, deferido,
+# evaporava: teste vermelho virava PASS no contrato e a PR nascia sem juiz.
+# Medido duas vezes no glide-path: testes que "passaram" no sandbox reprovaram
+# nas lanes do CI do repo. Deferir só quando o L1 VAI julgar.
+# ---------------------------------------------------------------------------
+
+_MANIFESTO_SEM_GATE = '{"version":1,"commands":{"test":["npm","test"]},"disabled_stages":["test"]}'
+_MANIFESTO_COM_GATE = '{"version":1,"commands":{"test":["npm","test"]}}'
+
+
+def test_a_repo_that_disabled_the_test_stage_gets_the_tester_as_its_judge(monkeypatch, audits):
+    result = _run_bridge(
+        monkeypatch, suite=_done([], 1, stdout="AssertionError: expected 200\n"),
+        manifest=_MANIFESTO_SEM_GATE,
+    )
+    assert result.suite_deferred is False, "ninguém mais julga: o veredito daqui vale"
+    assert result.status is GateStatus.FAIL
+    assert result.tests_passed is False
+    assert "AssertionError" in result.failure_output
+    assert _completed_row(audits)["details"]["suite_deferred"] is False
+
+
+def test_a_repo_whose_test_gate_l1_will_run_still_defers(monkeypatch, audits):
+    """A fronteira: com o gate ligado, o L1 re-julga sobre o commit — o
+    comportamento de sempre."""
+    result = _run_bridge(
+        monkeypatch, suite=_done([], 1, stdout="AssertionError\n"),
+        manifest=_MANIFESTO_COM_GATE,
+    )
+    assert result.suite_deferred is True
+    assert result.status is GateStatus.PASS
+
+
+def test_an_infrastructure_ending_is_never_deferred_even_with_the_gate_off(monkeypatch, audits):
+    result = _run_bridge(
+        monkeypatch, suite=_done([], 137, stdout=""), manifest=_MANIFESTO_SEM_GATE,
+    )
+    assert result.suite_deferred is False
+    assert result.status is GateStatus.ERROR

@@ -170,3 +170,35 @@ def test_operator_action_audited_even_if_signal_fails(tenant):
     # is never lost — the audit comes before the effect)
     rows = _op_audit(w)
     assert any(r["action"] == "operator_pause" for r in rows)
+
+
+def test_cancel_of_a_dead_workflow_marks_the_row_cancelled_with_an_audit_row(tenant):
+    """rc.130: o botão de cancel do painel só sinalizava — com o workflow morto
+    (terminado, purgado, encalhado) o sinal falhava e o operador ia ao SQL
+    escrever `cancelled` por conta própria: 33 linhas assim em produção, num
+    valor que nem existia no enum, e o sweep de encalhados re-escalando cada
+    uma 6 h depois. Falha PERMANENTE do sinal (workflow not found / already
+    completed) vira o próprio cancelamento, com audit, pelo guard de status
+    terminal — a forma de `stranded.escalate_stranded`."""
+    w = _insert_work_item(tenant, status="review_ready")
+    failing = FakeSignalSender(raises_for={w})
+    op = OperatorConsole(failing, operator="usr_operator99")
+
+    op.cancel(w, tenant, reason="cleanup after the cluster reset")
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM work_items WHERE id = %s", (w,))
+            assert cur.fetchone()[0] == "cancelled"
+    finally:
+        conn.close()
+    rows = _op_audit(w)
+    assert any(r["action"] == "operator_cancel" for r in rows), "a intenção, antes do efeito"
+    assert any(r["action"] == "cancelled_by_operator" for r in rows), "o efeito, quando o sinal não tem quem ouvir"
+
+
+def test_active_count_excludes_cancelled(tenant):
+    _insert_work_item(tenant, status="cancelled")
+    _insert_work_item(tenant, status="implementing")
+    assert get_tenant_budget(tenant).active_work_items == 1

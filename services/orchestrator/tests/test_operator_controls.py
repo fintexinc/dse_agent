@@ -70,7 +70,11 @@ async def test_pause_blocks_next_activity_but_not_current(time_skipping_env):
 
 
 @pytest.mark.asyncio
-async def test_cancel_tears_down_sandbox_and_marks_failed(time_skipping_env):
+async def test_cancel_tears_down_sandbox_and_marks_cancelled(time_skipping_env):
+    """rc.130: cancelamento humano é decisão, não falha — vira `cancelled`, um
+    status de verdade. Antes resolvia para `failed`, e o operador cancelando um
+    workflow já morto escrevia `cancelled` por SQL num enum que não o tinha — o
+    sweep de encalhados re-escalava 33 dessas linhas 6 h depois."""
     work_item_id = new_work_item_id("cancel")
     insert_work_item(work_item_id)
     task_queue = f"tq-{uuid.uuid4().hex[:8]}"
@@ -100,11 +104,11 @@ async def test_cancel_tears_down_sandbox_and_marks_failed(time_skipping_env):
 
         result = await handle.result()
 
-    assert result.status == WorkItemStatus.failed.value
+    assert result.status == WorkItemStatus.cancelled.value
     assert "cancelled_by_operator" in (result.detail or "")
     assert state.teardown_calls == 1
     row = read_work_item(work_item_id)
-    assert row[0] == WorkItemStatus.failed.value
+    assert row[0] == WorkItemStatus.cancelled.value
     actions = read_audit_actions(work_item_id)
     assert "cancelled_by_operator" in actions
 

@@ -112,3 +112,18 @@ def test_clarification_answer_by_a_third_party_is_signal(tenant_id):
     assert result.work_item_id == wi_id
 
 
+
+
+def test_a_comment_on_a_cancelled_item_starts_a_new_task_with_provenance(tenant_id):
+    """rc.130: `cancelled` é terminal como done/failed — quem responde na thread
+    de um item cancelado abre tarefa nova com proveniência, nunca um sinal para
+    um workflow que não existe."""
+    ref = {"channel": "C1", "thread_ts": "333.333"}
+    old_wi_id = _insert_work_item(tenant_id, ref, status="cancelled")
+
+    conn = get_connection()
+    event = _event(EventKind.task_request, ref)
+    result = correlate(conn, tenant_id=tenant_id, event=event, requester_principal="usr_someone")
+
+    assert result.kind == "new_task"
+    assert result.provenance_work_item_id == old_wi_id

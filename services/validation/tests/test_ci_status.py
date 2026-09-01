@@ -296,3 +296,54 @@ def test_save_ci_status_returns_the_status_it_replaced(work_item_id):
     assert db.save_ci_status(work_item_id, 7, "green", {}) == "pending"
     assert db.save_ci_status(work_item_id, 7, "green", {}) == "green"
     assert db.get_ci_status(work_item_id)["status"] == "green"
+
+
+# --------------------------------------------------------------------------
+# A evidência viaja no contrato (rc.130).
+#
+# Medido no wi_f1f27266 (2026-08-31): o laço de CI vermelho gastou 8 rodadas
+# (~US$ 19) com `files_changed: []` porque a instrução ao modelo era o literal
+# "ci red: fix the pipeline" — o `CiStatusResult` carregava só a string "red".
+# Os nomes dos checks e as conclusões existiam em `wse_ci_status` e no audit,
+# a um JOIN que nenhum turno faz. O card de escalação dizia
+# `ci_red_after_retry_cap_exhausted` e nada mais.
+# --------------------------------------------------------------------------
+
+def test_a_red_result_names_the_failing_checks_with_their_urls(work_item_id, tenant_id):
+    github = FakeGitHubClient()
+    github.set_check_runs(
+        "acme/repo", "def456",
+        [
+            {"name": "lint", "status": "completed", "conclusion": "success",
+             "html_url": "https://github.com/acme/repo/runs/1"},
+            {"name": "unit (API)", "status": "completed", "conclusion": "failure",
+             "html_url": "https://github.com/acme/repo/runs/2"},
+            {"name": "leak gate", "status": "completed", "conclusion": "timed_out",
+             "details_url": "https://ci.example/leak"},
+        ],
+    )
+    result = consume_ci_status_core(
+        github_client=github, work_item_id=work_item_id, tenant_id=tenant_id,
+        repo="acme/repo", pr_number=56, ref="def456",
+    )
+    assert result.status == "red"
+    nomes = [c.name for c in result.failing_checks]
+    assert nomes == ["unit (API)", "leak gate"], "só os que reprovaram, na ordem do CI"
+    assert result.failing_checks[0].conclusion == "failure"
+    assert result.failing_checks[0].url == "https://github.com/acme/repo/runs/2"
+    assert result.failing_checks[1].url == "https://ci.example/leak", (
+        "sem html_url o link é o details_url — nunca None quando o CI deu um"
+    )
+
+
+def test_a_green_result_carries_no_failing_checks(work_item_id, tenant_id):
+    github = FakeGitHubClient()
+    github.set_check_runs(
+        "acme/repo", "abc123",
+        [{"name": "lint", "status": "completed", "conclusion": "success"}],
+    )
+    result = consume_ci_status_core(
+        github_client=github, work_item_id=work_item_id, tenant_id=tenant_id,
+        repo="acme/repo", pr_number=57, ref="abc123",
+    )
+    assert result.status == "green" and result.failing_checks == []

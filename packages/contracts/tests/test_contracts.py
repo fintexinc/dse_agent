@@ -69,3 +69,29 @@ def test_plan_artifact_estimated_lines_is_additive():
                         expected_files=["a.py"], estimated_lines=380)
     assert PlanArtifact.model_validate(novo.model_dump()).estimated_lines == 380
     assert "estimated_lines" in novo.model_dump()
+
+
+def test_ci_status_result_carries_failing_checks_and_old_payloads_decode_empty():
+    """rc.130: a evidência do CI vermelho viaja no contrato. Aditivo: um payload
+    histórico (sem a chave) decodifica com lista vazia; um novo faz roundtrip."""
+    from dse_contracts import CiStatusResult, FailingCheck
+
+    velho = CiStatusResult.model_validate(
+        {"work_item_id": "wi_x", "pr_number": 1, "status": "red"}
+    )
+    assert velho.failing_checks == []
+
+    novo = CiStatusResult(
+        work_item_id="wi_x", pr_number=1, status="red",
+        failing_checks=[FailingCheck(name="unit (API)", conclusion="failure",
+                                     url="https://github.com/acme/repo/runs/2")],
+    )
+    de_volta = CiStatusResult.model_validate(novo.model_dump())
+    assert de_volta.failing_checks[0].name == "unit (API)"
+
+
+def test_the_public_projection_of_cancelled_is_failed():
+    """rc.130: `cancelled` entra no enum. Medido: 33 linhas em produção já
+    carregavam o valor por SQL de operador, e o sweep de encalhados — que não o
+    reconhecia como terminal — re-escalava cada uma 6 h depois."""
+    assert to_public_status(WorkItemStatus.cancelled) == "failed"
