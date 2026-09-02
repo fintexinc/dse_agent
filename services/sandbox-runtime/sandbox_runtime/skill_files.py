@@ -40,6 +40,35 @@ def _frontmatter(skill: Skill) -> str:
     return f"---\nname: {_safe_key(skill.skill_key)}\ndescription: {description}\n---\n\n"
 
 
+_FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.S)
+
+
+def _own_frontmatter_name(body: str) -> str | None:
+    """The `name:` of a SKILL.md that already carries its frontmatter, or None
+    when the body has no frontmatter at all.
+
+    The panel imports whole SKILL.md files (frontmatter included) and keys
+    them `custom-N`; the SDK recognises a skill by its frontmatter and expects
+    the directory to carry that name. Writing our own header on top would
+    double the frontmatter and lose the `description:` — the one line that
+    tells the agent WHEN to use the skill (rc.132)."""
+    m = _FRONTMATTER_RE.match(body or "")
+    if not m:
+        return None
+    for line in m.group(1).splitlines():
+        k, _, v = line.partition(":")
+        if k.strip() == "name" and v.strip():
+            return v.strip().strip("\"'")
+    return ""  # frontmatter without a name: verbatim body, our key as the dir
+
+
+def _dir_and_content(skill: Skill) -> tuple[str, str]:
+    own = _own_frontmatter_name(skill.body)
+    if own is None:
+        return _safe_key(skill.skill_key), _frontmatter(skill) + skill.body
+    return _safe_key(own or skill.skill_key), skill.body
+
+
 def _git_exclude(workspace_dir: Path, rel_paths: list[str]) -> None:
     """Register the materialized paths in the clone's LOCAL exclude (this is not
     the repo's .gitignore — it never becomes a diff). With no git repo
@@ -79,13 +108,13 @@ def plan_materialization(
     excludes: list[str] = []
     keys: list[str] = []
     for skill in skills:
-        key = _safe_key(skill.skill_key)
+        key, content = _dir_and_content(skill)
         rel_dir = f"{_SKILLS_SUBDIR.as_posix()}/{key}/"
         if key in existing_skill_keys and rel_dir not in marker_entries:
             # Present but not written by us => committed in the target repo.
             # Sovereign; leave it alone.
             continue
-        files.append((f"{_SKILLS_SUBDIR.as_posix()}/{key}/SKILL.md", _frontmatter(skill) + skill.body))
+        files.append((f"{_SKILLS_SUBDIR.as_posix()}/{key}/SKILL.md", content))
         excludes.append(rel_dir)
         keys.append(skill.skill_key)
     return files, excludes, keys

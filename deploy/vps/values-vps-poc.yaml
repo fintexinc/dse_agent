@@ -265,8 +265,9 @@ console:
     # control-plane/api/Dockerfile returns nothing), and skillsSync.ts exits 1
     # when the directory is missing, which is an init container — so flipping
     # this puts console-api in Init:Error and takes the panel down. It stays
-    # off until the console-api image actually ships the tree; the 21 skills
-    # reach the agent through the sandbox runtime, not through this job.
+    # off until the console-api image actually ships the tree. Skills reach
+    # the agent through the panel's write-through mirror (`skill_registry`,
+    # per-repo ticks) — materialized into the sandbox at provision (rc.132).
     skillsSync:
       enabled: false
   ingress:

@@ -14,6 +14,13 @@ culpa, é simplificação: o substrato claude-agent já carrega NATIVAMENTE o
 que é onde convenção de repo deve morar. O registry e a promoção ficam
 dormentes no banco; o que sai é o SERVING: materialização no pod, nota do
 Coder, slots do Tester e skills do render do Planner.
+
+Emenda (rc.132, decisão do operador em 2026-09-02): o serving para o CODER
+volta — só o que o painel TICOU para o repositório (`repo_scope`), escrito
+verbatim no `.claude/skills/` do workspace no provision/rebuild; pinado em
+`test_skills_are_served_again.py`. O que ESTE arquivo ainda pina é o que
+continua fora: o render do Planner não lê o registry, o Tester não tem slots
+de skill, e o `.claude/` do repo segue chegando nativamente.
 """
 from __future__ import annotations
 
@@ -46,29 +53,15 @@ def test_the_planner_context_never_reads_the_registry(monkeypatch):
 
 
 def test_the_tester_context_has_no_skills_fields():
-    """Os campos são ANEXADOS ao prompt, não slots — o pino certo é a fonte."""
-    assert "skills_note" not in _ACTIVITIES_SRC, (
-        "o Tester ainda anexa a nota de skills"
+    """Os campos são ANEXADOS ao prompt, não slots — o pino certo é a fonte.
+    (O Coder voltou a receber a nota — `workspace_skills_note` — na rc.132;
+    o que fica fora é o SLOT do Tester, por isso o pino é o campo, não a
+    substring.)"""
+    assert "    skills_note:" not in _ACTIVITIES_SRC, (
+        "o Tester ainda tem um slot de nota de skills"
     )
     assert "reference_spec" not in _ACTIVITIES_SRC, (
         "o Tester ainda injeta spec de referência de skill"
-    )
-
-
-def test_provision_does_not_materialize_skills():
-    """Pino de fonte (molde dos testes do chart): o caminho de provisão não
-    importa a máquina de materialização nem lê o registry."""
-    assert "materialize_skills" not in _ACTIVITIES_SRC, (
-        "a provisão ainda materializa skills no workspace"
-    )
-    assert "read_approved_skills" not in _ACTIVITIES_SRC, (
-        "o caminho de execução ainda lê o skill_registry"
-    )
-
-
-def test_the_coder_instruction_gets_no_skills_note():
-    assert "workspace_skills_note" not in _ACTIVITIES_SRC, (
-        "a instrução do Coder ainda anexa a nota de skills"
     )
 
 

@@ -209,6 +209,20 @@ ORDER BY run_at DESC;
 (Never in `audit_log`: it is append-only and inexpurgable, and the stderr of a
 client's tool does not belong there — `test_what_the_gate_saw_never_reaches_the_ledger`.)
 
+**Skills (rc.132).** The panel's Skill registry is the source of truth
+(console-api SQLite); every skill it holds is mirrored into the engine's
+`skill_registry` (status, body, `repo_scope` = the per-repo ticks). At every
+sandbox provision/rebuild the engine reads the tenant's skills TICKED for that
+repo and writes each one to `.claude/skills/<name>/SKILL.md` inside the
+workspace (verbatim frontmatter, so the agent knows WHEN to use it); the
+substrate loads them natively. Nothing ticked → nothing served, and the ledger
+says so: `skills_resolved_empty` / `skills_materialized` /
+`skills_materialization_skipped` per provision. A skill the repository commits
+itself under the same name is sovereign — never overwritten. The registry
+import job (`skillsSync`) cannot run while console-api is up (SQLite lock):
+register skills through the panel ("New skill") or the API (`POST /skills`);
+`/home/dse_admin/register-aviso-skills.js` is that call for the 4 Aviso skills.
+
 **Canary after every `helm upgrade` (rc.131).** In the DSE channel, send
 `preview check ui repo=<canary repo> branch=main` (or `deployable`). It is a
 degenerate item — no Planner, no sandbox, no Coder, no PR — that runs only

@@ -88,6 +88,12 @@ from .runtime_profile import (
     validate_runtime_startup,
 )
 from .scoped_git import GitScopeViolation, ScopedGitSession
+from .skill_files import (
+    materialize_skills,
+    materialize_skills_in_pod,
+    workspace_skills_note,
+    workspace_skills_note_in_pod,
+)
 from .sessions import (
     FreshReviewerSession,
     PlannerContext,
@@ -133,6 +139,51 @@ class ProvisionSandboxInput(BaseModel):
     prepare: list[str] | None = None
 
 
+def _serve_skills(inp, *, stage: str, runtime: str, run_in_pod=None,
+                  workspace_dir: str | None = None) -> None:
+    """The panel's skills reach the workspace BEFORE the agent turn (rc.132).
+
+    Reads what the console ticked for this repo (`skill_registry.repo_scope`,
+    tenant-scoped) and writes each SKILL.md under `.claude/skills/` — in the
+    Pod on K8s (`run_in_pod`), on the host workspace on Docker. The substrate
+    then loads them natively (`setting_sources=["project"]`).
+
+    Best-effort by construction: guidance never fails a provision, and every
+    outcome is on the ledger — `skills_resolved_empty` (nothing ticked),
+    `skills_materialized` (what landed), `skills_materialization_skipped`
+    (registry down, Pod refused). Silence was the failure mode this replaces.
+    """
+    from .skill_registry import read_approved_skills as _read_skills
+
+    try:
+        served = _read_skills(inp.tenant_id, repo=inp.repo)
+        if not served:
+            audit_emit(
+                actor="system:sandbox-runtime", action="skills_resolved_empty",
+                tenant_id=inp.tenant_id, work_item_id=inp.work_item_id,
+                details={"repo": inp.repo, "stage": stage, "runtime": runtime},
+            )
+            return
+        if run_in_pod is not None:
+            written = materialize_skills_in_pod(served, run=run_in_pod)
+        else:
+            written = materialize_skills(workspace_dir or "", served)
+        audit_emit(
+            actor="system:sandbox-runtime",
+            action="skills_materialized" if written else "skills_materialization_skipped",
+            tenant_id=inp.tenant_id, work_item_id=inp.work_item_id,
+            details={"skills": written, "repo": inp.repo, "stage": stage,
+                     "runtime": runtime, "served": len(served)},
+        )
+    except Exception as exc:  # noqa: BLE001 — guidance never fails a provision
+        audit_emit(
+            actor="system:sandbox-runtime", action="skills_materialization_skipped",
+            tenant_id=inp.tenant_id, work_item_id=inp.work_item_id,
+            details={"error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                     "repo": inp.repo, "stage": stage, "runtime": runtime},
+        )
+
+
 @activity.defn(name=ACTIVITY_PROVISION_SANDBOX)
 async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
     profile = validate_runtime_startup()
@@ -162,13 +213,14 @@ async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
                 prepare=inp.prepare,
             )
         )
-        # Skills da plataforma saíram do caminho de execução (2026-08-31,
-        # decisão do operador): o substrato claude-agent carrega o `.claude/`
-        # que o PRÓPRIO repositório commita (setting_sources=["project"]) — a
-        # materialização paralela era latência, poluição de contexto entre
-        # clientes (25 skills globais, acme/aviso incluídas) e a origem do
-        # vazamento `.claude/.dse-materialized` na PR. Registry/promoção
-        # seguem dormentes no banco.
+        # rc.132: the panel's skills come back — only what is TICKED for this
+        # repo. The rc.125 removal answered 25 GLOBAL skills of several clients
+        # in every run; the per-repo tick is the rule that was missing. The
+        # bootstrap has cloned by now, so `.git` exists for the local exclude.
+        _serve_skills(
+            inp, stage="provision", runtime="k8s",
+            run_in_pod=lambda argv, stdin: driver.run_in_pod(provisioned.container_id, argv, stdin),
+        )
     else:
         is_new_checkpoint_repo = not Path(bare_repo_path).exists()
         if is_new_checkpoint_repo:
@@ -209,6 +261,7 @@ async def provision_sandbox(inp: ProvisionSandboxInput) -> SandboxHandle:
             budget=inp.budget,
             image=inp.image or docker_driver.DEFAULT_SANDBOX_IMAGE,
         )
+        _serve_skills(inp, stage="provision", runtime="docker", workspace_dir=workspace_dir)
 
     audit_emit(
         actor="system:sandbox-runtime",
@@ -348,6 +401,11 @@ async def rebuild_sandbox(inp: RebuildSandboxInput) -> SandboxHandle:
         )
         provisioned = rebuild_result.sandbox
         recovered_sha = rebuild_result.recovered_sha
+        # rc.132: a rebuilt Pod starts without the guidance — serve it again.
+        _serve_skills(
+            inp, stage="rebuild", runtime="k8s",
+            run_in_pod=lambda argv, stdin: driver.run_in_pod(provisioned.container_id, argv, stdin),
+        )
     else:
         # The old container may be dead (chaos) — remove it if it still exists
         # before recreating, so it does not collide with the new one's
@@ -376,6 +434,7 @@ async def rebuild_sandbox(inp: RebuildSandboxInput) -> SandboxHandle:
             budget=inp.budget,
             image=inp.image or docker_driver.DEFAULT_SANDBOX_IMAGE,
         )
+        _serve_skills(inp, stage="rebuild", runtime="docker", workspace_dir=rebuilt_workspace_dir)
 
     audit_emit(
         actor="system:sandbox-runtime",
@@ -707,8 +766,7 @@ async def _run_coder_turn_impl(
     # convenção que duas rodadas medidas provaram decisivas (supertest 2x: a
     # regra estava no AGENTS.md e nos vizinhos, e o modelo nunca os viu). O
     # `.claude/` que o REPO commita chega nativamente pelo substrato
-    # (setting_sources=["project"]); a nota de skills da plataforma saiu junto
-    # com a materialização.
+    # (setting_sources=["project"]).
     inp.instruction += (
         "\n\nBefore writing any code: read AGENTS.md at the repository root "
         "(if present) and the nearest neighbours of every file you are about "
@@ -717,6 +775,18 @@ async def _run_coder_turn_impl(
         "and helpers. Never import a package that is not already a dependency "
         "of the workspace you are editing."
     )
+    # rc.132: the skills the panel ticked for this repo sit in `.claude/skills/`
+    # (served at provision). ClaudeAgentSubstrate loads them natively; the
+    # note names them for any other substrate — read WHERE the workspace is
+    # (the Pod on K8s), the lesson of H3.
+    if pod_git:
+        _run_in_pod = getattr(agent.driver, "run_in_pod", None)
+        if _run_in_pod is not None:
+            inp.instruction += workspace_skills_note_in_pod(
+                lambda argv, stdin: _run_in_pod(agent.sandbox_id, argv, stdin)
+            )
+    else:
+        inp.instruction += workspace_skills_note(workspace_dir)
     if pod_git:
         # K8s runtime: the workspace lives in the Pod volume — the turn's start
         # sha comes from a no-op checkpoint INSIDE the sandbox.
