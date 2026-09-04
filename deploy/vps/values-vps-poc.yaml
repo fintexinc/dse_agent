@@ -255,9 +255,9 @@ consoleProjector:
 console:
   enabled: true
   ui:
-    image: { repository: ghcr.io/fintexinc/dse_console_pane/console-ui, tag: "v0.1.0-rc.7" }
+    image: { repository: ghcr.io/fintexinc/dse_console_pane/console-ui, tag: "v0.1.0-rc.8" }
   api:
-    image: { repository: ghcr.io/fintexinc/dse_console_pane/console-api, tag: "v0.1.0-rc.7" }
+    image: { repository: ghcr.io/fintexinc/dse_console_pane/console-api, tag: "v0.1.0-rc.8" }
     # OFF, and NOT tied to the tag above. The instruction this comment used to
     # carry — "flip to true in the same commit that bumps the tag" — was wrong:
     # console-api has never vendored the skills. Its Dockerfile copies no
