@@ -250,3 +250,33 @@ merged by hand stays `merge_pending` forever.
 - Checkpoint PVC (rebuild recovery; emptyDir does not recover).
 - adapter-jira/teams in the chart (today only slack/github/ingest-gateway).
 - Strict `pilot` profile (ESO/SOPS, worker versioning, all digests).
+
+## Connecting a Jira board (rc.134)
+
+Binding a board in the panel is now the whole gesture. *Repos & ROI* → **Add /
+update binding** with platform `jira`, type `project`, value the PROJECT KEY
+(`BFA`, never the board id — a board URL like `/boards/274` belongs to a
+project, and the binding follows the project), and one row per repository the
+board may reach.
+
+The poller resolves its sweep set every round as the project bindings ∪
+`JIRA_POLL_PROJECTS`, so a board bound on the site is swept within a minute —
+no Secret edit, no rollout restart. The env var stays authoritative for a
+project with no binding (the `BD` testbed), and an unreachable database
+degrades to it.
+
+Verify:
+
+```sh
+# what the poller actually sweeps (env is only half the answer)
+kubectl -n dse exec deploy/dse-dse-adapter-jira-poller -- python -c \
+  "from adapter_jira import config; print(config.get_poll_projects())"
+psql -U dse -d dse -c "SELECT project_key, last_polled_at FROM jira_poll_state ORDER BY 1"
+```
+
+A project with no cursor starts from a 15-minute look-back
+(`_FIRST_SWEEP_LOOKBACK`), not from the beginning of its history: with no cursor
+the search paginates the ENTIRE project and reads every issue's comments — 1300+
+requests when BFA joined on 2026-09-08, ingesting nothing, since none of that
+history carries the trigger label. So label the card, then bind the board (or
+touch the card afterwards).
