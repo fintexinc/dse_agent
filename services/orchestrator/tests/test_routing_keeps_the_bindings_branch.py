@@ -26,6 +26,7 @@ import asyncio
 import json as _json
 import uuid as _uuid
 
+import httpx
 import psycopg2
 import pytest
 
@@ -78,9 +79,11 @@ def test_the_router_reports_the_branch_each_binding_declares(db, monkeypatch):
                 ]
             }
 
-    monkeypatch.setattr(local_activities.httpx, "post", lambda *a, **k: _Resp())
+    # `httpx` is imported inside the function under test, so the patch lands
+    # on the module itself (same shape as test_router_retries._route).
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Resp())
     monkeypatch.setenv("DSE_MODEL_GATEWAY_URL", "http://gateway.invalid")
-    monkeypatch.setenv("DSE_MODEL_GATEWAY_KEY", "k")
+    monkeypatch.setenv("DSE_LITELLM_MASTER_KEY", "sk-test")
 
     out = local_activities._route_repos_sync(TENANT, "fix the fee table on the UI", None)
 

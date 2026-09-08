@@ -1264,13 +1264,26 @@ def _route_repos_sync(
             rows = cur.fetchall()
             if scope:
                 rows = [r for r in rows if r[0] in scope]
+            # Read here, while the connection is open and before the model call:
+            # the branch each candidate declares. Whichever repository the model
+            # picks, the item must start from ITS branch and not from a literal.
+            cur.execute(
+                "SELECT repo, base_branch FROM repo_bindings "
+                "WHERE tenant_id = %s AND base_branch IS NOT NULL",
+                (tenant_id,),
+            )
+            branches = {repo: branch for repo, branch in cur.fetchall()}
     finally:
         conn.close()
 
     candidates = [r[0] for r in rows]
     if len(candidates) < 2:
         # Nothing to route between. Say so rather than spending a model call.
-        return {"repos": candidates, "reason": "the tenant has a single repository"}
+        return {
+            "repos": candidates,
+            "reason": "the tenant has a single repository",
+            "base_branches": {r: b for r, b in branches.items() if r in candidates},
+        }
 
     catalogue = "\n".join(
         f"- {repo} — {role or 'unknown role'}, {lang or 'unknown stack'}: {desc or 'no description'}"
@@ -1346,10 +1359,24 @@ def _route_repos_sync(
         start, end = content.find("{"), content.rfind("}")
         parsed = _json.loads(content[start : end + 1])
         chosen = [r for r in (parsed.get("repos") or []) if r in candidates]
-        return {"repos": chosen, "reason": str(parsed.get("reason", ""))[:400]}
+        # The branch each CHOSEN repository declares. The workflow cannot read
+        # the database, and when the origin binds several repositories the
+        # cascade returns candidates without a branch — so this activity is the
+        # one place that can still answer "and which branch is that repo's?".
+        # A repo with no binding is simply absent here and keeps the `main`
+        # fallback.
+        return {
+            "repos": chosen,
+            "reason": str(parsed.get("reason", ""))[:400],
+            "base_branches": {r: b for r, b in branches.items() if r in chosen},
+        }
     except Exception as exc:  # noqa: BLE001 — a router that raises blocks the item
         logger.warning("route_repos: falling back to the human picker: %s", exc)
-        return {"repos": [], "reason": f"router unavailable: {type(exc).__name__}"}
+        return {
+            "repos": [],
+            "reason": f"router unavailable: {type(exc).__name__}",
+            "base_branches": {},
+        }
 
 
 @activity.defn(name=LOCAL_ACTIVITY_ROUTE_REPOS)
@@ -1477,6 +1504,19 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         with conn:
             with conn.cursor() as cur:
+                # Each sibling starts from ITS OWN repository's branch. The
+                # payload carries the PRIMARY's, which is the right fallback and
+                # the wrong answer whenever the two differ — a frontend on
+                # `develop` beside a backend on `main` is the ordinary case, not
+                # the exotic one. Read here rather than passed in, so this
+                # activity's input (and therefore every workflow command already
+                # recorded) stays byte-identical and old histories still replay.
+                cur.execute(
+                    "SELECT repo, base_branch FROM repo_bindings "
+                    "WHERE tenant_id = %s AND repo = ANY(%s) AND base_branch IS NOT NULL",
+                    (payload["tenant_id"], repos),
+                )
+                bound_branches = {repo: branch for repo, branch in cur.fetchall()}
                 cur.execute(
                     "SELECT idempotency_key FROM work_items WHERE id = %s", (primary,)
                 )
@@ -1515,7 +1555,14 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
                           FROM work_items WHERE id = %s
                         ON CONFLICT (idempotency_key) DO NOTHING
                         """,
-                        (sib, repo, resolved_base_branch, sib, primary, primary),
+                        (
+                            sib,
+                            repo,
+                            bound_branches.get(repo) or resolved_base_branch,
+                            sib,
+                            primary,
+                            primary,
+                        ),
                     )
                     # The payload is copied verbatim so the sibling's
                     # `load_work_item` reads the same task_content the primary

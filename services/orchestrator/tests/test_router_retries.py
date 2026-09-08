@@ -42,7 +42,15 @@ def _ok(repos: list[str]) -> _Resp:
 
 
 class _Cur:
-    """Two candidate repositories, so the router actually asks the model."""
+    """Two candidate repositories, so the router actually asks the model.
+
+    Answers per statement: the catalogue query and the bindings query return
+    different shapes, and a fake that returns the catalogue to both makes the
+    branch lookup unpack four columns into two.
+    """
+
+    def __init__(self):
+        self._sql = ""
 
     def __enter__(self):
         return self
@@ -50,10 +58,15 @@ class _Cur:
     def __exit__(self, *a):
         return False
 
-    def execute(self, *_a, **_k):
+    def execute(self, sql, *_a, **_k):
+        self._sql = " ".join(str(sql).split())
         return None
 
     def fetchall(self):
+        # Matched on the projection, not on the table: the catalogue query is a
+        # UNION that also reads `repo_bindings`.
+        if self._sql.startswith("SELECT repo, base_branch FROM repo_bindings"):
+            return [("org/fe", "develop"), ("org/be", "main")]
         return [("org/fe", "frontend", "typescript", "ui"),
                 ("org/be", "backend", "java", "api")]
 

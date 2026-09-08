@@ -15,6 +15,7 @@ Transaction: each function opens its own connection and delegates the commit to
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from dse_audit import emit as audit_emit
@@ -126,6 +127,9 @@ def ingest_task_trigger(
         conn.close()
 
 
+logger = logging.getLogger("adapter_jira.ingest")
+
+
 # Statuses a retry label acts on: the three TERMINAL ones that are not a success.
 # Nothing is running for any of them, so a fresh attempt cannot race a workflow.
 #   - `failed`: the attempt died on its own (retry cap, activity error).
@@ -144,6 +148,38 @@ def ingest_task_trigger(
 # The retry is not a bypass: the new work item goes through the whole pipeline,
 # clarification and plan-approval gates included.
 _RETRY_ELIGIBLE_STATUSES = ("failed", "blocked", "escalated")
+
+
+def branch_for_retry(
+    conn, *, tenant_id: str, repo: str | None, prior_base_branch: str | None
+) -> str | None:
+    """The base branch a retry should start from.
+
+    The repository is inherited — a retry is the same piece of work — but the
+    branch is re-read from the binding, because it is the field most likely to
+    have moved since the attempt that failed. Retrying is usually what an
+    operator does right AFTER changing something, and pointing the board at
+    another branch is exactly that kind of change.
+
+    Falls back to the previous branch when the repository has no binding, and
+    when the lookup fails: a ticket gets one retry for its whole life
+    (`ingest_events.event_id` is UNIQUE on `retry:<issue id>`), so a failed
+    query must not spend it, and must not lose it either.
+    """
+    if not repo:
+        return prior_base_branch
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT base_branch FROM repo_bindings "
+                "WHERE tenant_id = %s AND repo = %s AND base_branch IS NOT NULL LIMIT 1",
+                (tenant_id, repo),
+            )
+            row = cur.fetchone()
+    except Exception:  # noqa: BLE001 — a retry is never lost over a lookup
+        logger.exception("could not read the binding branch for %s; keeping the previous", repo)
+        return prior_base_branch
+    return (row[0] if row and row[0] else None) or prior_base_branch
 
 # Actor of everything below. The poller reads the issue's CURRENT state, not its
 # changelog, so it cannot know WHO added the label — naming the ticket reporter
@@ -342,7 +378,9 @@ def ingest_retry_trigger(
         # Inherit the failed attempt's repo instead of re-resolving: on a ticket
         # whose repo came from a human answering the clarification, the cascade
         # alone would land back on "ambiguous" and ask the same question again.
-        repo, base_branch = prior_repo, prior_base_branch
+        repo, base_branch = prior_repo, branch_for_retry(
+            conn, tenant_id=tenant_id, repo=prior_repo, prior_base_branch=prior_base_branch
+        )
         # Inheriting a repo means there is nothing left to route, so there is no
         # scope to carry either — the empty list is the honest value, and
         # binding it here keeps the name defined on both branches.
