@@ -31,7 +31,15 @@ def main() -> None:  # pragma: no cover - production loop
         approved_status=config.get_plan_approved_status(),
         rejected_status=config.get_plan_rejected_status(),
     )
-    print(f"[adapter-jira] poller running (projects={config.get_poll_projects()}, interval={interval}s)")
+    # `projects` here is only the configured fallback: the sweep set is resolved
+    # per round from the panel's bindings as well, so printing this list as if
+    # it were the answer is how "I bound the board on the site" and "the poller
+    # reads that board" came apart in the first place.
+    print(
+        f"[adapter-jira] poller running (configured={config.get_poll_projects()}, "
+        f"plus jira project bindings, interval={interval}s)",
+        flush=True,
+    )
     while True:
         poller.poll_once()
         time.sleep(interval)

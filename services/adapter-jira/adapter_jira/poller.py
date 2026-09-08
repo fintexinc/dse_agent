@@ -88,7 +88,10 @@ class JiraPoller:
     ):
         self._client = client
         self._tenant_id = tenant_id
-        self._projects = projects
+        # The environment's list is the FALLBACK half of the sweep set; the
+        # other half comes from the panel's bindings, re-read every round (see
+        # `_projects_to_sweep`).
+        self._configured_projects = projects
         self._trigger_label = trigger_label
         # None disables the retry path entirely — a board that never configured
         # the label must not have the DSE reacting to a word it did not choose.
@@ -107,10 +110,53 @@ class JiraPoller:
         getter = getattr(self._client, "self_account_id", None)
         return getter() if callable(getter) else None
 
+    def _projects_to_sweep(self) -> list[str]:
+        """The projects this round sweeps: the panel's bindings ∪ the environment.
+
+        Read every round, on purpose. Binding a board in the console is the only
+        gesture an operator can make from a browser, and it used to decide just
+        half of the connection — which repository a card lands in — while
+        whether anyone READ that project came from `JIRA_POLL_PROJECTS`, a
+        Secret outside this repository, consulted once at process start. So a
+        board bound on the site went unread until someone edited the Secret and
+        restarted the Deployment, with nothing anywhere saying so.
+
+        The environment stays authoritative for a project with no binding (the
+        `BD` testbed is one), and an unreachable database degrades to it rather
+        than raising: this poller is itself the fallback for a dropped webhook.
+        """
+        projects = list(self._configured_projects)
+        try:
+            conn = get_connection()
+        except Exception:  # noqa: BLE001 — the sweep set must never be the thing that fails
+            logger.exception("could not open a connection to read the project bindings")
+            return projects
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT binding_value FROM repo_bindings "
+                    "WHERE tenant_id = %s AND platform = 'jira' AND binding_type = 'project' "
+                    "ORDER BY binding_value",
+                    (self._tenant_id,),
+                )
+                bound = [r[0] for r in cur.fetchall() if r[0]]
+        except Exception:  # noqa: BLE001
+            logger.exception("could not read the project bindings; sweeping the configured list")
+            return projects
+        finally:
+            conn.close()
+
+        for project in bound:
+            if project not in projects:
+                projects.append(project)
+        if bound and set(projects) != set(self._configured_projects):
+            logger.info("sweeping %s (bindings: %s)", projects, bound)
+        return projects
+
     def poll_once(self, *, now: datetime | None = None) -> int:
         now = now or datetime.now(timezone.utc)
         reconciled = 0
-        for project in self._projects:
+        for project in self._projects_to_sweep():
             since = self._get_cursor(project)
             issues = self._client.search_updated(project, _relative_bound(since, now))
             for issue in issues:
