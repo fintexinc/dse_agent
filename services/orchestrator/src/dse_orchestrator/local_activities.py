@@ -1504,6 +1504,15 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         with conn:
             with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT idempotency_key, tenant_id FROM work_items WHERE id = %s",
+                    (primary,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError(f"primary work item {primary!r} not found")
+                event_id, primary_tenant = row[0], row[1]
+
                 # Each sibling starts from ITS OWN repository's branch. The
                 # payload carries the PRIMARY's, which is the right fallback and
                 # the wrong answer whenever the two differ — a frontend on
@@ -1511,19 +1520,14 @@ async def fan_out_sibling_work_items(payload: dict[str, Any]) -> dict[str, Any]:
                 # the exotic one. Read here rather than passed in, so this
                 # activity's input (and therefore every workflow command already
                 # recorded) stays byte-identical and old histories still replay.
+                # The tenant comes from the primary's own row: the payload's
+                # `tenant_id` is not guaranteed (several callers omit it).
                 cur.execute(
                     "SELECT repo, base_branch FROM repo_bindings "
                     "WHERE tenant_id = %s AND repo = ANY(%s) AND base_branch IS NOT NULL",
-                    (payload["tenant_id"], repos),
+                    (primary_tenant, repos),
                 )
                 bound_branches = {repo: branch for repo, branch in cur.fetchall()}
-                cur.execute(
-                    "SELECT idempotency_key FROM work_items WHERE id = %s", (primary,)
-                )
-                row = cur.fetchone()
-                if row is None:
-                    raise RuntimeError(f"primary work item {primary!r} not found")
-                event_id = row[0]
 
                 # The primary joins its own group, so COALESCE(group_id, id)
                 # names the group for every member without a special case.
