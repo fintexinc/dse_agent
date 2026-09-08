@@ -138,3 +138,36 @@ def test_an_unreachable_database_falls_back_to_the_environment(monkeypatch):
     monkeypatch.setattr("adapter_jira.poller.get_connection", _boom)
     poller = _poller(["BD"])
     assert poller._projects_to_sweep() == ["BD"]
+
+
+class BoundRecordingClient:
+    """Records the JQL time bound each project was searched with."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, str | None]] = []
+
+    def search_updated(self, project: str, bound: str | None):
+        self.calls.append((project, bound))
+        return []
+
+
+def test_a_project_joining_now_does_not_sweep_its_whole_history(db):
+    """A board bound today must not drag years of tickets through the sweep.
+
+    With no cursor the bound is None and `search_updated` paginates the ENTIRE
+    project, reading the comments of every issue in it (`_reconcile_issue` calls
+    `_ingest_comments` for each). Measured on the real BFA board, 2026-09-08:
+    the first sweep after the binding took minutes, made one comment request per
+    ticket across 1300+ of them, and held up the other project's round — while
+    ingesting nothing, because none of that history carries the trigger label.
+
+    Connecting a board is about the work that comes next, so a project with no
+    cursor starts from a short look-back window: long enough for "I labelled the
+    card, then bound the board", far short of its history.
+    """
+    poller = _poller(["BFA"])
+    poller._client = BoundRecordingClient()
+    poller.poll_once(now=NOW)
+    bound = poller._client.calls[0][1]
+    assert bound is not None, "a project with no cursor swept its whole history"
+    assert bound == "-15m", bound
