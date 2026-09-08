@@ -46,6 +46,20 @@ logger = logging.getLogger("adapter_jira.poller")
 
 _POLLER_PRINCIPAL = "system:adapter-jira-poller"
 
+#: How far back a project with NO cursor looks on its first sweep.
+#:
+#: No cursor used to mean no date filter at all — "look at everything" — which
+#: was harmless while every project here was a testbed with a handful of tickets
+#: and became expensive the moment a real board was bound from the panel: the
+#: search paginates the whole project and `_reconcile_issue` reads the comments
+#: of every issue in it (1300+ requests on BFA, 2026-09-08, ingesting nothing,
+#: since none of that history carries the trigger label).
+#:
+#: Connecting a board is about the work that comes next. The window is wide
+#: enough for "I labelled the card, then bound the board" and short enough that
+#: the project's history is never walked.
+_FIRST_SWEEP_LOOKBACK = timedelta(minutes=15)
+
 
 def _relative_bound(since: datetime | None, now: datetime) -> str | None:
     """JQL time bound as RELATIVE minutes (`-90m`) instead of a timestamp.
@@ -157,7 +171,10 @@ class JiraPoller:
         now = now or datetime.now(timezone.utc)
         reconciled = 0
         for project in self._projects_to_sweep():
-            since = self._get_cursor(project)
+            # A project with no cursor is one that just joined — a board bound
+            # in the panel, or a fresh deployment. It starts from a window, not
+            # from the beginning of its history (see `_FIRST_SWEEP_LOOKBACK`).
+            since = self._get_cursor(project) or (now - _FIRST_SWEEP_LOOKBACK)
             issues = self._client.search_updated(project, _relative_bound(since, now))
             for issue in issues:
                 # Per-issue resilience (finding from the real run BD-39,
