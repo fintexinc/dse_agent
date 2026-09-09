@@ -166,3 +166,27 @@ def test_a_repository_with_no_binding_still_falls_back_to_main(db):
     with db.cursor() as cur:
         cur.execute("SELECT base_branch FROM work_items WHERE id = %s", (sib,))
         assert cur.fetchone()[0] == "main"
+
+
+def test_the_workflow_actually_reads_the_branch_the_router_reported():
+    """The activity can report the branch and the workflow can still ignore it.
+
+    That was the state after the first half of this fix: `_route_repos_sync`
+    returned `base_branches`, nothing read it, and the PRIMARY item still
+    started from the literal `main` — the fan-out was fixed for the siblings
+    while the repository that actually got the work kept the bug.
+
+    Pinned by reading the source, the same way `test_multi_repo_routing` pins
+    the candidate query: a behavioural test would need the whole workflow
+    harness plus a scripted router, and what can silently regress here is one
+    expression.
+    """
+    import inspect
+
+    from dse_orchestrator import workflows
+
+    src = inspect.getsource(workflows.WorkItemLifecycleWorkflow.run)
+    assert "base_branches" in src, (
+        "the workflow ignores the branch the routing activity reports; the "
+        "routed repository starts from 'main' again"
+    )
