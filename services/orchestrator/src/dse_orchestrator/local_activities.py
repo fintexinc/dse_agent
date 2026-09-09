@@ -829,14 +829,39 @@ _STATUS_BODIES = {
     "escalated": (
         "⚠️ The DSE escalated this task for human review and stopped.\n\n"
         "**Reason:** {detail}\n\n"
-        "Review the description / acceptance criteria and re-apply the `dse` "
-        "label to try again."
+        "Review the description / acceptance criteria before asking for another "
+        "attempt."
     ),
     "blocked": (
         "🚧 Blocked awaiting human intervention.\n\n**Reason:** {detail}\n\n"
         "(e.g. no resolvable approver — adjust CODEOWNERS / access bundle.)"
     ),
 }
+
+
+#: Per-surface overrides. `_STATUS_BODIES` is surface-agnostic — the same body
+#: goes to GitHub, Slack, Teams and Jira — which is how "re-apply the `dse`
+#: label" ended up being told to three surfaces that have no labels and one
+#: where it did nothing. A gesture belongs here only where it is real.
+_STATUS_BODIES_BY_SOURCE: dict[str, dict[str, str]] = {
+    "jira": {
+        "escalated": (
+            "⚠️ The DSE escalated this task for human review and stopped.\n\n"
+            "**Reason:** {detail}\n\n"
+            "Review the description / acceptance criteria, then REMOVE the `dse` "
+            "label and add it again to start a fresh attempt."
+        ),
+    },
+}
+
+
+def status_body_for(source: str, status: str, *, detail: str | None = None) -> str:
+    """The status comment for this status, in the words the surface can act on."""
+    template = (
+        _STATUS_BODIES_BY_SOURCE.get(source, {}).get(status)
+        or _STATUS_BODIES.get(status, "DSE status: {status}")
+    )
+    return template.format(detail=detail or "—", status=status)
 
 
 @activity.defn(name=ACTIVITY_POST_TRACKING_COMMENT)
@@ -877,8 +902,7 @@ async def post_tracking_comment(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "skipped": f"source={source}_no_target"}
 
     if not body:
-        template = _STATUS_BODIES.get(status, "DSE status: {status}")
-        body = template.format(detail=detail or "—", status=status)
+        body = status_body_for(source, status, detail=detail)
 
     adapter_url, extra_fields = target
     # Slack uses `status` to build Block Kit on awaiting_plan_approval (Phase B);
