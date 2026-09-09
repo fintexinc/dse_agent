@@ -72,12 +72,26 @@ def test_a_skill_we_wrote_last_round_is_refreshed():
     assert "NEW BODY" in pod.extracted()[".claude/skills/handling-money/SKILL.md"]
 
 
-def test_guidance_is_excluded_from_git_so_it_never_reaches_the_customer_pr():
+def test_the_exclude_list_carries_the_skill_dirs_and_the_marker():
+    """Shape only. The PROOF that nothing reaches the pull request lives in
+    `test_the_marker_never_reaches_the_pr.py`, which runs this script against a
+    real repository and asks git.
+
+    This test used to claim that proof in its name and assert that the strings
+    `.git/info/exclude` and `.claude/.dse-materialized` appeared in the script
+    — and the second one appeared because the script WRITES the marker. It
+    passed with the marker leaking, twice: PR #792, then PR #524 after rc.132
+    reintroduced this writer. A substring in a shell script proves nothing about
+    what git ends up tracking.
+    """
     pod = FakePod()
     materialize_skills_in_pod([_skill("k")], run=pod.run)
     script = pod.writes[-1][0][-1]
     assert ".git/info/exclude" in script
-    assert ".claude/.dse-materialized" in script
+    # The marker is in the exclude payload, not merely somewhere in the script.
+    excluded_payload = script.split(".git/info/exclude")[0]
+    assert ".claude/skills/k/" in excluded_payload
+    assert ".claude/.dse-materialized" in excluded_payload
 
 
 def test_nothing_is_written_when_the_pod_refuses():

@@ -286,7 +286,15 @@ def materialize_skills_in_pod(skills: list[Skill], *, run) -> list[str]:
             tar.addfile(info, io.BytesIO(data))
     payload = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    exclude_lines = "".join(f"{e}\n" for e in excludes)
+    # The marker is excluded ALONGSIDE the skill directories — parity with the
+    # host writer, whose `_write_materialized_marker` ends in
+    # `_git_exclude(ws, [_MARKER])`. Leaving it out is how `.dse-materialized`
+    # reached PR #792 and, after rc.132 reintroduced this writer verbatim,
+    # PR #524: the file is ours, `git add -A` has no allowlist, and
+    # `is_disposable_artifact` deliberately keeps anything it cannot prove is
+    # garbage. It stays on disk (the state probe reads it); git never sees it.
+    exclude_lines = "".join(f"{e}\n" for e in [*excludes, _MARKER])
+    marker_lines = "".join(f"{e}\n" for e in excludes)
     script = (
         f"set -e; cd {_POD_WORKSPACE}; "
         "base64 -d > /tmp/_skills.tgz && tar xzf /tmp/_skills.tgz -C . && rm -f /tmp/_skills.tgz; "
@@ -298,8 +306,13 @@ def materialize_skills_in_pod(skills: list[Skill], *, run) -> list[str]:
         "done; "
         # Provenance marker: tells a later round "we wrote this" so it may be
         # refreshed, versus "the repo ships it" which is untouchable.
-        f"mkdir -p $(dirname {_MARKER}); "
-        f"printf '%s' {_sh_quote(exclude_lines)} >> {_MARKER}; "
+        # Appended per line and only when absent — the host writer merges into a
+        # sorted set, and a plain `>>` would repeat every entry on each
+        # provision and rebuild, growing a file that must stay stable.
+        f"mkdir -p $(dirname {_MARKER}); touch {_MARKER}; "
+        f"printf '%s' {_sh_quote(marker_lines)} | while IFS= read -r l; do "
+        f'[ -n "$l" ] && grep -qxF "$l" {_MARKER} 2>/dev/null || printf \'%s\\n\' "$l" >> {_MARKER}; '
+        "done; "
         "echo OK"
     )
     rc, out = run(["sh", "-c", script], payload)
