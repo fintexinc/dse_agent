@@ -155,6 +155,7 @@ def admit_work_item(
                 INSERT INTO ingest_events (work_item_id, event_id, kind, payload)
                 VALUES (%s, %s, %s, %s::jsonb)
                 ON CONFLICT (event_id) DO NOTHING
+                RETURNING id
                 """,
                 (
                     work_item_id,
@@ -163,10 +164,18 @@ def admit_work_item(
                     _payload_json(event, sanitized_content),
                 ),
             )
+            # `ON CONFLICT DO NOTHING` without `RETURNING` cannot tell an
+            # admission from a replay, and the audit used to fire either way:
+            # a Jira card whose label sits on it is re-ingested every sweep, so
+            # the ledger filled with `work_item_admitted` rows that admitted
+            # nothing — 13 in twelve minutes on BFA-1132, none of them followed
+            # by a dispatch. The row that DID get inserted is the honest signal,
+            # and it is the same shape `record_signal_event` has always used.
+            admitted = cur.fetchone() is not None
 
         audit_emit(
             actor=requester_principal,
-            action="work_item_admitted",
+            action="work_item_admitted" if admitted else "work_item_admission_duplicate_ignored",
             tenant_id=tenant_id,
             work_item_id=work_item_id,
             details={"source": source, "channel": channel, "event_id": event.event_id},
