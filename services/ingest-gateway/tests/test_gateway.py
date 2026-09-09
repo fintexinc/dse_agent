@@ -88,6 +88,23 @@ def test_admit_work_item_is_idempotent_on_replay(tenant_id):
         assert cur.fetchone()[0] == 1
         cur.execute("SELECT count(*) FROM ingest_events WHERE work_item_id = %s", (id1,))
         assert cur.fetchone()[0] == 1
+        # The ledger has to say the same thing the tables say. `audit_emit` used
+        # to fire unconditionally, so a card whose label sits on it produced one
+        # `work_item_admitted` PER SWEEP — 13 of them in twelve minutes on
+        # BFA-1132 (2026-09-09), with zero dispatches behind them, which reads
+        # like thirteen admissions that never ran. The sibling
+        # `record_signal_event` has always done this right, with `RETURNING id`.
+        cur.execute(
+            "SELECT count(*) FROM audit_log WHERE work_item_id = %s AND action = 'work_item_admitted'",
+            (id1,),
+        )
+        assert cur.fetchone()[0] == 1, "a replayed admission wrote a second admitted row"
+        cur.execute(
+            "SELECT count(*) FROM audit_log WHERE work_item_id = %s "
+            "AND action = 'work_item_admission_duplicate_ignored'",
+            (id1,),
+        )
+        assert cur.fetchone()[0] == 1, "the replay left no trace at all — it must be named"
     check_conn.close()
 
 
