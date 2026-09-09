@@ -24,27 +24,33 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import os
 import uuid as _uuid
 
 import httpx
 import psycopg2
 import pytest
 
-#: The activity under test connects as `dse_app`; the fixture writes and
-#: cleans up as the owner, because `dse_app` has no DELETE on `work_items`
-#: (the ledger grants, migrations 0028/0030).
-ADMIN_DSN = "postgresql://dse:dse_dev_only@localhost:5432/dse"
-TENANT = "test_tenant_branch_routing"
+#: The SAME database the activities under test open, which on CI is a
+#: disposable schema named by `DSE_TEST_RUN_ID`. A hardcoded superuser DSN
+#: reaches a different schema there, so the fixture would write where nothing
+#: else in the suite is looking.
+DSN = os.environ.get(
+    "DSE_DATABASE_URL", "postgresql://dse_app:dse_app_dev_only@localhost:5432/dse"
+)
+#: Unique per run: `dse_app` cannot DELETE from `work_items` (the ledger grants
+#: of migrations 0028/0030), so rows are left behind rather than cleaned up —
+#: the same convention the sibling test above already follows.
+TENANT = f"test_tenant_branch_{_uuid.uuid4().hex[:10]}"
 FE = "acme/fee-fe"
 BE = "acme/fee-be"
 
 
 @pytest.fixture
 def db():
-    conn = psycopg2.connect(ADMIN_DSN)
+    conn = psycopg2.connect(DSN)
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM repo_bindings WHERE tenant_id = %s", (TENANT,))
             cur.execute(
                 "INSERT INTO repo_bindings (tenant_id, platform, binding_type, binding_value, "
                 "repo, base_branch) VALUES (%s,'jira','project','BFA',%s,'dse-agent'), "
@@ -54,10 +60,12 @@ def db():
         conn.commit()
         yield conn
     finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM work_items WHERE tenant_id = %s", (TENANT,))
-            cur.execute("DELETE FROM repo_bindings WHERE tenant_id = %s", (TENANT,))
-        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM repo_bindings WHERE tenant_id = %s", (TENANT,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
         conn.close()
 
 
