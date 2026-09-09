@@ -34,38 +34,30 @@ covers only what is Jira-specific.
   `event_id` and whichever path arrives second dedups. **They never duplicate** (proven in
   `tests/test_poller_webhook_idempotency.py`, in both directions).
 
-- **Retry label** (`JIRA_RETRY_LABEL`, default `dse-retry`): the poller sees the
-  label on a ticket whose last work item ended **terminally without succeeding**
-  (`failed`, `blocked`, `escalated`) and admits a fresh attempt, audited as
-  `jira_retry_admitted`. Before this, such an item could only be retried by editing
-  the database by hand — re-adding the `dse` label converges on the `event_id` that
-  already belongs to the attempt that ended.
-  - Those three qualify because nothing is running for them, so a new attempt
-    races nothing, and because their own status comments send the human back to
-    the ticket ("adjust CODEOWNERS", "re-apply the `dse` label to try
-    again" — advice that does not work without this label). `done` never
-    qualifies (it would re-implement shipped work) and neither does any in-flight
-    status (two workflows on one branch and PR). The retry is not a bypass: the new
-    work item goes through every gate, clarification and plan approval included.
-  - **One retry per ticket, ever.** The evidence is `ingest_events.event_id`
-    (UNIQUE, `message_id = retry:{issue id}`, committed inside
-    `admit_work_item`'s transaction), so the ceiling holds with no cooperation
-    from Jira: a lost label removal, a restart or a 429 storm cannot buy a second
-    attempt. Taking the label off is a **mirror of the decision, not the guard** —
-    it needs the *Edit Issues* permission, which the service account may not have.
-    An earlier key of (ticket, prior work item) was unbounded for exactly that
-    reason: attempt fails → retry → retry fails → new key → retry, once a minute
-    (200 sweeps admitted 200 attempts; the regression test now pins it at one).
-  - Every path that will **not** retry writes exactly one `jira_retry_declined`
-    row saying why (`no_work_item`, `status_not_retryable`, `retry_already_used`)
-    and consumes the label on that same sweep. Bounded by construction: one row
-    per (ticket, reason) forever, checked against the ledger before emitting,
-    because a timer writing into an append-only table once a minute is the
-    ~2,900-row failure. Afterwards the path is silent — no rows, no HTTP.
-  - A **paused channel** is the one exception: nothing is written and the label is
-    left alone, so the retry happens when the operator resumes the channel.
-  - See `tests/test_retry_label.py` (including 200 simulated sweeps with every
-    label removal failing).
+- **Restarting a card** — the gesture is the `dse` label itself: take it off,
+  put it back. The DSE removes the label as soon as it picks the work up, so the
+  label reads as a button rather than as a permanent marking.
+  - It works from any of the five terminal states (`done`, `failed`,
+    `cancelled`, `escalated`, `blocked`) and as many times as a human makes the
+    gesture. There is no ceiling; the old `dse-retry` label allowed exactly one
+    restart per card, for the lifetime of the card, and is gone.
+  - What makes it safe is that it is an **edge, not a level**: `jira_trigger_state`
+    remembers whether the label was on the card last sweep, and the generation
+    behind the `event_id` only advances on absent → present. A label that simply
+    sits there — because nobody took it off, or because the service account
+    lacks *Edit Issues* — advances nothing, sweep after sweep. That distinction
+    is the whole defence: a timer re-triggering the same action once a minute is
+    what once wrote ~2,900 rows into an append-only ledger.
+  - The removal is never the guard. The poller does not disarm the latch when it
+    removes the label; the next sweep does, by **observing** the label gone. So a
+    PUT that answers 200 without applying is harmless by construction. When the
+    label survives the removal, `jira_trigger_label_removal_failed` says so —
+    almost always a missing *Edit Issues* permission.
+  - An attempt still **in flight** is never restarted: two workflows on one
+    branch and one pull request is worse than a late restart.
+  - See `tests/test_the_label_gesture_restarts_a_card.py` (including 200
+    simulated sweeps with every label removal failing, and the deploy-day
+    property that generation 0 keeps the historic `event_id` spelling).
 
 - **Outbound**:
   - **Per-ticket serialized transitions** (`adapter_jira/transitions.py`,
@@ -168,27 +160,31 @@ features promise, and only a statement log can prove it.
    near-simultaneously enqueued transitions is preserved within a
    worker (by `id`); across distinct workers it is best-effort — in production
    a single transition worker runs by default.
-4. **Retry label on the webhook path**: only the poller acts on
-   `JIRA_RETRY_LABEL`, so asking for a retry takes up to one poll interval
-   (default 60s). Wiring it into `jira:issue_updated` would make it immediate;
-   it was left out because the poller is the guaranteed path (the webhook is
-   best-effort) and one code path is one place for the single-shot guard.
-   `JIRA_RETRY_LABEL` also has to be added to the Helm values/compose env for the
-   poller Deployment to override the default — out of this service's tree.
-5. **The retry label answers in the ledger, not on the ticket.** A declined retry
-   writes `jira_retry_declined` (visible in the console timeline) and takes the
-   label off; it does NOT post a Jira comment. Deliberate: a comment written by the
-   adapter is indistinguishable from a human's to the poller (Jira attributes it to
-   the token owner, and only comments created by the `MutableCommentWriter` are
-   recorded in `comment_state`), so on a ticket waiting for a clarification the
-   explanation would be read back as the answer — the BD-40 loop. Posting one
-   safely means routing it through the same writer, which is a change to the
-   status-comment contract rather than to this label.
-6. **Label removal needs the *Edit Issues* permission.** If the service account
-   lacks it, every removal fails; the retry is still single-shot (the guard is in
-   Postgres) and `jira_retry_label_removal_failed` is audited once per decision, but
-   the ticket keeps a label the DSE has already answered. Grant the permission, or
-   expect the ledger to be the only place the answer appears.
+4. **The restart gesture is the poller's alone**: only the sweep advances the
+   generation in `jira_trigger_state`, so a restart takes up to one poll interval
+   (default 60s). Wiring it into `jira:issue_updated` would make it immediate and
+   is deliberately not done: Jira redelivers webhooks, and a delivery from before
+   a removal still carries the label in its payload — letting it advance would
+   mint an attempt nobody asked for. The webhook may still ingest a brand-new
+   card, which is where latency actually matters.
+5. **A refused gesture answers in the ledger, not on the ticket.** When the card
+   has an attempt still in flight, the sweep records that and does not comment.
+   Deliberate: a comment written by the adapter is indistinguishable from a
+   human's to the poller (Jira attributes it to the token owner, and only
+   comments created by the `MutableCommentWriter` are recorded in
+   `comment_state`), so on a ticket waiting for a clarification the explanation
+   would be read back as the answer — the BD-40 loop. Posting one safely means
+   routing it through the same writer, which is a change to the status-comment
+   contract rather than to this gesture.
+6. **Label removal needs the *Edit Issues* permission.** Without it every removal
+   fails, and the card keeps a label the DSE has already acted on. Nothing
+   restarts — the latch stays armed precisely because the label never went
+   absent — but the human's next gesture is lost: they take the label off and put
+   it back between two sweeps, and the sweep sees present → present. The
+   recourse is visible (the label is still on the card) and
+   `jira_trigger_label_removal_failed` names the cause once per admission. Grant
+   the permission, or expect a restart to need the label removed for longer than
+   one poll interval.
 7. **`project_statuses` costs one extra request** per queued transition whose
    target is not directly reachable, and it is deliberately not cached: an operator
    who creates the missing column must not have to restart the worker for the

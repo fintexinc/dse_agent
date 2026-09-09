@@ -27,7 +27,6 @@ def main() -> None:  # pragma: no cover - production loop
         tenant_id=tenant.tenant_id,
         projects=config.get_poll_projects(),
         trigger_label=config.get_trigger_label(),
-        retry_label=config.get_retry_label(),
         approved_status=config.get_plan_approved_status(),
         rejected_status=config.get_plan_rejected_status(),
     )

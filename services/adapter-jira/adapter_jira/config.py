@@ -56,17 +56,6 @@ def get_trigger_label() -> str:
     return os.environ.get("JIRA_TRIGGER_LABEL", "dse")
 
 
-def get_retry_label() -> str:
-    """Label that asks for a FRESH attempt at a ticket whose work item ended in
-    `failed` (default `dse-retry`).
-
-    Configurable for the same reason as the trigger label: label namespaces are
-    per-board and a team may already be using this word for something of its
-    own, in which case the DSE must not silently claim it.
-    """
-    return os.environ.get("JIRA_RETRY_LABEL", "dse-retry")
-
-
 def get_plan_approved_status() -> str:
     """Name of the column/status whose TRANSITION is read as a plan approval
     (UC5, WSA-E5-T1). E.g.: 'Plan approved'."""

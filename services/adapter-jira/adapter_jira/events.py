@@ -126,50 +126,6 @@ def build_task_event(
     )
 
 
-def build_retry_event(
-    issue: dict[str, Any], *, actor_account_id: str, resolved_principal: str, display_name: str | None = None
-) -> ConversationEvent:
-    """Retry label on a ticket whose work item ended terminally -> a NEW
-    task_request, carrying the ticket's own text like the original attempt did.
-
-    `message_id` names the TICKET AND NOTHING ELSE, and that choice is the whole
-    single-shot guarantee:
-
-      - It cannot be `created:{issue id}` (what `build_task_event` uses): that
-        event_id already belongs to the attempt that ended, so `admit_work_item`
-        would converge on the SAME `work_item_id` and the retry would silently
-        do nothing.
-      - It must not carry a timestamp, a counter, or the id of the attempt being
-        retried. Any of those changes as the ticket moves on, and the poller
-        sweeps every minute against a label that does not remove itself: a key
-        that changes admits another attempt with nobody asking. Keyed on the
-        prior work item it did exactly that — attempt fails, retry admitted,
-        retry fails, its id is now the prior one, so the next sweep mints a new
-        key and retries again, forever, whenever the label could not be removed
-        (removing a Jira label needs the *Edit Issues* permission the service
-        account may simply not have). That is the timer-driven duplication that
-        once wrote ~2,900 audit rows for a single stuck item.
-
-    So the durable evidence that this ticket's retry was already acted on is the
-    `ingest_events` row itself: UNIQUE on `event_id`, and written by
-    `admit_work_item` in the SAME transaction as the work item. It lives in the
-    engine's own Postgres — the system of record — so it cannot be lost by a
-    failed write to Jira, a restart, or a lost label removal. The ceiling is
-    therefore ONE retry per ticket, forever; see `ingest.ingest_retry_trigger`
-    for why that is the right ceiling and how the human is told.
-    """
-    return ConversationEvent.build(
-        platform=Platform.jira,
-        thread_key=ticket_key(issue),
-        message_id=f"retry:{issue['id']}",
-        kind=EventKind.task_request,
-        source_ref={"ticket_key": ticket_key(issue)},
-        actor=_actor(actor_account_id, resolved_principal, display_name),
-        content_snapshot=_issue_content(issue),
-        signature_verified=True,
-    )
-
-
 def build_comment_event(
     *,
     key: str,
