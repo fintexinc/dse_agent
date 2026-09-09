@@ -62,10 +62,22 @@ def correlate(
     event: ConversationEvent,
     requester_principal: str,
     correlation_ref: dict[str, Any] | None = None,
+    terminal_statuses: frozenset[str] | set[str] | tuple[str, ...] | None = None,
 ) -> CorrelationResult:
     """Correlaciona um evento a um WorkItem: tarefa nova, ou sinal para uma
-    que já existe. Leitura pura — não escreve nem commita."""
+    que já existe. Leitura pura — não escreve nem commita.
+
+    `terminal_statuses` é o conjunto que decide "isto acabou, então um evento
+    novo é trabalho novo". O default cobre a conversa: uma resposta na thread de
+    um item `escalated` ou `blocked` é comentário sobre trabalho que ainda tem
+    dono humano, não um pedido para recomeçar — por isso os dois ficam de fora.
+
+    Um GESTO deliberado é outra coisa. Tirar o label `dse` de um card do Jira e
+    recolocá-lo não é conversa: é alguém pedindo, com as mãos, que se tente de
+    novo. Esse caminho passa o conjunto ampliado, e é o único que passa.
+    """
     ref = correlation_ref if correlation_ref is not None else event.source_ref
+    terminal = frozenset(terminal_statuses) if terminal_statuses is not None else _TERMINAL_STATUSES
 
     with conn.cursor() as cur:
         cur.execute(
@@ -84,7 +96,7 @@ def correlate(
 
     matched_id, status, wi_requester = row
 
-    if status in _TERMINAL_STATUSES:
+    if status in terminal:
         # Documented rule: a terminal WorkItem does not receive a signal — it
         # becomes a new WorkItem with provenance to the previous one.
         return CorrelationResult("new_task", None, provenance_work_item_id=matched_id)

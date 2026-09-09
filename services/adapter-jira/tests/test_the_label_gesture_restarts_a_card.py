@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import pytest
 
+from dse_contracts.conversation_event import ConversationEvent
+
 from adapter_jira import events, trigger_state
 from adapter_jira.ingest import ingest_task_trigger
 
@@ -84,7 +86,10 @@ class Store:
 
     @property
     def admitted_ids(self) -> list[str]:
-        return sorted({wid for wid in self.ingest_events.values()})
+        """Only real admissions. A signal writes an ingest_event against an
+        EXISTING work item; counting those would call a dropped duplicate an
+        attempt."""
+        return sorted({params[0] for params in self.work_items})
 
     def responder(self, sql: str, params):
         if sql.startswith("SELECT generation, label_armed FROM jira_trigger_state"):
@@ -103,9 +108,12 @@ class Store:
         if sql.startswith("SELECT work_item_id FROM ingest_events"):
             hit = self.ingest_events.get(params[0])
             return [(hit,)] if hit else []
-        if sql.startswith("SELECT id, status FROM work_items") or sql.startswith(
-            "SELECT id, status, repo, base_branch FROM work_items"
-        ):
+        if sql.startswith("SELECT id, status, requester FROM work_items"):
+            # what `correlate` asks
+            if not self.work_item_status:
+                return []
+            return [("wi_prior", self.work_item_status, "usr_rita")]
+        if sql.startswith("SELECT id, status, repo, base_branch FROM work_items"):
             if not self.work_item_status:
                 return []
             return [("wi_prior", self.work_item_status, "acme/fe", "dse-agent")]
@@ -169,8 +177,8 @@ def test_generation_zero_keeps_the_historic_event_id():
         _issue(), generation=0, actor_account_id="a", resolved_principal="p"
     )
     assert plain.event_id == zero.event_id
-    assert f"created:{ISSUE_ID}" in plain.message_id
-    assert plain.message_id == f"created:{ISSUE_ID}"
+    # The exact id every card in the fleet already carries.
+    assert plain.event_id == ConversationEvent.compute_event_id("jira", TICKET, f"created:{ISSUE_ID}")
 
 
 def test_a_generation_does_not_collide_with_the_other_namespaces():
@@ -262,3 +270,125 @@ def test_an_in_flight_attempt_is_not_restarted(store):
     result = _sweep(store)
     assert len(store.admitted_ids) == 1, "the gesture duplicated work in flight"
     assert result is not None and result.get("path") != "new_task"
+
+
+# ------------------------------------------------------- through the poller
+
+class _Latch:
+    """The latch as the sweep sees it, without a database."""
+
+    def __init__(self):
+        self.rows: dict[tuple[str, str], dict] = {}
+
+    def responder(self, sql: str, params):
+        if sql.startswith("SELECT last_polled_at FROM jira_poll_state"):
+            return []
+        if sql.startswith("INSERT INTO jira_poll_state"):
+            return []
+        if sql.startswith("SELECT id, source_ref, status"):
+            return []
+        if "repo_bindings" in sql:
+            return []
+        if sql.startswith("SELECT generation, label_armed FROM jira_trigger_state"):
+            row = self.rows.get((params[0], params[1]))
+            return [(row["generation"], row["label_armed"])] if row else []
+        if sql.startswith("INSERT INTO jira_trigger_state"):
+            self.rows[(params[0], params[1])] = {
+                "generation": params[3], "label_armed": params[4],
+            }
+            return []
+        if sql.startswith("UPDATE jira_trigger_state"):
+            self.rows[(params[2], params[3])] = {
+                "generation": params[0], "label_armed": params[1],
+            }
+            return []
+        raise AssertionError(f"unexpected statement: {sql}")
+
+
+@pytest.fixture
+def sweeping(monkeypatch):
+    """A poller wired to a fake Jira and a fake latch, recording the generations
+    its admissions were made with."""
+    from adapter_jira.backend import FakeJiraClient
+    from adapter_jira.poller import JiraPoller
+
+    latch = _Latch()
+    conn = FakeConn(latch.responder)
+    monkeypatch.setattr("adapter_jira.poller.get_connection", lambda: conn)
+    monkeypatch.setattr("adapter_jira.trigger_state.get_connection", lambda: conn)
+    monkeypatch.setattr(
+        "adapter_jira.poller.resolve_principal",
+        lambda platform, account_id, display=None: f"user:{(display or account_id).lower()}",
+    )
+
+    admissions: list[int] = []
+    seen: set[int] = set()
+
+    def fake_ingest(issue, **kw):
+        """Stands in for the ingest path, keeping the one property that matters
+        here: a generation already ingested dedupes on its event_id and admits
+        nothing. Without that the fake would count CALLS, and every sweep with
+        the label on the card would look like an attempt."""
+        gen = kw.get("generation", 0)
+        if gen in seen:
+            return {"ok": True, "path": "already_ingested", "work_item_id": f"wi_gen{gen}"}
+        seen.add(gen)
+        admissions.append(gen)
+        return {"ok": True, "path": "new_task", "work_item_id": f"wi_gen{gen}"}
+
+    monkeypatch.setattr("adapter_jira.poller.ingest_task_trigger", fake_ingest)
+
+    client = FakeJiraClient()
+    client.issues_by_project["BFA"] = [_issue()]
+    poller = JiraPoller(
+        client, tenant_id=TENANT, projects=["BFA"], trigger_label="dse",
+        approved_status="Plan approved", rejected_status="Plan rejected",
+        reconcile_comments=False,
+    )
+    return poller, client, admissions
+
+
+def test_the_sweep_takes_the_label_off_once_the_work_item_exists(sweeping):
+    poller, client, admissions = sweeping
+    poller.poll_once()
+    assert admissions == [0]
+    assert "dse" not in client.get_labels(TICKET), (
+        "the label stayed on the card — the next sweep would look like a new gesture"
+    )
+
+
+def test_the_sweep_does_not_re_admit_while_the_label_is_off(sweeping):
+    poller, client, admissions = sweeping
+    poller.poll_once()
+    for _ in range(50):
+        poller.poll_once()
+    assert admissions == [0], f"the sweep kept admitting: {admissions}"
+
+
+def test_putting_the_label_back_admits_the_next_generation(sweeping):
+    poller, client, admissions = sweeping
+    poller.poll_once()                       # admitted gen 0, label removed
+    poller.poll_once()                       # observes it absent → arms
+    client.issues_by_project["BFA"][0]["fields"]["labels"] = ["dse"]   # the human
+    poller.poll_once()
+    assert admissions == [0, 1], f"the gesture did not advance: {admissions}"
+
+
+def test_a_label_that_cannot_be_removed_is_audited_and_does_not_loop(sweeping, monkeypatch):
+    """No *Edit Issues* permission. The card keeps the label, so the latch stays
+    armed and the work is never restarted — the failure is visible in the ledger
+    instead of in the billing."""
+    poller, client, admissions = sweeping
+    rows: list[dict] = []
+    monkeypatch.setattr("adapter_jira.poller.audit_emit", lambda **kw: rows.append(kw))
+    monkeypatch.setattr(
+        client, "remove_label",
+        lambda key, label: (_ for _ in ()).throw(RuntimeError("403 Forbidden")),
+    )
+
+    for _ in range(200):
+        poller.poll_once()
+
+    assert admissions == [0], f"a sticky label restarted the work: {len(admissions)} attempts"
+    failures = [r for r in rows if r["action"] == "jira_trigger_label_removal_failed"]
+    assert len(failures) == 1, f"the operator was told {len(failures)} times, not once"

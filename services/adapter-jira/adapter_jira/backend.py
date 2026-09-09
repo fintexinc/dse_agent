@@ -124,6 +124,7 @@ class JiraClientLike(Protocol):
     def search_updated(self, project_key: str, since_iso: str | None) -> list[dict[str, Any]]: ...
     def get_comments(self, key: str) -> list[dict[str, Any]]: ...
     def remove_label(self, key: str, label: str) -> None: ...
+    def get_labels(self, key: str) -> list[str]: ...
     # None means "could not be asked" — never "the board has no such status".
     def project_statuses(self, project_key: str) -> set[str] | None: ...
 
@@ -281,6 +282,18 @@ class RealJiraClient:
         """
         self._request("PUT", f"/rest/api/3/issue/{key}", json={"update": {"labels": [{"remove": label}]}})
 
+    def get_labels(self, key: str) -> list[str]:
+        """The labels the issue carries RIGHT NOW.
+
+        Read back after a removal, because the status code is not evidence: a
+        PUT that answers 200 without applying would let the latch disarm, and a
+        disarmed latch on a card that still shows the label is the one sequence
+        that restarts the same work every sweep.
+        """
+        resp = self._request("GET", f"/rest/api/3/issue/{key}", params={"fields": "labels"})
+        data = resp.json() or {}
+        return list((data.get("fields") or {}).get("labels") or [])
+
     def project_statuses(self, project_key: str) -> set[str] | None:
         """Every status name the project's workflows contain, or None when the
         board could not be asked.
@@ -414,6 +427,16 @@ class FakeJiraClient:
 
     def self_account_id(self) -> str | None:
         return self.account_id
+
+    def get_labels(self, key: str) -> list[str]:
+        """Reads back from the stored issue — the same place `remove_label`
+        mutates. A fake that answered from the call log could not tell a removal
+        that applied from one that only claimed to."""
+        for issues in self.issues_by_project.values():
+            for issue in issues:
+                if issue.get("key") == key:
+                    return list((issue.get("fields") or {}).get("labels") or [])
+        return []
 
     def remove_label(self, key: str, label: str) -> None:
         """Mutates the stored issue, not just a call log: the retry label is

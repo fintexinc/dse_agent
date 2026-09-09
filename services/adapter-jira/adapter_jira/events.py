@@ -90,15 +90,34 @@ def _issue_content(issue: dict[str, Any]) -> str:
 
 
 def build_task_event(
-    issue: dict[str, Any], *, actor_account_id: str, resolved_principal: str, display_name: str | None = None
+    issue: dict[str, Any],
+    *,
+    actor_account_id: str,
+    resolved_principal: str,
+    display_name: str | None = None,
+    generation: int = 0,
 ) -> ConversationEvent:
     """Issue marked with the trigger label -> task_request. `message_id`
     derived from the issue id (state), so create+label+poller converge on the
-    same event_id."""
+    same event_id.
+
+    `generation` counts the times a human made the gesture — took the label off
+    and put it back (see `trigger_state`). It is what lets a card be worked more
+    than once: without it the id derived here is a lifetime constant of the card
+    and every attempt after the first collides with the first.
+
+    **Generation 0 is spelled without a suffix, and that is compatibility, not
+    style.** `created:{issue id}` is the event_id of every card already ingested
+    in the fleet. Any suffix here — `:0` included — changes all of them at once,
+    and the first sweep after the deploy re-admits the fleet.
+    """
+    if generation < 0:
+        raise ValueError(f"generation must be >= 0, got {generation}")
+    suffix = "" if generation == 0 else f":{generation}"
     return ConversationEvent.build(
         platform=Platform.jira,
         thread_key=ticket_key(issue),
-        message_id=f"created:{issue['id']}",
+        message_id=f"created:{issue['id']}{suffix}",
         kind=EventKind.task_request,
         source_ref={"ticket_key": ticket_key(issue)},
         actor=_actor(actor_account_id, resolved_principal, display_name),

@@ -38,7 +38,7 @@ from ingest_gateway.db import get_connection
 
 from dse_audit import emit as audit_emit
 
-from . import events
+from . import events, trigger_state
 from .backend import JiraClientLike
 from .ingest import ingest_comment, ingest_retry_trigger, ingest_status_approval, ingest_task_trigger
 
@@ -221,15 +221,34 @@ class JiraPoller:
         count = 0
         key = events.ticket_key(issue)
 
-        if events.has_trigger_label(issue, self._trigger_label):
+        # The label is observed on EVERY sweep, present or absent: seeing it
+        # absent is what arms the next gesture. The generation only moves on the
+        # absent → present edge, so a label that merely sits on a card — nobody
+        # removed it, or we could not — advances nothing, sweep after sweep.
+        label_present = events.has_trigger_label(issue, self._trigger_label)
+        generation, _advanced = trigger_state.observe(
+            tenant_id=self._tenant_id,
+            issue_id=str(issue.get("id") or ""),
+            ticket_key=events.ticket_key(issue),
+            label_present=label_present,
+        )
+        if label_present:
             account_id, principal, display_name = self._reporter_identity(issue)
-            ingest_task_trigger(
+            result = ingest_task_trigger(
                 issue,
                 tenant_id=self._tenant_id,
                 actor_account_id=account_id,
                 resolved_principal=principal,
                 display_name=display_name,
+                generation=generation,
             )
+            if result.get("path") == "new_task":
+                # Only after the work item is durable. Removing first and failing
+                # to admit would erase the human's request with nothing to show
+                # for it — the same ordering `_consume_retry_label` follows.
+                self._consume_trigger_label(
+                    events.ticket_key(issue), work_item_id=result.get("work_item_id")
+                )
             count += 1
 
         if self._retry_label and events.has_trigger_label(issue, self._retry_label):
@@ -309,6 +328,41 @@ class JiraPoller:
             logger.info("retry label on %s not acted on (%s); taking the label off", key, path)
             self._consume_retry_label(key, path=path, work_item_id=result.get("work_item_id"))
         return 0
+
+    def _consume_trigger_label(self, key: str, *, work_item_id: str | None) -> None:
+        """Take the `dse` label off a card whose attempt is now durable.
+
+        The label becomes a button: it disappears when the DSE picks the work up,
+        and putting it back is how a human asks for another attempt. That is the
+        convenience; the guard is the latch in Postgres.
+
+        Nothing here touches the latch. The next sweep observes the card and
+        does that on its own: label gone → disarmed, and the gesture is armed
+        again; label still there → still armed, and the card stays quiet. So a
+        removal that answers 200 without applying — the one sequence that could
+        restart the same work every sweep, the shape behind the ~2,900 audit
+        rows — is harmless by construction rather than by carefulness.
+
+        The read-back is therefore not a guard but a diagnosis: it is how the
+        operator learns the label did not come off, which is almost always a
+        missing *Edit Issues* permission and which no log line explains a week
+        later.
+        """
+        try:
+            self._client.remove_label(key, self._trigger_label)
+            still_there = self._trigger_label in (self._client.get_labels(key) or [])
+        except Exception:  # noqa: BLE001 — the admission is already durable
+            logger.exception("could not remove the trigger label from %s", key)
+            still_there = True
+
+        if still_there:
+            audit_emit(
+                actor=_POLLER_PRINCIPAL,
+                action="jira_trigger_label_removal_failed",
+                tenant_id=self._tenant_id,
+                work_item_id=work_item_id,
+                details={"ticket_key": key, "label": self._trigger_label},
+            )
 
     def _consume_retry_label(self, key: str, *, path: str, work_item_id: str | None) -> None:
         """Best-effort removal of a retry label the DSE has finished with.

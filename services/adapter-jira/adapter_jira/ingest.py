@@ -44,18 +44,48 @@ def ingest_task_trigger(
     actor_account_id: str,
     resolved_principal: str,
     display_name: str | None = None,
+    generation: int = 0,
 ) -> dict:
     """Issue with the trigger label -> task_request (Path A) or an idempotent
     signal if there is already an active WorkItem for the ticket. Mirror of
-    adapter-github's `_handle_task_creating_event`."""
+    adapter-github's `_handle_task_creating_event`.
+
+    `generation` comes from `trigger_state.observe` and counts how many times a
+    human took the label off and put it back. It reaches the event_id, which is
+    what lets the same card be worked more than once.
+    """
     ev = events.build_task_event(
-        issue, actor_account_id=actor_account_id, resolved_principal=resolved_principal, display_name=display_name
+        issue,
+        actor_account_id=actor_account_id,
+        resolved_principal=resolved_principal,
+        display_name=display_name,
+        generation=generation,
     )
     sanitized = sanitize_content(ev.content_snapshot)
     channel = events.project_key(issue)
     conn = get_connection()
     try:
-        result = correlate(conn, tenant_id=tenant_id, event=ev, requester_principal=resolved_principal)
+        # The sweep re-reads a labelled card every minute. Without this the path
+        # ran the whole repo-resolution cascade and emitted a ledger row on each
+        # pass — 13 `work_item_admitted` rows in twelve minutes on BFA-1132,
+        # none of them followed by a dispatch. `ingest_comment` has had this
+        # guard all along; this one did not.
+        already = recorded_work_item_id(conn, ev.event_id)
+        if already is not None:
+            return {
+                "ok": True,
+                "path": "already_ingested",
+                "work_item_id": already,
+                "generation": generation,
+            }
+
+        result = correlate(
+            conn,
+            tenant_id=tenant_id,
+            event=ev,
+            requester_principal=resolved_principal,
+            terminal_statuses=_RESTARTABLE_STATUSES,
+        )
 
 
         if result.kind == "signal":
@@ -147,6 +177,15 @@ logger = logging.getLogger("adapter_jira.ingest")
 #   - every in-flight status: two workflows would race for the same branch and PR.
 # The retry is not a bypass: the new work item goes through the whole pipeline,
 # clarification and plan-approval gates included.
+#: The five states a card can be in where "the DSE is done with this" is true
+#: and a human asking again is the only thing that can happen next. Wider than
+#: the conversational rule in `correlate` (done/failed/cancelled) on purpose:
+#: replying in the thread of an `escalated` item is a comment on work that still
+#: has a human owner, while taking the `dse` label off a card and putting it
+#: back is that owner asking, with their hands, for another attempt. `done` is
+#: in: the card came back, and only a human could have brought it.
+_RESTARTABLE_STATUSES = ("done", "failed", "cancelled", "escalated", "blocked")
+
 _RETRY_ELIGIBLE_STATUSES = ("failed", "blocked", "escalated")
 
 
