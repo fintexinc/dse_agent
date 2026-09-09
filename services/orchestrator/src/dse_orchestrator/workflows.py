@@ -2098,7 +2098,19 @@ class WorkItemLifecycleWorkflow:
             )
             if repos:
                 input.repo = repos[0]
-                input.base_branch = input.base_branch or "main"
+                # The branch the CHOSEN repository's binding declares. `main` is
+                # the fallback for a repository that has no binding, not the
+                # answer for one that does: a board binding a frontend on
+                # `develop` beside a backend on `main` is the ordinary case, and
+                # this literal used to send both to `main`.
+                # Reading with `.get` keeps replay safe — an old history has no
+                # `base_branches` in the recorded result and falls through to
+                # exactly the previous value, so no command changes and no
+                # `workflow.patched` is needed.
+                routed_branches = routed.get("base_branches") or {}
+                input.base_branch = (
+                    routed_branches.get(repos[0]) or input.base_branch or "main"
+                )
                 if len(repos) > 1:
                     input.cross_repo = True
                     # Posted BEFORE the fan-out. NOTE (B6, verificado): isto

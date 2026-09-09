@@ -185,7 +185,7 @@ def test_the_workflow_actually_reads_the_branch_the_router_reported():
 
     from dse_orchestrator import workflows
 
-    src = inspect.getsource(workflows.WorkItemLifecycleWorkflow.run)
+    src = inspect.getsource(workflows.WorkItemLifecycleWorkflow._run_intake_phase)
     assert "base_branches" in src, (
         "the workflow ignores the branch the routing activity reports; the "
         "routed repository starts from 'main' again"
