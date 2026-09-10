@@ -557,13 +557,32 @@ Phase 3 coverage:
 - `scripts/smoke_test.py` re-run after the LiteLLM config change
   (fallbacks/timeout): response identical to the baseline, byte for byte.
 
+## Two blockers before any stage can move off Anthropic
+
+Found 2026-09-10 while switching the Planner and Tester to `gemini/flash`.
+Neither is about the model.
+
+**1. The virtual key is scoped to the Coder's alias, whatever stage mints it.**
+`mint_virtual_key` sends `"models": [_CODER_MODEL]` where `_CODER_MODEL` is
+`DSE_CODER_MODEL` (`sandbox_runtime/model_gateway_client.py:37,75`), and every
+stage — Coder, Planner, Tester — calls that same function
+(`activities.py:740,1828,3891`). LiteLLM's model-scoping then answers **403**
+when a key is used against an alias it does not list (confirmed against the real
+proxy, see line 33 above). So `DSE_PLANNER_MODEL=gemini/flash` mints an
+Anthropic-scoped key and is refused by our own gateway before the provider is
+ever reached. The documented per-stage overrides have never worked; nobody had
+set one. Fix: resolve the alias from `headers.stage` inside `mint_virtual_key`,
+which keeps least privilege — one key, one alias — and changes no call site.
+
+**2. A credential is still required.** There is no keyless path to a hosted
+Google model: AI Studio takes an API key, Vertex takes a service-account JSON or
+Workload Identity Federation. Only `eco/echo-model` runs with no credential, and
+only the `bedrock/*` tier reuses one we already have.
+
 ## Can the Coder stay on `claude-agent` with a non-Anthropic alias? (probe)
 
-The chosen model (2026-09-10) is Gemini 3.8 Flash, `gemini/flash`. Every stage
-that calls plain `/v1/chat/completions` — Planner, Tester, Router, L2 — already
-runs on it, switched by env var alone.
-
-The Coder is the open question. It drives the Claude Code CLI with
+Separate from the two above, and only worth running once they are settled. The
+Coder drives the Claude Code CLI with
 `ANTHROPIC_BASE_URL` pointed here (`sandbox_runtime/substrate.py:328`), so it
 speaks the **Anthropic Messages API**, not chat completions. LiteLLM does
 translate `/v1/messages` to other providers, but that translation is unproven
