@@ -111,6 +111,100 @@ model_list:
       dse_tier: "poc-direct-api"
       dse_requires_infra: "anthropic_public_api"
 
+  # --- Candidate set for the Coder A/B (2026-09-09) -------------------------
+  # The three entries below + `anthropic/claude-haiku` above are the four
+  # aliases the eval suite compares. They exist to be MEASURED; none is the
+  # default. Switching a stage to one of them is an env var
+  # (DSE_CODER_MODEL/DSE_PLANNER_MODEL/DSE_TESTER_MODEL) — the virtual key is
+  # minted scoped to whatever that var holds (sandbox_runtime/
+  # model_gateway_client.py:75), so nothing else needs to know.
+  #
+  # THREE THINGS ARE DELIBERATE IN EVERY BLOCK:
+  #
+  # 1. `input_cost_per_token`/`output_cost_per_token` are HARDCODED. This image
+  #    is pinned to LiteLLM 1.93.0 (2026-07-09) and all three models shipped
+  #    after that, so they are absent from its bundled cost map. Without these
+  #    the proxy returns no `x-litellm-response-cost-original`, `_extract_cost`
+  #    reads 0.0 (model_gateway_client/gateway_call.py:225-232) and the budget
+  #    cap, the kill switch and the ledger all go silently blind. The
+  #    alternative — `POST /reload/model_cost_map` — fetches prices from GitHub
+  #    at runtime, which is both a new egress hole and a moving price behind a
+  #    digest-pinned image. Prices are per TOKEN (list ÷ 1e6).
+  #
+  # 2. Each declares its own `timeout`. The two anthropic groups above declare
+  #    none and inherit `litellm_settings.request_timeout: 30` as their
+  #    PER-ATTEMPT cap; a reasoning model on a coding turn crosses 30s
+  #    routinely. Raising the global one instead would change the cap for every
+  #    group and invalidate the calibration in tests/test_router_calibration.py.
+  #
+  # 3. No `fallbacks:` route points at any of them — they are single-deployment
+  #    groups like `anthropic/*`, and a route across `dse_tier` is what
+  #    tests/test_failover_intra_tier.py::test_no_fallback_route_crosses_tier
+  #    exists to forbid.
+
+  # Gemini 3.8 Flash (GA 2026-09-02). Terminal-Bench 2.1 90.8, SWE-bench Pro
+  # 61.6. Registered here against AI Studio because it needs ONE bearer key,
+  # like every other entry in this file. For production swap the two
+  # litellm_params for Vertex — same model, enterprise path, but a
+  # service-account JSON that has to be mounted, not an env string:
+  #     model: vertex_ai/gemini-3.8-flash
+  #     vertex_project: os.environ/DSE_VERTEX_PROJECT
+  #     vertex_location: os.environ/DSE_VERTEX_LOCATION
+  # PRICE EXPIRES: $0.75/$3.75 is promotional through 2026-12-31; from
+  # 2027-01-01 it is $1.50/$7.50 — double the two values below on that date.
+  - model_name: gemini/flash
+    litellm_params:
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+      timeout: 120
+    model_info:
+      dse_tier: "poc-direct-api"
+      dse_requires_infra: "google_ai_studio_api"
+      input_cost_per_token: 0.00000075
+      output_cost_per_token: 0.00000375
+
+  # GPT-5.6 Luna (2026-07-09). Terminal-Bench 2.1 84.7 at $0.20/$1.20 — the
+  # cheapest of the three per token once you account for `max` reasoning
+  # effort, which is the tier that scores 84.7 and the tier that spends the
+  # tokens. Artificial Analysis lists Amazon as a serving provider alongside
+  # OpenAI: if Bedrock serves it in our region, swap the two litellm_params for
+  # the `bedrock/*` shape used at the top of this file (aws_role_name +
+  # aws_bedrock_runtime_endpoint) and the model stops being a new vendor in the
+  # security review altogether. Verify with GET /v1/models on our own account
+  # before planning on it.
+  - model_name: openai/luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 120
+    model_info:
+      dse_tier: "poc-direct-api"
+      dse_requires_infra: "openai_public_api"
+      input_cost_per_token: 0.0000002
+      output_cost_per_token: 0.0000012
+
+  # GLM-5.3-Flash (Z.ai/Zhipu, 2026-08-26). Terminal-Bench 2.1 84.3 at
+  # $0.15/$0.50 list — the launch promo ($0.075/$0.25) ended 2026-09-09, the
+  # values below are list. Registered through the OpenAI-compatible shape, the
+  # same mechanism as eco/echo-model.
+  # POSTURE NOTE, read before pointing the Coder at this: as configured here it
+  # sends repository contents to a Chinese-hosted endpoint. That is a client
+  # data-residency decision, not an engineering one. The weights are MIT and
+  # self-hostable (SGLang/vLLM, 320B total / 18B active) — served from the
+  # in-cluster modelServer (infra/helm/dse/values.yaml:561) the question does
+  # not arise and there is no per-token bill at all.
+  - model_name: zai/glm-flash
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: os.environ/DSE_ZAI_API_BASE
+      api_key: os.environ/ZAI_API_KEY
+      timeout: 120
+    model_info:
+      dse_tier: "poc-direct-api"
+      dse_requires_infra: "zai_public_api"
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000005
+
 # Phase 3 (WSD-E4-T1): intra-tier failover NATIVE to the proxy (LiteLLM router).
 # Declarative, outside the agents' code (P1): if the primary deployment fails
 # (connection refused / 5xx / timeout), the router tries the fallback ON THE
