@@ -562,17 +562,36 @@ Phase 3 coverage:
 Found 2026-09-10 while switching the Planner and Tester to `gemini/flash`.
 Neither is about the model.
 
-**1. The virtual key is scoped to the Coder's alias, whatever stage mints it.**
-`mint_virtual_key` sends `"models": [_CODER_MODEL]` where `_CODER_MODEL` is
-`DSE_CODER_MODEL` (`sandbox_runtime/model_gateway_client.py:37,75`), and every
-stage — Coder, Planner, Tester — calls that same function
-(`activities.py:740,1828,3891`). LiteLLM's model-scoping then answers **403**
-when a key is used against an alias it does not list (confirmed against the real
-proxy, see line 33 above). So `DSE_PLANNER_MODEL=gemini/flash` mints an
-Anthropic-scoped key and is refused by our own gateway before the provider is
-ever reached. The documented per-stage overrides have never worked; nobody had
-set one. Fix: resolve the alias from `headers.stage` inside `mint_virtual_key`,
-which keeps least privilege — one key, one alias — and changes no call site.
+**1. Three of the five stages are pinned to the Coder's alias by their key.**
+It depends on how each stage gets that key:
+
+| Stage | Key it uses | Scope | Can it take its own alias today? |
+|---|---|---|---|
+| Coder | `sandbox_runtime.mint_virtual_key` | `[DSE_CODER_MODEL]` | it *is* `DSE_CODER_MODEL` |
+| Planner | same | `[DSE_CODER_MODEL]` | **no** — 403 |
+| Tester | same | `[DSE_CODER_MODEL]` | **no** — 403 |
+| Router | the **master key** (`local_activities.py:1311`) | unscoped | **yes** |
+| L2 | `virtual_keys.mint_virtual_key`, `models=None` (`l2/session.py:130`) | every registered model | **yes** |
+
+`sandbox_runtime.mint_virtual_key` sends `"models": [_CODER_MODEL]` where
+`_CODER_MODEL` is `DSE_CODER_MODEL` (`model_gateway_client.py:37,75`), whatever
+stage calls it (`activities.py:740,1828,3891`), and LiteLLM answers **403** when
+a key is used against an alias it does not list (line 33 above, confirmed
+against the real proxy). So `DSE_PLANNER_MODEL` only works when it equals
+`DSE_CODER_MODEL` — which is to say, not at all as an override. It has been
+documented as one all along; nobody had set it.
+
+Fix: resolve the alias from `headers.stage` inside that mint — it already
+receives it. One key, one alias, least privilege unchanged, no call site
+touched.
+
+Two consequences worth knowing before that lands. A **uniform** switch
+(`DSE_CODER_MODEL=<alias>`, per-stage vars unset) sidesteps the scoping
+entirely, because then every key and every stage name the same alias — but it
+drags the Coder along, and the Coder has its own constraint (next section).
+And `DSE_ROUTER_MODEL`'s default is hardcoded `anthropic/claude-haiku`, not
+inherited, so a uniform switch has to set it explicitly or the router stays
+behind.
 
 **2. A credential is still required.** There is no keyless path to a hosted
 Google model: AI Studio takes an API key, Vertex takes a service-account JSON or

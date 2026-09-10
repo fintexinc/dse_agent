@@ -60,15 +60,23 @@ services:
       # cheaper). To go back to Sonnet: DSE_CODER_MODEL=anthropic/claude ./dse.sh start.
       # Planner/Tester inherit it (DSE_PLANNER_MODEL/DSE_TESTER_MODEL override).
       DSE_CODER_MODEL: ${DSE_CODER_MODEL:-anthropic/claude-haiku}
-      # Per-stage overrides are DELIBERATELY left unset (they inherit
-      # DSE_CODER_MODEL above). Setting one to a different alias does not work
-      # today: mint_virtual_key scopes every key to [DSE_CODER_MODEL]
-      # (sandbox_runtime/model_gateway_client.py:37,75) whatever stage asks for
-      # it, and LiteLLM's model-scoping answers 403 when a key is used against
-      # an alias it does not list (README.md:33-35, confirmed against the real
-      # proxy). So DSE_PLANNER_MODEL=gemini/flash mints an anthropic-scoped key
-      # and gets refused by our own gateway before the provider is ever
-      # reached. Fix the mint scope first, then set these.
+      # Which stages can take a DIFFERENT alias from the one above, and which
+      # cannot, depends on how each one gets its key. Verified 2026-09-10:
+      #
+      #   Coder/Planner/Tester — sandbox_runtime.mint_virtual_key, which sends
+      #     "models": [DSE_CODER_MODEL] whatever stage asks (model_gateway_
+      #     client.py:37,75; activities.py:740,1828,3891). LiteLLM answers 403
+      #     when a key is used against an alias it does not list (gateway
+      #     README:33-35, confirmed against the real proxy). So
+      #     DSE_PLANNER_MODEL only works when it EQUALS DSE_CODER_MODEL —
+      #     i.e. not at all, as an override. Left unset on purpose.
+      #   Router — uses the MASTER key (local_activities.py:1311), unscoped.
+      #     DSE_ROUTER_MODEL takes any registered alias today. Note its default
+      #     is hardcoded anthropic/claude-haiku and does NOT inherit from
+      #     DSE_CODER_MODEL, so a uniform switch has to set it explicitly.
+      #   L2 — model_gateway_client.virtual_keys.mint_virtual_key with
+      #     models=None (l2/session.py:130), which LiteLLM reads as "every
+      #     registered model". DSE_L2_MODEL takes any registered alias today.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DSE_CODER_SUBSTRATE: ${DSE_CODER_SUBSTRATE:-fake}
       # S7 (Phase 5) — L1 configured for the PoC repo (fintex-wallet, JS):
