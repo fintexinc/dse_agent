@@ -116,7 +116,7 @@ egressProxy:
     # opened when that model is actually piloted and closed again after. One
     # host per alias; exact hosts, no wildcards (Allowlist.is_allowed compares
     # by string equality).
-    # - { host: "generativelanguage.googleapis.com", port: 443, purpose: "model provider (gemini/flash)" }
+    - { host: "generativelanguage.googleapis.com", port: 443, purpose: "model provider (gemini/flash — Planner/Tester/Router/L2)" }
     # - { host: "api.openai.com", port: 443, purpose: "model provider (openai/luna)" }
     # - { host: "api.z.ai", port: 443, purpose: "model provider (zai/glm-flash)" }
     - { host: "slack.com", port: 443, purpose: "Slack Web API (status comment / repo picker)" }

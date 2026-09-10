@@ -104,6 +104,11 @@ Order (each step is idempotent):
      --from-literal=LITELLM_MASTER_KEY="$MASTER" \
      --from-literal=DSE_LITELLM_MASTER_KEY="$MASTER" \
      --from-literal=DSE_CODER_MODEL="anthropic/claude-haiku" \
+     --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
+     --from-literal=DSE_PLANNER_MODEL="gemini/flash" \
+     --from-literal=DSE_TESTER_MODEL="gemini/flash" \
+     --from-literal=DSE_ROUTER_MODEL="gemini/flash" \
+     --from-literal=DSE_L2_MODEL="gemini/flash" \
      --from-literal=GITHUB_APP_ID="$GITHUB_APP_ID" \
      --from-literal=GITHUB_APP_INSTALLATION_ID="$GITHUB_APP_INSTALLATION_ID" \
      --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app.pem)"

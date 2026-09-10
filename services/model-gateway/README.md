@@ -557,6 +557,41 @@ Phase 3 coverage:
 - `scripts/smoke_test.py` re-run after the LiteLLM config change
   (fallbacks/timeout): response identical to the baseline, byte for byte.
 
+## Can the Coder stay on `claude-agent` with a non-Anthropic alias? (probe)
+
+The chosen model (2026-09-10) is Gemini 3.8 Flash, `gemini/flash`. Every stage
+that calls plain `/v1/chat/completions` — Planner, Tester, Router, L2 — already
+runs on it, switched by env var alone.
+
+The Coder is the open question. It drives the Claude Code CLI with
+`ANTHROPIC_BASE_URL` pointed here (`sandbox_runtime/substrate.py:328`), so it
+speaks the **Anthropic Messages API**, not chat completions. LiteLLM does
+translate `/v1/messages` to other providers, but that translation is unproven
+for this alias against the CLI's tool-use payloads, and the failure mode is
+mid-turn rather than at startup. Before spending an image rebuild, spend 30
+seconds finding out:
+
+```bash
+curl -sS -X POST http://localhost:4000/v1/messages \
+  -H "Authorization: Bearer $DSE_LITELLM_MASTER_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"gemini/flash","max_tokens":64,
+       "messages":[{"role":"user","content":"Reply with the single word: ok"}]}'
+```
+
+- **A `content` block comes back** → repeat it with a `tools` array and a prompt
+  that forces one call; if the response carries a `tool_use` block, the Coder is
+  one env var (`DSE_CODER_MODEL=gemini/flash`) and no image work at all.
+- **A 400/500, or text where a `tool_use` block belongs** → the Coder needs the
+  OpenHands substrate: rebuild the agent-runner with
+  `--build-arg INSTALL_OPENHANDS=1` (`agent-runner/Dockerfile:86-89`), re-pin the
+  digest, set `runtime.agentSubstrate: openhands`. That image already contains
+  the implementation (`agent-runner/agent_runner/executor.py:194`); it is only
+  opt-in at build time.
+
+Either way `DSE_CODER_MODEL` stays on Anthropic until the probe answers —
+pointing it at the alias first fails inside a paid turn.
+
 ## Version pinning and simulated upgrade (WSD-E1-T1)
 
 See the comment at the top of `docker-compose.wsd.yml` and the docstring of
