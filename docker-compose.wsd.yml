@@ -69,6 +69,14 @@ services:
       # never hardcoded here. If empty, the anthropic/claude model simply does
       # not answer — the rest of the gateway (echo/failover) keeps working.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Candidate set for the Coder A/B (see litellm_config.yaml). Same rule as
+      # the Anthropic key: empty means that one alias does not answer and the
+      # rest of the gateway is unaffected — the eval suite reports it SKIPPED
+      # (a provider 4xx is a skip, not a failure: eval_suite/runner.py:131).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ZAI_API_KEY: ${ZAI_API_KEY:-}
+      DSE_ZAI_API_BASE: ${DSE_ZAI_API_BASE:-https://api.z.ai/api/paas/v4}
       # Production placeholders (Bedrock/PrivateLink) — no real value available
       # in this dev session; see litellm_config.yaml and README.
       DSE_AWS_REGION: ${DSE_AWS_REGION:-us-east-1}

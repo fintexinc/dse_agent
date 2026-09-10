@@ -59,3 +59,54 @@ cases:
         content: "Reply with the single word: ok"
     assertions:
       - type: tokens_positive
+
+  # --- Coder candidate set (2026-09-09) -------------------------------------
+  # Four aliases, one case each, same prompt: the objective gate before any of
+  # them is promoted to DSE_CODER_MODEL. An alias whose key is unset answers
+  # with a provider 4xx and is reported SKIPPED, not failed (runner.py:131), so
+  # this block is safe to run with none of the new credentials configured.
+  #
+  # The `max_cost_usd` assertion is doing real work here: it is also the check
+  # that the hardcoded prices in litellm_config.yaml actually reached the
+  # proxy. A model whose price is missing from the cost map reports cost 0.0,
+  # which passes any ceiling — so read the reported cost, do not just watch the
+  # suite go green. Zero on a real answer means the price did not land.
+  - id: candidate-haiku
+    model: anthropic/claude-haiku
+    messages:
+      - role: user
+        content: "Reply with the single word: ok"
+    assertions:
+      - type: tokens_positive
+      - type: max_cost_usd
+        value: 0.01
+
+  - id: candidate-gemini-flash
+    model: gemini/flash
+    messages:
+      - role: user
+        content: "Reply with the single word: ok"
+    assertions:
+      - type: tokens_positive
+      - type: max_cost_usd
+        value: 0.01
+
+  - id: candidate-luna
+    model: openai/luna
+    messages:
+      - role: user
+        content: "Reply with the single word: ok"
+    assertions:
+      - type: tokens_positive
+      - type: max_cost_usd
+        value: 0.01
+
+  - id: candidate-glm-flash
+    model: zai/glm-flash
+    messages:
+      - role: user
+        content: "Reply with the single word: ok"
+    assertions:
+      - type: tokens_positive
+      - type: max_cost_usd
+        value: 0.01
