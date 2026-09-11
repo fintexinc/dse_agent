@@ -208,17 +208,22 @@ p("<b>Status: works.</b> The shape is real: the peak at W3 is the day the fix lo
 shot("13-cost-repo","Cost by repository.")
 p("<b>Computation</b>: each run is attributed to its work item's repository, then summed. Runs whose item falls "
   "outside the filtered set land in “unknown”. <b>Status: works.</b>", SMALL)
-shot("14-cost-model","Cost by model — a single bar, and the wrong one.")
-p("<b>Status: broken.</b> The chart sums cost by the model name recorded on each run, and every stage is recorded "
-  "as <font face='Courier'>anthropic/claude-haiku</font> — including the Coder, whose configured model is "
-  "<font face='Courier'>anthropic/claude</font>. The cost per run proves they are not the same model:")
+shot("14-cost-model","Cost by model — a single bar.")
+p("<b>Status: one real defect, and one claim withdrawn.</b> The chart sums cost by the model name recorded on each "
+  "run, and every stage is recorded as <font face='Courier'>anthropic/claude-haiku</font>:")
 code("coder     467 runs   $822.21   =  $1.76 / run    labelled haiku\n"
      "planner   204 runs   $4.02     =  $0.02 / run    labelled haiku\n"
      "tester    267 runs   $4.51     =  $0.02 / run    labelled haiku")
-p("A ninety-fold difference in cost per run between calls to the same model is not plausible. The label originates "
-  "in <font face='Courier'>model_call_ledger</font> at metering time; the projector copies it verbatim. A further "
-  "35 Coder runs ($29.40) carry no model at all. <b>This chart exists to support choosing a cheaper model, and it "
-  "would actively mislead that decision.</b>", SMALL)
+p("<b>Withdrawn 2026-09-11.</b> This page used to argue the label was wrong, on the grounds that the Coder's "
+  "configured model was <font face='Courier'>anthropic/claude</font> while the rows said haiku, and that a "
+  "ninety-fold cost-per-run gap between calls to one model was implausible. The premise was false: the live "
+  "<font face='Courier'>dse-poc-secrets</font> key was read on the box on 2026-09-11, before it was changed, and "
+  "production was on <font face='Courier'>anthropic/claude-haiku</font>. Every stage really was on Haiku, so the "
+  "label was right and the gap is between a Coder turn and a single planning call, not between two models. Nothing "
+  "here licensed calling the chart misleading. See <font face='Courier'>deploy/vps/PROD-CHANGES.md</font>.", SMALL)
+p("<b>The defect that survives:</b> 35 Coder runs ($29.40) carry no model at all. The label originates in "
+  "<font face='Courier'>model_call_ledger</font> at metering time and the projector copies it verbatim, so a null "
+  "there is a null on the chart.", SMALL)
 
 h3("5.3 Efficiency tab")
 shot("20-efficiency-summary","The four summary cards. Three of them cannot populate.")
