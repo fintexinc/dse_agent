@@ -57,6 +57,9 @@ GITHUB_WEBHOOK_SECRET=
 
 # --- Real model (Coder/Planner). Empty = the local echo model only ---
 ANTHROPIC_API_KEY=
+# Gemini 3.8 Flash (gemini/flash) — the chosen model for Planner/Tester/Router.
+# Empty = those stages fall back to whatever DSE_CODER_MODEL holds.
+GEMINI_API_KEY=
 
 # --- Slack (optional) ---
 SLACK_BOT_TOKEN=
@@ -93,8 +96,10 @@ seed_vault() {
       private_key="${GITHUB_APP_PRIVATE_KEY:-}" \
       webhook_secret="${GITHUB_WEBHOOK_SECRET:-}" >/dev/null && say "$G" "Vault: secret/dse/github-app seeded"
   fi
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    $v kv put secret/dse/model-gateway/providers anthropic_api_key="$ANTHROPIC_API_KEY" >/dev/null \
+  if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+    $v kv put secret/dse/model-gateway/providers \
+      anthropic_api_key="${ANTHROPIC_API_KEY:-}" \
+      gemini_api_key="${GEMINI_API_KEY:-}" >/dev/null \
       && say "$G" "Vault: secret/dse/model-gateway/providers seeded"
   fi
 }

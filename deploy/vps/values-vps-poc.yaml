@@ -110,6 +110,15 @@ egressProxy:
     - { host: "api.github.com", port: 443, purpose: "GitHub API (finalize PR)" }
     - { host: "github.com", port: 443, purpose: "clone the target repository" }
     - { host: "api.anthropic.com", port: 443, purpose: "model provider (Coder)" }
+    # Coder candidate set (litellm_config.yaml, 2026-09-09) — COMMENTED ON
+    # PURPOSE. The aliases are registered so the eval suite can compare them,
+    # but each line below widens the egress surface of a shared hop, so it is
+    # opened when that model is actually piloted and closed again after. One
+    # host per alias; exact hosts, no wildcards (Allowlist.is_allowed compares
+    # by string equality).
+    # - { host: "generativelanguage.googleapis.com", port: 443, purpose: "model provider (gemini/flash)" }
+    # - { host: "api.openai.com", port: 443, purpose: "model provider (openai/luna)" }
+    # - { host: "api.z.ai", port: 443, purpose: "model provider (zai/glm-flash)" }
     - { host: "slack.com", port: 443, purpose: "Slack Web API (status comment / repo picker)" }
     # Exact host, not a wildcard: Allowlist.is_allowed compares hosts by string
     # equality, so "*.atlassian.net" would never match anything.

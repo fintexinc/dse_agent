@@ -56,10 +56,38 @@ services:
       DSE_SANDBOX_STATE_DIR: /tmp/dse-sandboxes
       # PoC (2026-07-21): the Coder points to the real Anthropic alias on the
       # gateway and mints the virtual key via /key/generate with the master key
-      # (control plane). Economy mode (2026-07-22): Haiku 4.5 by default (~3x
-      # cheaper). To go back to Sonnet: DSE_CODER_MODEL=anthropic/claude ./dse.sh start.
-      # Planner/Tester inherit it (DSE_PLANNER_MODEL/DSE_TESTER_MODEL override).
-      DSE_CODER_MODEL: ${DSE_CODER_MODEL:-anthropic/claude-haiku}
+      # (control plane). Planner, Tester and L2 inherit this variable.
+      #
+      # 2026-09-11: back to Sonnet 5. The economy mode of 2026-07-22 was argued
+      # on "~3x cheaper, $1/$5 vs $3/$15", and $3/$15 is Sonnet 4.6's price —
+      # anthropic/claude serves claude-sonnet-5, which is $2/$10. The real gap
+      # is 2x, for 12 points of SWE-bench Verified (0.852 vs 0.733). In a loop
+      # with a retry cap, iterations that do not converge cost more than the
+      # token price ever saves. To go back: DSE_CODER_MODEL=anthropic/claude-haiku
+      DSE_CODER_MODEL: ${DSE_CODER_MODEL:-anthropic/claude}
+      # Left on Haiku ON PURPOSE, not by omission. Routing is a classification
+      # call — "which of these repos does this issue belong to" — and it is the
+      # one stage where the cheap model is the right tool. It also does not
+      # inherit DSE_CODER_MODEL (its default is hardcoded in
+      # local_activities.py:1335), so this line is what keeps it explicit.
+      # Flipping it to anthropic/claude is a separate decision, one variable.
+      DSE_ROUTER_MODEL: ${DSE_ROUTER_MODEL:-anthropic/claude-haiku}
+      # Which stages can take a DIFFERENT alias from the one above, and which
+      # cannot, depends on how each one gets its key. Verified 2026-09-10:
+      #
+      #   Coder/Planner/Tester — sandbox_runtime.mint_virtual_key, which sends
+      #     "models": [DSE_CODER_MODEL] whatever stage asks (model_gateway_
+      #     client.py:37,75; activities.py:740,1828,3891). LiteLLM answers 403
+      #     when a key is used against an alias it does not list (gateway
+      #     README:33-35, confirmed against the real proxy). So
+      #     DSE_PLANNER_MODEL only works when it EQUALS DSE_CODER_MODEL —
+      #     i.e. not at all, as an override. Left unset on purpose.
+      #   Router — uses the MASTER key (local_activities.py:1311), unscoped, so
+      #     DSE_ROUTER_MODEL takes any registered alias today (see above).
+      #   L2 — model_gateway_client.virtual_keys.mint_virtual_key with
+      #     models=None (l2/session.py:130), which LiteLLM reads as "every
+      #     registered model". DSE_L2_MODEL takes any registered alias today.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DSE_CODER_SUBSTRATE: ${DSE_CODER_SUBSTRATE:-fake}
       # S7 (Phase 5) — L1 configured for the PoC repo (fintex-wallet, JS):
       # the Python checks (lint/typecheck/build) are skipped (empty command);

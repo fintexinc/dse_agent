@@ -103,7 +103,9 @@ Order (each step is idempotent):
      --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
      --from-literal=LITELLM_MASTER_KEY="$MASTER" \
      --from-literal=DSE_LITELLM_MASTER_KEY="$MASTER" \
-     --from-literal=DSE_CODER_MODEL="anthropic/claude-haiku" \
+     --from-literal=DSE_CODER_MODEL="anthropic/claude" \
+     --from-literal=DSE_ROUTER_MODEL="anthropic/claude-haiku" \
+     --from-literal=GEMINI_API_KEY="$GEMINI_API_KEY" \
      --from-literal=GITHUB_APP_ID="$GITHUB_APP_ID" \
      --from-literal=GITHUB_APP_INSTALLATION_ID="$GITHUB_APP_INSTALLATION_ID" \
      --from-literal=GITHUB_APP_PRIVATE_KEY="$(cat app.pem)"

@@ -557,6 +557,79 @@ Phase 3 coverage:
 - `scripts/smoke_test.py` re-run after the LiteLLM config change
   (fallbacks/timeout): response identical to the baseline, byte for byte.
 
+## Two blockers before any stage can move off Anthropic
+
+Found 2026-09-10 while switching the Planner and Tester to `gemini/flash`.
+Neither is about the model.
+
+**1. Three of the five stages are pinned to the Coder's alias by their key.**
+It depends on how each stage gets that key:
+
+| Stage | Key it uses | Scope | Can it take its own alias today? |
+|---|---|---|---|
+| Coder | `sandbox_runtime.mint_virtual_key` | `[DSE_CODER_MODEL]` | it *is* `DSE_CODER_MODEL` |
+| Planner | same | `[DSE_CODER_MODEL]` | **no** — 403 |
+| Tester | same | `[DSE_CODER_MODEL]` | **no** — 403 |
+| Router | the **master key** (`local_activities.py:1311`) | unscoped | **yes** |
+| L2 | `virtual_keys.mint_virtual_key`, `models=None` (`l2/session.py:130`) | every registered model | **yes** |
+
+`sandbox_runtime.mint_virtual_key` sends `"models": [_CODER_MODEL]` where
+`_CODER_MODEL` is `DSE_CODER_MODEL` (`model_gateway_client.py:37,75`), whatever
+stage calls it (`activities.py:740,1828,3891`), and LiteLLM answers **403** when
+a key is used against an alias it does not list (line 33 above, confirmed
+against the real proxy). So `DSE_PLANNER_MODEL` only works when it equals
+`DSE_CODER_MODEL` — which is to say, not at all as an override. It has been
+documented as one all along; nobody had set it.
+
+Fix: resolve the alias from `headers.stage` inside that mint — it already
+receives it. One key, one alias, least privilege unchanged, no call site
+touched.
+
+Two consequences worth knowing before that lands. A **uniform** switch
+(`DSE_CODER_MODEL=<alias>`, per-stage vars unset) sidesteps the scoping
+entirely, because then every key and every stage name the same alias — but it
+drags the Coder along, and the Coder has its own constraint (next section).
+And `DSE_ROUTER_MODEL`'s default is hardcoded `anthropic/claude-haiku`, not
+inherited, so a uniform switch has to set it explicitly or the router stays
+behind.
+
+**2. A credential is still required.** There is no keyless path to a hosted
+Google model: AI Studio takes an API key, Vertex takes a service-account JSON or
+Workload Identity Federation. Only `eco/echo-model` runs with no credential, and
+only the `bedrock/*` tier reuses one we already have.
+
+## Can the Coder stay on `claude-agent` with a non-Anthropic alias? (probe)
+
+Separate from the two above, and only worth running once they are settled. The
+Coder drives the Claude Code CLI with
+`ANTHROPIC_BASE_URL` pointed here (`sandbox_runtime/substrate.py:328`), so it
+speaks the **Anthropic Messages API**, not chat completions. LiteLLM does
+translate `/v1/messages` to other providers, but that translation is unproven
+for this alias against the CLI's tool-use payloads, and the failure mode is
+mid-turn rather than at startup. Before spending an image rebuild, spend 30
+seconds finding out:
+
+```bash
+curl -sS -X POST http://localhost:4000/v1/messages \
+  -H "Authorization: Bearer $DSE_LITELLM_MASTER_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"gemini/flash","max_tokens":64,
+       "messages":[{"role":"user","content":"Reply with the single word: ok"}]}'
+```
+
+- **A `content` block comes back** → repeat it with a `tools` array and a prompt
+  that forces one call; if the response carries a `tool_use` block, the Coder is
+  one env var (`DSE_CODER_MODEL=gemini/flash`) and no image work at all.
+- **A 400/500, or text where a `tool_use` block belongs** → the Coder needs the
+  OpenHands substrate: rebuild the agent-runner with
+  `--build-arg INSTALL_OPENHANDS=1` (`agent-runner/Dockerfile:86-89`), re-pin the
+  digest, set `runtime.agentSubstrate: openhands`. That image already contains
+  the implementation (`agent-runner/agent_runner/executor.py:194`); it is only
+  opt-in at build time.
+
+Either way `DSE_CODER_MODEL` stays on Anthropic until the probe answers —
+pointing it at the alias first fails inside a paid turn.
+
 ## Version pinning and simulated upgrade (WSD-E1-T1)
 
 See the comment at the top of `docker-compose.wsd.yml` and the docstring of
