@@ -98,11 +98,23 @@ model_list:
     model_info:
       dse_tier: "poc-direct-api"
       dse_requires_infra: "anthropic_public_api"
+      # $2/$10 per MTok. Hardcoded for the same reason as the candidates below,
+      # with an extra wrinkle: this alias IS in the cost map of the pinned
+      # LiteLLM 1.93.0 (2026-07-09), but at the rate of the day. Anthropic made
+      # $2/$10 permanent on 2026-08-11, after the pin — so the bundled map is
+      # stale rather than absent, which is worse: it reports a wrong number
+      # instead of none, and nothing looks broken. Setting it here wins.
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.00001
 
-  # Economy mode (operator request, 2026-07-22): Haiku 4.5 (~3× cheaper:
-  # $1/$5 vs $3/$15 per MTok). It is the current DEFAULT for the flow
+  # Economy mode (operator request, 2026-07-22). It is the DEFAULT for the flow
   # (DSE_CODER_MODEL in compose); Sonnet stays registered above — going back is
   # changing 1 env var, nothing more.
+  #
+  # CORRECTION 2026-09-11: the original note here said "~3x cheaper, $1/$5 vs
+  # $3/$15". $3/$15 is SONNET 4.6's price. Sonnet 5, which is what
+  # anthropic/claude actually serves, is $2/$10 — so this alias is 2x cheaper,
+  # not 3x, and the economy argument is half of what it was written to be.
   - model_name: anthropic/claude-haiku
     litellm_params:
       model: anthropic/claude-haiku-4-5-20251001
@@ -110,6 +122,10 @@ model_list:
     model_info:
       dse_tier: "poc-direct-api"
       dse_requires_infra: "anthropic_public_api"
+      # $1/$5 per MTok. In the pinned cost map, and unchanged since — set here
+      # anyway so the two aliases being compared are priced the same way.
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
 
   # --- Candidate set for the Coder A/B (2026-09-09) -------------------------
   # The three entries below + `anthropic/claude-haiku` above are the four
