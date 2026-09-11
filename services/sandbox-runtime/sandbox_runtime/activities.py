@@ -1058,6 +1058,17 @@ _PLANNER_CONTEXT_BUDGET_CHARS = 40_000
 # Coder turn measured at $1,0343 and up to 8 of them per work item.
 _PLANNER_TREE_BUDGET_CHARS = 160_000
 
+# Output budget: BFA-1165 escalated TWICE against the old 1.500 and the ledger
+# (rows 1011/1012) recorded `tokens_out` == 1500 on both — the cap, exactly. A
+# ticket with four sub-issues writes a plan JSON longer than that, the answer
+# arrives cut mid-object, does not parse, and the fixture (`expected_files=[]`)
+# escalates at the anti-empty-PR gate saying only "expected_files_empty" — the
+# same message a model that refused would produce. The healthy planner turns in
+# that same ledger measure 600-830 output tokens, so this is ~5x the observed
+# median and costs nothing while unused: output tokens are billed as generated,
+# not as reserved.
+_PLANNER_MAX_OUTPUT_TOKENS = 4_000
+
 # The client's default (300) was tuned for a single blind prefix. The directory
 # summary is a count over the WHOLE tree, and a summary computed from a 300-path
 # prefix would misreport the repo's shape — which is the exact failure being
@@ -1616,7 +1627,7 @@ def _model_plan_proposer(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             timeout=120.0,
-            max_tokens=1500,
+            max_tokens=_PLANNER_MAX_OUTPUT_TOKENS,
             temperature=0,
         )
     except Exception as exc:  # noqa: BLE001 — refusal/error => fixture (clean escalation)
@@ -1649,6 +1660,11 @@ def _model_plan_proposer(
             "test_plan": str(proposal.get("test_plan") or "Cover the change with tests (Tester turn)."),
         }
     except (json.JSONDecodeError, ValueError) as exc:
+        # A bigger cap moves the cliff, it does not remove it. When the answer
+        # came back at the cap, the plan was CUT, not refused — say so on the
+        # ledger instead of leaving the operator with "expected_files_empty".
+        if result.tokens_out >= _PLANNER_MAX_OUTPUT_TOKENS:
+            tel["planner_output_truncated"] = True
         logger.warning("model plan did not parse (%s) — fixture; response: %.200s", exc, text)
         return None
 

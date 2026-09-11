@@ -209,3 +209,52 @@ def test_prompt_asks_for_estimated_lines(monkeypatch):
     assert "estimated_lines" in captured["prompt"], (
         "o prompt do Planner não pede estimated_lines — a estimativa nunca nasce"
     )
+
+
+def test_the_plan_call_asks_for_more_than_the_cap_that_truncated_bfa_1165(monkeypatch):
+    """BFA-1165 escalated TWICE with `planner_expected_files_empty_without_
+    no_code_change` and the ledger (rows 1011/1012, both attempts) says why:
+    `tokens_out` was 1500, EXACTLY the cap asked for. A ticket with four
+    sub-issues writes a plan JSON longer than that, the answer came back cut
+    mid-object, did not parse, and the fixture escalated at the gate. The
+    healthy planner turns in the same ledger measure 600-830 output tokens."""
+    captured = {}
+
+    def fake_chat_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            content=json.dumps({"steps": ["s"], "expected_files": ["a.js"], "test_plan": "t"}),
+            model="anthropic/claude", cost_usd=0.01, tokens_in=1, tokens_out=1, raw={},
+        )
+
+    import model_gateway_client.gateway_call as gc
+    import sandbox_runtime.activities as acts
+    monkeypatch.setattr(gc, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(acts, "_repo_tree_for_planner", lambda repo, br: [])
+
+    assert _model_plan_proposer(_Ctx(), _inp(), headers=None, virtual_key="vk") is not None
+    assert captured["max_tokens"] > 1500
+
+
+def test_a_truncated_plan_says_so_on_the_telemetry(monkeypatch):
+    """Raising the cap moves the cliff, it does not remove it. When the answer
+    is cut off anyway, the ONLY thing the operator saw was `expected_files_
+    empty` — indistinguishable from a model that refused. The turn's telemetry
+    (which lands on `planner_turn_completed`) now names the truncation."""
+    import sandbox_runtime.activities as acts
+
+    def fake_chat_completion(**kwargs):
+        return SimpleNamespace(
+            content='{"steps": ["fix the tabs"], "expected_files": ["src/Ta',
+            model="anthropic/claude", cost_usd=0.08,
+            tokens_in=34973, tokens_out=kwargs["max_tokens"], raw={},
+        )
+
+    import model_gateway_client.gateway_call as gc
+    monkeypatch.setattr(gc, "chat_completion", fake_chat_completion)
+    monkeypatch.setattr(acts, "_repo_tree_for_planner", lambda repo, br: [])
+
+    tel: dict = {}
+    assert _model_plan_proposer(_Ctx(), _inp(), headers=None, virtual_key="vk",
+                                telemetry=tel) is None
+    assert tel.get("planner_output_truncated") is True
